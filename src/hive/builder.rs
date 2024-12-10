@@ -262,9 +262,9 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use drudge:;hive::{Builder, Hive};
+    /// # use drudge::hive::{Builder, Hive};
     /// # use drudge::task::{ApplyError, Context};
-    /// # use drudge::util::TryCaller;
+    /// # use drudge::util::RetryCaller;
     /// # use std::time;
     ///
     /// fn sometimes_fail(
@@ -282,7 +282,7 @@ impl Builder {
     /// # fn main() {
     /// let hive = Builder::default()
     ///     .max_retries(3)
-    ///     .build_with(TryCaller::of(sometimes_fail));
+    ///     .build_with(RetryCaller::of(sometimes_fail));
     ///
     /// for i in 0..10 {
     ///     hive.apply_store(i);
@@ -308,7 +308,7 @@ impl Builder {
     /// ```
     /// # use drudge::hive::{Builder, Hive};
     /// # use drudge::task::{ApplyError, Context};
-    /// # use drudge::util::TryCaller;
+    /// # use drudge::util::RetryCaller;
     /// # use std::time;
     ///
     /// fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
@@ -326,7 +326,7 @@ impl Builder {
     /// let hive = Builder::default()
     ///     .max_retries(3)
     ///     .retry_factor(time::Duration::from_secs(1))
-    ///     .build_with(TryCaller::of(echo_time));
+    ///     .build_with(RetryCaller::of(echo_time));
     ///
     /// for i in 0..10 {
     ///     hive.apply_store(i);
