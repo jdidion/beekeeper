@@ -459,11 +459,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Blocks this thread until all tasks finish.
     pub fn join(&self) {
-        self.shared.wait_on_empty();
+        self.shared.wait_on_done();
     }
 
     /// Consumes this `Hive` and returns a `Husk` containing the remnants of this `Hive`, including
-    /// any stored task outcomes, and all the data necessary to create a new `Hive`.
+    /// any stored task outcomes, and all the data necessary to create a new `Hive`. If `join` is
+    /// `true`, this method will block until all tasks finish before consuming this `Hive`,
+    /// otherwise the
     pub fn into_husk(self) -> Husk<W, Q> {
         self.join();
         drop(self.task_tx);

@@ -11,6 +11,10 @@ pub trait Stored<W: Worker> {
     /// Returns a read-only reference to a map of task index to `Outcome`.
     fn outcomes(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>>;
 
+    fn is_empty(&self) -> bool {
+        self.outcomes().is_empty()
+    }
+
     /// Returns counts of the unsuccessful outcomes as a tuple
     /// `(unprocessed, successes, failures)`.
     fn count(&self) -> (usize, usize, usize) {
@@ -37,15 +41,19 @@ pub trait Stored<W: Worker> {
         }
     }
 
+    fn has_unprocessed(&self, index: usize) -> bool {
+        self.outcomes()
+            .get(&index)
+            .into_iter()
+            .any(|outcome| matches!(outcome, Outcome::Unprocessed { .. }))
+    }
+
     /// Returns `true` if any of the outcomes are `Outcome::Unprocessed`.
-    fn has_unprocessed(&self) -> bool {
+    fn has_any_unprocessed(&self) -> bool {
         self.outcomes()
             .values()
             .into_iter()
-            .any(|outcome| match outcome {
-                Outcome::Unprocessed { .. } => true,
-                _ => false,
-            })
+            .any(|outcome| matches!(outcome, Outcome::Unprocessed { .. }))
     }
 
     /// Returns the task indicies of the unprocessed outcomes.
@@ -60,15 +68,19 @@ pub trait Stored<W: Worker> {
             .collect()
     }
 
+    fn has_success(&self, index: usize) -> bool {
+        self.outcomes()
+            .get(&index)
+            .into_iter()
+            .any(|outcome| matches!(outcome, Outcome::Success { .. }))
+    }
+
     /// Returns `true` if any of the outcomes are `Outcome::Success`.
-    fn has_successes(&self) -> bool {
+    fn has_any_successes(&self) -> bool {
         self.outcomes()
             .values()
             .into_iter()
-            .any(|result| match result {
-                Outcome::Success { .. } => true,
-                _ => false,
-            })
+            .any(|outcome| matches!(outcome, Outcome::Success { .. }))
     }
 
     /// Returns the task indicies of the success outcomes.

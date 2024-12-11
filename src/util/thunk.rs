@@ -1,4 +1,6 @@
+use crate::boxed::BoxedFnOnce;
 use crate::task::{ApplyError, Context, Worker, WorkerResult};
+use crate::Panic;
 use std::{fmt::Debug, marker::PhantomData};
 
 /// A `Worker` that executes infallible `Thunk<T>`s when applied.
@@ -44,6 +46,30 @@ impl<T: Send + Debug + 'static, E: Send + Debug + 'static> Worker for FunkWorker
     }
 }
 
+/// A `Worker` that executes `Thunk<T>`s that may panic. A panic is caught and returned as an
+/// `ApplyError::Panic` error.
+#[derive(Debug)]
+pub struct PunkWorker<T>(PhantomData<T>);
+
+impl<T> Default for PunkWorker<T> {
+    fn default() -> Self {
+        PunkWorker(PhantomData)
+    }
+}
+
+impl<T: Send + Debug + 'static> Worker for PunkWorker<T> {
+    type Input = Thunk<'static, T>;
+    type Output = T;
+    type Error = ();
+
+    fn apply(&mut self, f: Self::Input, _: &Context) -> WorkerResult<Self> {
+        Panic::try_call_boxed(None, f.0).map_err(|payload| ApplyError::Panic {
+            input: None,
+            payload,
+        })
+    }
+}
+
 /// A wrapper around a closure that can be executed exactly once by a worker in a `Hive`.
 pub struct Thunk<'a, T>(Box<dyn BoxedFnOnce<Output = T> + Send + 'a>);
 
@@ -62,21 +88,6 @@ impl<'a, T, E> Thunk<'a, Result<T, E>> {
 impl<'a, T> Debug for Thunk<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Thunk")
-    }
-}
-
-trait BoxedFnOnce {
-    type Output;
-
-    fn call_box(self: Box<Self>) -> Self::Output;
-}
-
-impl<T, F: FnOnce() -> T> BoxedFnOnce for F {
-    type Output = T;
-
-    #[inline]
-    fn call_box(self: Box<F>) -> Self::Output {
-        (*self)()
     }
 }
 

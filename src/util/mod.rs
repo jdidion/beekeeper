@@ -4,10 +4,10 @@ mod thunk;
 
 pub use call::{Caller, OnceCaller, RefCaller, RetryCaller};
 pub use echo::Echo;
-pub use thunk::{FunkWorker, Thunk, ThunkWorker};
+pub use thunk::{FunkWorker, PunkWorker, Thunk, ThunkWorker};
 
-use crate::hive::{Builder, Hive, HiveResult, TaskResultIteratorExt};
-use crate::task::{ApplyError, Context, DefaultQueen};
+use crate::hive::{Builder, HiveResult, TaskResultIteratorExt};
+use crate::task::{ApplyError, Context};
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -18,10 +18,12 @@ use std::fmt::Debug;
 ///
 /// # Examples
 ///
+/// ```
 /// # fn main() {
 /// let outputs = drudge::util::map(4, 3..9usize, |i| i + 1);
 /// assert_eq!(outputs.into_iter().sum(), 42);
 /// # }
+/// ```
 pub fn map<I, O, Inputs, F>(num_threads: usize, inputs: Inputs, f: F) -> Vec<O>
 where
     I: Send + Sync + 'static,
@@ -43,12 +45,14 @@ where
 ///
 /// # Examples
 ///
+/// ```
 /// # fn main() {
-/// let result = drudge::util:;try_map(
+/// let result = drudge::util::try_map(
 ///     4, 0..10, |i| if i == 5 { Err("No fives allowed!") } else { Ok(i * i) }
 /// );
 /// assert!(result.is_err());
 /// # }
+/// ```
 pub fn try_map<I, O, E, Inputs, F>(
     num_threads: usize,
     inputs: Inputs,
@@ -77,6 +81,7 @@ where
 ///
 /// # Examples
 ///
+/// ```
 /// # use drudge::task::ApplyError;
 ///
 /// # fn main() {
@@ -89,6 +94,7 @@ where
 /// });
 /// assert!(result.is_err());
 /// # }
+/// ```
 pub fn try_map_retryable<I, O, E, Inputs, F>(
     num_threads: usize,
     max_retries: u32,
@@ -108,41 +114,6 @@ where
         .build_with(RetryCaller::of(f))
         .map(inputs)
         .collect()
-}
-
-/// Convenience function that returns a `Hive` configured with the global defaults, and the
-/// specified number of `Echo` workers.
-pub fn echo_hive<T: Send + Sync + Debug + 'static>(
-    num_threads: usize,
-) -> Hive<Echo<T>, DefaultQueen<Echo<T>>> {
-    Builder::default()
-        .num_threads(num_threads)
-        .build_with_default()
-}
-
-/// Convenience function that returns a `Hive` configured with the global defaults, and the
-/// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
-pub fn thunk_hive<'a, T: Send + Sync + Debug + 'static>(
-    num_threads: usize,
-) -> Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>> {
-    Builder::default()
-        .num_threads(num_threads)
-        .build_with_default()
-}
-
-/// Convenience function that returns a `Hive` configured with the global defaults, and the
-/// specified number of workers that execute `Thunk<Result<T, E>>`s, i.e. closures that return a
-/// `Result<T, E>` (a `funk` is a fallible `thunk`).
-pub fn funk_hive<'a, T, E>(
-    num_threads: usize,
-) -> Hive<FunkWorker<T, E>, DefaultQueen<FunkWorker<T, E>>>
-where
-    T: Send + Sync + Debug + 'static,
-    E: Send + Sync + Debug + 'static,
-{
-    Builder::default()
-        .num_threads(num_threads)
-        .build_with_default()
 }
 
 #[cfg(test)]

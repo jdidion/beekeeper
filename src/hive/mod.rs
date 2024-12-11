@@ -38,9 +38,10 @@ mod test {
         Builder, Hive, HiveError, Outcome, OutcomeIteratorExt, Stored, TaskResultIteratorExt,
     };
     use crate::channel::{Message, ReceiverExt};
-    use crate::task::{ApplyError, Context, Worker, WorkerResult};
-    use crate::util::{self, Caller, RefCaller, RetryCaller, Thunk, ThunkWorker};
+    use crate::task::{ApplyError, Context, DefaultQueen, Worker, WorkerResult};
+    use crate::util::{Caller, OnceCaller, RefCaller, RetryCaller, Thunk, ThunkWorker};
     use std::{
+        fmt::Debug,
         io::{self, BufRead, BufReader, Write},
         process::{ChildStdin, ChildStdout, Command, Stdio},
         sync::{
@@ -56,9 +57,19 @@ mod test {
     const SHORT_TASK: Duration = Duration::from_secs(2);
     const LONG_TASK: Duration = Duration::from_secs(5);
 
+    /// Convenience function that returns a `Hive` configured with the global defaults, and the
+    /// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
+    pub fn thunk_hive<'a, T: Send + Sync + Debug + 'static>(
+        num_threads: usize,
+    ) -> Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>> {
+        Builder::default()
+            .num_threads(num_threads)
+            .build_with_default()
+    }
+
     #[test]
     fn test_works() {
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         let (tx, rx) = super::outcome_channel();
         for _ in 0..TEST_TASKS {
             let tx = tx.clone();
@@ -71,25 +82,25 @@ mod test {
 
     #[test]
     fn test_grow_from_zero() {
-        let hive = util::thunk_hive::<u8>(0);
+        let hive = thunk_hive::<u8>(0);
         // check that with 0 threads no tasks are scheduled
         let (tx, rx) = super::outcome_channel();
         let _ = hive.apply_send(Thunk::of(|| 0), tx);
         thread::sleep(ONE_SEC);
         assert_eq!(hive.queued_count(), 1);
-        matches!(rx.try_recv_msg(), Message::ChannelEmpty);
+        assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
         hive.set_num_threads(1);
         thread::sleep(ONE_SEC);
         assert_eq!(hive.queued_count(), 0);
-        matches!(
+        assert!(matches!(
             rx.try_recv_msg(),
             Message::Received(Outcome::Success { value: 0, .. })
-        );
+        ));
     }
 
     #[test]
     fn test_set_num_threads_increasing() {
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -112,7 +123,7 @@ mod test {
     #[test]
     fn test_set_num_threads_decreasing() {
         let new_thread_amount = 2;
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| ()));
         }
@@ -134,7 +145,7 @@ mod test {
     fn test_shrink() {
         let test_tasks_begin = TEST_TASKS + 2;
 
-        let hive = util::thunk_hive(test_tasks_begin);
+        let hive = thunk_hive(test_tasks_begin);
         let b0 = Arc::new(Barrier::new(test_tasks_begin + 1));
         let b1 = Arc::new(Barrier::new(test_tasks_begin + 1));
 
@@ -170,7 +181,7 @@ mod test {
 
     #[test]
     fn test_active_count() {
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         for _ in 0..2 * TEST_TASKS {
             hive.apply_store(Thunk::of(|| loop {
                 thread::sleep(LONG_TASK)
@@ -203,7 +214,7 @@ mod test {
 
     #[test]
     fn test_panic() {
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         let (tx, _) = super::outcome_channel();
         // Panic all the existing threads.
         for _ in 0..TEST_TASKS {
@@ -212,6 +223,8 @@ mod test {
         hive.join();
         // Ensure that none of the threads have panicked
         assert_eq!(hive.panic_count(), TEST_TASKS);
+        let husk = hive.into_husk();
+        assert_eq!(husk.panic_count(), TEST_TASKS);
     }
 
     #[test]
@@ -237,7 +250,7 @@ mod test {
 
     #[test]
     fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
 
         // Panic all the existing threads in a bit.
@@ -259,7 +272,7 @@ mod test {
     fn test_massive_task_creation() {
         let test_tasks = 4_200_000;
 
-        let hive = util::thunk_hive(TEST_TASKS);
+        let hive = thunk_hive(TEST_TASKS);
         let b0 = Arc::new(Barrier::new(TEST_TASKS + 1));
         let b1 = Arc::new(Barrier::new(TEST_TASKS + 1));
 
@@ -432,7 +445,7 @@ mod test {
 
     #[test]
     fn test_debug() {
-        let hive = util::thunk_hive::<()>(4);
+        let hive = thunk_hive::<()>(4);
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
@@ -449,7 +462,7 @@ mod test {
             "Hive { task_tx: Sender { .. }, shared: Shared { name: Some(\"hello\"), queued_count: 0, active_count: 0, max_count: 4 } }"
         );
 
-        let hive = util::thunk_hive(4);
+        let hive = thunk_hive(4);
         hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         thread::sleep(ONE_SEC);
         let debug = format!("{:?}", hive);
@@ -544,7 +557,7 @@ mod test {
     #[test]
     fn test_empty_hive() {
         // Joining an empty hive must return imminently
-        let hive = util::thunk_hive::<()>(4);
+        let hive = thunk_hive::<()>(4);
         hive.join();
     }
 
@@ -647,6 +660,9 @@ mod test {
             })
         }));
         hive.join();
+        for i in indices.iter() {
+            assert!(hive.has_success(*i))
+        }
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
             .into_iter()
@@ -732,6 +748,9 @@ mod test {
             })
         }));
         hive.join();
+        for i in indices.iter() {
+            assert!(hive.has_success(*i))
+        }
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
             .into_iter()
@@ -766,6 +785,231 @@ mod test {
                 .map(|i| i * i)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_scan_send() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i| i * i));
+        let (tx, rx) = super::outcome_channel();
+        let (mut indices, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
+            *acc += i;
+            *acc
+        });
+        assert_eq!(indices.len(), 10);
+        assert_eq!(state, 45);
+        let (mut outcome_indices, mut values): (Vec<usize>, Vec<i32>) = rx
+            .iter()
+            .map(|outcome| match outcome {
+                Outcome::Success { value, index } => (index, value),
+                _ => panic!("unexpected error"),
+            })
+            .unzip();
+        values.sort();
+        assert_eq!(
+            values,
+            (0..10)
+                .scan(0, |acc, i| {
+                    *acc += i;
+                    Some(*acc)
+                })
+                .map(|i| i * i)
+                .collect::<Vec<_>>()
+        );
+        indices.sort();
+        outcome_indices.sort();
+        assert_eq!(indices, outcome_indices);
+    }
+
+    #[test]
+    fn test_try_scan_send() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i| i * i));
+        let (tx, rx) = super::outcome_channel();
+        let (mut indices, state) = hive
+            .try_scan_send(0..10, tx, 0, |acc, i| {
+                *acc += i;
+                Ok(*acc)
+            })
+            .unwrap();
+        assert_eq!(indices.len(), 10);
+        assert_eq!(state, 45);
+        let (mut outcome_indices, mut values): (Vec<usize>, Vec<i32>) = rx
+            .iter()
+            .map(|outcome| match outcome {
+                Outcome::Success { value, index } => (index, value),
+                _ => panic!("unexpected error"),
+            })
+            .unzip();
+        values.sort();
+        assert_eq!(
+            values,
+            (0..10)
+                .scan(0, |acc, i| {
+                    *acc += i;
+                    Some(*acc)
+                })
+                .map(|i| i * i)
+                .collect::<Vec<_>>()
+        );
+        indices.sort();
+        outcome_indices.sort();
+        assert_eq!(indices, outcome_indices);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_try_scan_send_fail() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(OnceCaller::of(|i: i32| Ok(i * i)));
+        let (tx, _) = super::outcome_channel();
+        hive.try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_scan_store() {
+        let mut hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i| i * i));
+        let (mut indices, state) = hive.scan_store(0..10, 0, |acc, i| {
+            *acc += i;
+            *acc
+        });
+        assert_eq!(indices.len(), 10);
+        assert_eq!(state, 45);
+        hive.join();
+        for i in indices.iter() {
+            assert!(hive.has_success(*i))
+        }
+        let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
+            .clone()
+            .into_iter()
+            .map(|i| hive.remove_success(i).unwrap())
+            .unzip();
+        assert_eq!(
+            values,
+            (0..10)
+                .scan(0, |acc, i| {
+                    *acc += i;
+                    Some(*acc)
+                })
+                .map(|i| i * i)
+                .collect::<Vec<_>>()
+        );
+        indices.sort();
+        outcome_indices.sort();
+        assert_eq!(indices, outcome_indices);
+    }
+
+    #[test]
+    fn test_try_scan_store() {
+        let mut hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i| i * i));
+        let (mut indices, state) = hive
+            .try_scan_store(0..10, 0, |acc, i| {
+                *acc += i;
+                Ok::<i32, String>(*acc)
+            })
+            .unwrap();
+        assert_eq!(indices.len(), 10);
+        assert_eq!(state, 45);
+        hive.join();
+        for i in indices.iter() {
+            assert!(hive.has_success(*i))
+        }
+        let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
+            .clone()
+            .into_iter()
+            .map(|i| hive.remove_success(i).unwrap())
+            .unzip();
+        assert_eq!(
+            values,
+            (0..10)
+                .scan(0, |acc, i| {
+                    *acc += i;
+                    Some(*acc)
+                })
+                .map(|i| i * i)
+                .collect::<Vec<_>>()
+        );
+        indices.sort();
+        outcome_indices.sort();
+        assert_eq!(indices, outcome_indices);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_try_scan_store_fail() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(OnceCaller::of(|i: i32| Ok::<i32, String>(i * i)));
+        hive.try_scan_store(0..10, 0, |_, _| Err("fail")).unwrap();
+    }
+
+    #[test]
+    fn test_husk() {
+        let hive1 = Builder::new()
+            .num_threads(8)
+            .build_with_default::<ThunkWorker<u8>>();
+        let indices = hive1.map_store((0..8u8).into_iter().map(|i| Thunk::of(move || i)));
+        hive1.join();
+        let mut husk1 = hive1.into_husk();
+        for i in indices.iter() {
+            assert!(husk1.has_success(*i));
+            assert!(matches!(husk1.get(*i), Some(Outcome::Success { .. })));
+        }
+
+        let builder = husk1.as_builder();
+        let hive2 = builder
+            .num_threads(4)
+            .build_with_default::<ThunkWorker<u8>>();
+        hive2.map_store((0..8u8).into_iter().map(|i| {
+            Thunk::of(move || {
+                thread::sleep(Duration::from_millis((8 - i as u64) * 100));
+                i
+            })
+        }));
+        hive2.join();
+        let mut husk2 = hive2.into_husk();
+
+        let mut outputs1 = husk1
+            .take_all()
+            .into_iter()
+            .into_results()
+            .into_outputs()
+            .collect::<Vec<_>>();
+        outputs1.sort();
+        let mut outputs2 = husk2
+            .take_all()
+            .into_iter()
+            .into_results()
+            .into_outputs()
+            .collect::<Vec<_>>();
+        outputs2.sort();
+        assert_eq!(outputs1, outputs2);
+
+        let hive3 = husk1.into_hive();
+        hive3.map_store((0..8u8).into_iter().map(|i| {
+            Thunk::of(move || {
+                thread::sleep(Duration::from_millis((8 - i as u64) * 100));
+                i
+            })
+        }));
+        hive3.join();
+        let husk3 = hive3.into_husk();
+        let (_, outcomes3) = husk3.into_parts();
+        let mut outputs3 = outcomes3
+            .into_iter()
+            .into_results()
+            .into_outputs()
+            .collect::<Vec<_>>();
+        outputs3.sort();
+        assert_eq!(outputs1, outputs3);
     }
 
     #[test]
@@ -841,7 +1085,7 @@ mod test {
 
     #[test]
     fn test_cloned_eq() {
-        let a = util::thunk_hive::<()>(2);
+        let a = thunk_hive::<()>(2);
         assert_eq!(a, a.clone());
     }
 

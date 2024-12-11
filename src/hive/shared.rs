@@ -220,16 +220,20 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
     /// since this requires holding a lock on the task `Reciever`, this also blocks any other
     /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
-    /// are no tasks queued.
+    /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
     pub fn next_task(&self) -> Option<Task<W>> {
-        self.task_rx
-            .lock()
-            .recv()
-            .inspect(|_| {
-                self.active_count.fetch_add(1, Ordering::SeqCst);
-                self.queued_count.fetch_sub(1, Ordering::SeqCst);
-            })
-            .ok()
+        if self.is_cancelled() {
+            None
+        } else {
+            self.task_rx
+                .lock()
+                .recv()
+                .inspect(|_| {
+                    self.active_count.fetch_add(1, Ordering::SeqCst);
+                    self.queued_count.fetch_sub(1, Ordering::SeqCst);
+                })
+                .ok()
+        }
     }
 
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
@@ -279,9 +283,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.panic_count.load(Ordering::Relaxed)
     }
 
-    /// Returns `true` if there are either active or queued tasks.
+    /// Returns `true` if there are either active tasks or if there are queued tasks and the
+    /// cancelled flag hasn't been set.
     pub fn has_work(&self) -> bool {
-        self.queued_count.load(Ordering::SeqCst) > 0 || self.active_count.load(Ordering::SeqCst) > 0
+        self.active_count.load(Ordering::SeqCst) > 0
+            || (!self.is_cancelled() && self.queued_count.load(Ordering::SeqCst) > 0)
     }
 
     /// Notify all observers joining this hive if there is no more work to do.
@@ -297,8 +303,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.num_threads.swap(new_count, Ordering::Release)
     }
 
-    /// Blocks the current thread until all active and queued tasks have been processed.
-    pub fn wait_on_empty(&self) {
+    /// Blocks the current thread until all active tasks have been processed. Also waits until all
+    /// queued tasks have been processed unless the cancelled flag has been set.
+    pub fn wait_on_done(&self) {
         if self.has_work() {
             let generation = self.join_generation.load(Ordering::SeqCst);
             let mut lock = self.empty_trigger.lock();

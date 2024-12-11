@@ -123,6 +123,7 @@
 //! [`Thunk<T>`]: util/struct.Thunk.html
 //! [`std::sync::mpsc`]: https://doc.rust-lang.org/stable/std/sync/mpsc/
 
+mod boxed;
 pub mod channel;
 pub mod hive;
 mod panic;

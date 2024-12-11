@@ -1,3 +1,4 @@
+use crate::boxed::BoxedFnOnce;
 use std::{
     any::Any,
     fmt::Debug,
@@ -18,6 +19,14 @@ impl<T: Send + Debug + Eq> Panic<T> {
     /// value of the function or a `Panic` created from the panic payload and the provided `detail`.
     pub fn try_call<O, F: FnOnce() -> O>(detail: Option<T>, f: F) -> Result<O, Self> {
         panic::catch_unwind(AssertUnwindSafe(|| f())).map_err(|payload| Self { payload, detail })
+    }
+
+    pub(crate) fn try_call_boxed<O, F: BoxedFnOnce<Output = O> + ?Sized>(
+        detail: Option<T>,
+        f: Box<F>,
+    ) -> Result<O, Self> {
+        panic::catch_unwind(AssertUnwindSafe(|| f.call_box()))
+            .map_err(|payload| Self { payload, detail })
     }
 
     /// Returns the payload of the panic.
