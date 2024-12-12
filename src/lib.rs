@@ -22,20 +22,22 @@
 //! with [`Thunk::of`].
 //!
 //! ```
-//! use drudge::hive::{Hive, OutcomeIteratorExt, TaskResultIteratorExt, outcome_channel};
-//! use drudge::util::{self, Thunk};
+//! use drudge::hive::{Hive, Builder, OutcomeIteratorExt, outcome_channel};
+//! use drudge::util::{self, Thunk, ThunkWorker};
 //!
 //! fn main() {
 //!     let n_workers = 4;
 //!     let n_tasks: usize = 8;
-//!     let hive = util::thunk_hive(n_workers);
+//!     let hive = Builder::default()
+//!         .num_threads(n_workers)
+//!         .build_with_default::<ThunkWorker<usize>>();
 //!
 //!     let (tx, rx) = outcome_channel();
 //!     for i in 0..n_tasks {
 //!         hive.apply_send(Thunk::of(move || i * i), tx.clone());
 //!     }
 //!
-//!     let sum: usize = rx.take_results(n_tasks).into_outputs().sum();
+//!     let sum: usize = rx.take_outputs(n_tasks).sum();
 //!     assert_eq!(140, sum);
 //! }
 //! ```

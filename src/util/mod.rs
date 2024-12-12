@@ -6,7 +6,7 @@ pub use call::{Caller, OnceCaller, RefCaller, RetryCaller};
 pub use echo::Echo;
 pub use thunk::{FunkWorker, PunkWorker, Thunk, ThunkWorker};
 
-use crate::hive::{BatchResult, Builder, TaskResultIteratorExt};
+use crate::hive::{BatchResult, Builder, Outcome};
 use crate::task::{ApplyError, Context};
 use std::fmt::Debug;
 
@@ -20,8 +20,8 @@ use std::fmt::Debug;
 ///
 /// ```
 /// # fn main() {
-/// let outputs = drudge::util::map(4, 3..9usize, |i| i + 1);
-/// assert_eq!(outputs.into_iter().sum(), 42);
+/// let outputs: Vec<usize> = drudge::util::map(4, 2..9usize, |i| i + 1);
+/// assert_eq!(outputs.into_iter().sum::<usize>(), 42);
 /// # }
 /// ```
 pub fn map<I, O, Inputs, F>(num_threads: usize, inputs: Inputs, f: F) -> Vec<O>
@@ -35,7 +35,7 @@ where
         .num_threads(num_threads)
         .build_with(Caller::of(f))
         .map(inputs)
-        .into_outputs()
+        .map(Outcome::unwrap)
         .collect()
 }
 
@@ -47,10 +47,14 @@ where
 ///
 /// ```
 /// # fn main() {
-/// let result = drudge::util::try_map(
-///     4, 0..10, |i| if i == 5 { Err("No fives allowed!") } else { Ok(i * i) }
-/// );
-/// assert!(result.is_err());
+/// let result = drudge::util::try_map(4, 0..10, |i| {
+///     if i == 5 {
+///         Err("No fives allowed!")
+///     } else {
+///         Ok(i * i)
+///     }
+/// });
+/// assert!(result.has_errors());
 /// # }
 /// ```
 pub fn try_map<I, O, E, Inputs, F>(
@@ -82,17 +86,19 @@ where
 /// # Examples
 ///
 /// ```
+/// # use drudge::hive::BatchResult;
 /// # use drudge::task::ApplyError;
+/// # use drudge::util::RetryCaller;
 ///
 /// # fn main() {
-/// let result = drudge::util::map_retryable(4, 3, 0..10, |i| if i == 5 {
-///     Err(ApplyError::NotRetryable { input: i, error: "No fives allowed!".into() })
+/// let result = drudge::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
+///     Err(ApplyError::NotRetryable { input: Some(i), error: "No fives allowed!".into() })
 /// } else if i == 7 {
 ///     Err(ApplyError::Retryable { input: i, error: "Re-roll a 7".into() })
 /// } else {
 ///     Ok(i * i)
 /// });
-/// assert!(result.is_err());
+/// assert!(result.has_errors());
 /// # }
 /// ```
 pub fn try_map_retryable<I, O, E, Inputs, F>(
@@ -118,7 +124,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::hive::HiveError;
+    use crate::hive::Outcome;
     use crate::task::ApplyError;
 
     #[test]
@@ -142,7 +148,7 @@ mod tests {
         );
         assert!(result.has_errors());
         assert_eq!(1, result.num_errors());
-        assert!(matches!(result.errors()[0], HiveError::Failed { .. }));
+        assert!(matches!(result.errors()[0], Outcome::Failure { .. }));
         assert_eq!(99, result.num_successes());
         assert!(matches!(result.ok_or_unwrap_errors(true), Err(_)));
     }
@@ -180,7 +186,7 @@ mod tests {
         assert!(result.num_errors() == 1);
         assert!(matches!(
             result.errors()[0],
-            HiveError::MaxRetriesAttempted(_)
+            Outcome::MaxRetriesAttempted { .. }
         ))
     }
 }

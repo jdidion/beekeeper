@@ -498,7 +498,7 @@ impl Builder {
     ///
     /// # Examples
     /// ```
-    /// # use drudge::hive::{Builder, TaskResultIteratorExt};
+    /// # use drudge::hive::{Builder, OutcomeIteratorExt};
     /// # use drudge::task::{Context, Worker, WorkerResult};
     ///
     /// #[derive(Debug, Clone)]
@@ -551,7 +551,7 @@ impl Builder {
     ///
     /// # Examples
     /// ```
-    /// # use drudge::hive::{Builder, TaskResultIteratorExt};
+    /// # use drudge::hive::{Builder, OutcomeIteratorExt};
     /// # use drudge::task::{Context, Worker,  WorkerResult};
     /// # use std::num::NonZeroIsize;
     ///

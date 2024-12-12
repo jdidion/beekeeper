@@ -179,9 +179,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Stored<W> for Husk<W, Q> {
 
 #[cfg(test)]
 mod tests {
-    use crate::hive::{
-        outcome_channel, Builder, OutcomeIteratorExt, Stored, TaskResultIteratorExt,
-    };
+    use crate::hive::{outcome_channel, Builder, Outcome, OutcomeIteratorExt, Stored};
     use crate::util::{PunkWorker, Thunk, ThunkWorker};
 
     #[test]
@@ -246,7 +244,7 @@ mod tests {
         hive2.join();
         let husk2 = hive2.into_husk();
         assert!(husk2.is_empty());
-        let mut outputs = rx.into_results().into_outputs().collect::<Vec<_>>();
+        let mut outputs = rx.into_ordered().map(Outcome::unwrap).collect::<Vec<_>>();
         outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }

@@ -29,12 +29,6 @@ impl<T: Send + Debug + Eq> Panic<T> {
             .map_err(|payload| Self { payload, detail })
     }
 
-    #[cfg(test)]
-    pub(crate) fn new(msg: &str, detail: Option<T>) -> Self {
-        let payload = panic::catch_unwind(|| panic!("{}", msg)).err().unwrap();
-        Self { payload, detail }
-    }
-
     /// Returns the payload of the panic.
     pub fn payload(&self) -> &PanicPayload {
         &self.payload
@@ -48,6 +42,15 @@ impl<T: Send + Debug + Eq> Panic<T> {
     /// Consumes this `Panic` and resumes unwinding the thread.
     pub fn resume(self) -> ! {
         panic::resume_unwind(self.payload)
+    }
+}
+
+#[cfg(test)]
+impl<T: Send + Debug + Eq> Panic<T> {
+    /// Panics with `msg` and immediately catches it to create a new `Panic` instance for testing.
+    pub(crate) fn new(msg: &str, detail: Option<T>) -> Self {
+        let payload = panic::catch_unwind(|| panic!("{}", msg)).err().unwrap();
+        Self { payload, detail }
     }
 }
 

@@ -1,13 +1,13 @@
-use crate::hive::{HiveError, TaskResult};
+use crate::hive::Outcome;
 use crate::task::Worker;
 
 pub struct BatchResult<W: Worker> {
     successes: Vec<W::Output>,
-    errors: Vec<HiveError<W>>,
+    errors: Vec<Outcome<W>>,
 }
 
 impl<W: Worker> BatchResult<W> {
-    pub(crate) fn new(successes: Vec<W::Output>, errors: Vec<HiveError<W>>) -> Self {
+    pub(crate) fn new(successes: Vec<W::Output>, errors: Vec<Outcome<W>>) -> Self {
         Self { successes, errors }
     }
 
@@ -27,7 +27,7 @@ impl<W: Worker> BatchResult<W> {
         !self.errors.is_empty()
     }
 
-    pub fn errors(&self) -> &[HiveError<W>] {
+    pub fn errors(&self) -> &[Outcome<W>] {
         &self.errors
     }
 
@@ -38,7 +38,7 @@ impl<W: Worker> BatchResult<W> {
     pub fn has_unprocessed(&self) -> bool {
         self.errors
             .iter()
-            .any(|error| matches!(error, HiveError::Unprocessed { .. }))
+            .any(|error| matches!(error, Outcome::Unprocessed { .. }))
     }
 
     /// Extracts any `HiveError::Unprocessed` errors from this `BatchResult` and returns the
@@ -51,7 +51,7 @@ impl<W: Worker> BatchResult<W> {
         let num_unprocessed = self
             .errors
             .iter()
-            .filter(|error| matches!(error, HiveError::Unprocessed { .. }))
+            .filter(|error| matches!(error, Outcome::Unprocessed { .. }))
             .count();
         if num_unprocessed == 0 {
             return Vec::new();
@@ -62,7 +62,7 @@ impl<W: Worker> BatchResult<W> {
         );
         let mut unprocessed = Vec::with_capacity(num_unprocessed);
         for error in errors {
-            if let HiveError::Unprocessed(input) = error {
+            if let Outcome::Unprocessed { input, .. } = error {
                 unprocessed.push(input);
             } else {
                 self.errors.push(error)
@@ -80,8 +80,9 @@ impl<W: Worker> BatchResult<W> {
     }
 
     /// Returns a `std::result::Result`: `Ok(Vec<W::Output>)` if there are no errors, otherwise
-    /// `Err(Vec<W::Error>)`. If `drop_unprocessed` is `true`, unprocessed inputs are discarded,
-    /// otherwise they cause this method to panic.
+    /// `Err(Vec<W::Error>)`. If there are any `Outcome::Panic` variants, resumes unwinding the
+    /// first panic. If `drop_unprocessed` is `true`, unprocessed inputs are discarded, otherwise
+    /// they cause this method to panic.
     pub fn ok_or_unwrap_errors(
         self,
         drop_unprocessed: bool,
@@ -90,10 +91,9 @@ impl<W: Worker> BatchResult<W> {
             let failures = self
                 .errors
                 .into_iter()
-                .filter_map(|error| match error.unwrap() {
-                    Ok(_) if drop_unprocessed => None,
-                    Ok(_) => panic!(),
-                    Err(error) => Some(error),
+                .filter_map(|error| match error {
+                    Outcome::Unprocessed { .. } if drop_unprocessed => None,
+                    outcome => Some(outcome.into_error()),
                 })
                 .collect();
             Err(failures)
@@ -102,17 +102,17 @@ impl<W: Worker> BatchResult<W> {
         }
     }
 
-    pub fn into_parts(self) -> (Vec<W::Output>, Vec<HiveError<W>>) {
+    pub fn into_parts(self) -> (Vec<W::Output>, Vec<Outcome<W>>) {
         (self.successes, self.errors)
     }
 }
 
-impl<W: Worker, I: IntoIterator<Item = TaskResult<W>>> From<I> for BatchResult<W> {
+impl<W: Worker, I: IntoIterator<Item = Outcome<W>>> From<I> for BatchResult<W> {
     fn from(value: I) -> Self {
-        let (successes, failures) = value.into_iter().partition::<Vec<_>, _>(Result::is_ok);
-        BatchResult::new(
-            successes.into_iter().map(Result::ok).flatten().collect(),
-            failures.into_iter().map(Result::err).flatten().collect(),
-        )
+        let (successes, failures) = value
+            .into_iter()
+            .partition::<Vec<_>, _>(Outcome::is_success);
+        let successes = successes.into_iter().map(Outcome::unwrap).collect();
+        BatchResult::new(successes, failures)
     }
 }

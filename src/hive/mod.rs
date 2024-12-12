@@ -2,9 +2,8 @@
 mod affinity;
 mod batch;
 mod builder;
-mod error;
 mod husk;
-mod outcome;
+mod result;
 //mod scoped;
 mod shared;
 mod spawn;
@@ -19,26 +18,20 @@ pub use builder::{
     reset_defaults, set_max_retries_default, set_num_threads_default, set_num_threads_default_all,
     set_retries_default_disabled, set_retry_factor_default, Builder,
 };
-pub use error::{HiveError, TaskResult, TaskResultIteratorExt};
 pub use husk::Husk;
-pub use outcome::{Outcome, OutcomeIteratorExt};
+pub use result::{Outcome, OutcomeIteratorExt, TaskResult};
 pub use stored::Stored;
 pub use thread::Hive;
 
 pub(self) use shared::{OutcomeSender, Shared, Task, TaskSender};
 
 pub mod prelude {
-    pub use super::{
-        BatchResult, Builder, Hive, HiveError, Husk, Outcome, OutcomeIteratorExt, Stored,
-        TaskResultIteratorExt,
-    };
+    pub use super::{BatchResult, Builder, Hive, Husk, Outcome, OutcomeIteratorExt, Stored};
 }
 
 #[cfg(test)]
 mod test {
-    use super::{
-        Builder, Hive, HiveError, Outcome, OutcomeIteratorExt, Stored, TaskResultIteratorExt,
-    };
+    use super::{Builder, Hive, Outcome, OutcomeIteratorExt, Stored};
     use crate::channel::{Message, ReceiverExt};
     use crate::task::{ApplyError, Context, DefaultQueen, Worker, WorkerResult};
     use crate::util::{Caller, OnceCaller, RefCaller, RetryCaller, Thunk, ThunkWorker};
@@ -337,7 +330,7 @@ mod test {
             .retry_factor(time::Duration::from_secs(1))
             .build_with(RetryCaller::of(echo_time));
 
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert_eq!(v.unwrap().len(), 10);
     }
 
@@ -363,19 +356,15 @@ mod test {
             .max_retries(3)
             .build_with(RetryCaller::of(sometimes_fail));
 
-        let (success, retry_failed, not_retried) =
-            hive.swarm(0..10)
-                .fold(
-                    (0, 0, 0),
-                    |(success, retry_failed, not_retried), result| match result {
-                        Ok(_) => (success + 1, retry_failed, not_retried),
-                        Err(HiveError::MaxRetriesAttempted(_)) => {
-                            (success, retry_failed + 1, not_retried)
-                        }
-                        Err(HiveError::Failed(_)) => (success, retry_failed, not_retried + 1),
-                        _ => unreachable!(),
-                    },
-                );
+        let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
+            (0, 0, 0),
+            |(success, retry_failed, not_retried), outcome| match outcome {
+                Outcome::Success { .. } => (success + 1, retry_failed, not_retried),
+                Outcome::MaxRetriesAttempted { .. } => (success, retry_failed + 1, not_retried),
+                Outcome::Failure { .. } => (success, retry_failed, not_retried + 1),
+                _ => unreachable!(),
+            },
+        );
 
         assert_eq!(success, 4);
         assert_eq!(retry_failed, 3);
@@ -388,8 +377,7 @@ mod test {
             .all_threads()
             .no_retries()
             .build_with(RetryCaller::of(echo_time));
-
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert!(matches!(v, Err(_)));
     }
 
@@ -551,7 +539,7 @@ mod test {
         hive1.join();
         error("pool1.join() complete\n".into());
         assert_eq!(
-            rx.into_unordered_results().into_outputs().sum::<u32>(),
+            rx.into_iter().map(Outcome::unwrap).sum::<u32>(),
             1 + 2 + 3 + 4 + 5 + 6 + 7
         );
     }
@@ -600,7 +588,7 @@ mod test {
                     i
                 })
             }))
-            .into_outputs()
+            .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
@@ -617,7 +605,7 @@ mod test {
                     i
                 })
             }))
-            .into_outputs()
+            .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
     }
@@ -688,7 +676,7 @@ mod test {
                     i
                 })
             }))
-            .into_outputs()
+            .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
@@ -705,7 +693,7 @@ mod test {
                     i
                 })
             }))
-            .into_outputs()
+            .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
     }
@@ -981,15 +969,15 @@ mod test {
         let mut outputs1 = husk1
             .take_all()
             .into_iter()
-            .into_results()
-            .into_outputs()
+            .into_ordered()
+            .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs1.sort();
         let mut outputs2 = husk2
             .take_all()
             .into_iter()
-            .into_results()
-            .into_outputs()
+            .into_ordered()
+            .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs2.sort();
         assert_eq!(outputs1, outputs2);
@@ -1006,8 +994,8 @@ mod test {
         let (_, outcomes3) = husk3.into_parts();
         let mut outputs3 = outcomes3
             .into_iter()
-            .into_results()
-            .into_outputs()
+            .into_ordered()
+            .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs3.sort();
         assert_eq!(outputs1, outputs3);

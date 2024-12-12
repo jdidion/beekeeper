@@ -1,8 +1,9 @@
+//! Implementation of `Hive` that uses regular (i.e., non-scoped) threads.
 #[cfg(feature = "affinity")]
 use crate::hive::Cores;
 use crate::hive::{
-    self, spawn, BatchResult, Husk, Outcome, OutcomeIteratorExt, OutcomeSender, Shared, Stored,
-    TaskResult, TaskSender,
+    outcome_channel, spawn, BatchResult, Husk, Outcome, OutcomeIteratorExt, OutcomeSender, Shared,
+    Stored, TaskSender,
 };
 use crate::task::{Queen, Worker};
 use crossbeam_utils::Backoff;
@@ -71,10 +72,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// Creates a channel to send the input and receive the outcome. Panics if the channel hangs
     /// up before the outcome is received.
-    pub fn try_apply(&self, input: W::Input) -> TaskResult<W> {
-        let (tx, rx) = hive::outcome_channel();
+    pub fn try_apply(&self, input: W::Input) -> Outcome<W> {
+        let (tx, rx) = outcome_channel();
         self.send_one(input, Some(tx));
-        rx.recv().expect("channel hung up unexpectedly").into()
+        rx.recv().expect("channel hung up unexpectedly")
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its index. The `Outcome` of the
@@ -124,14 +125,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// `Outcome`s in the same order as the inputs.
     ///
     /// This method is more efficient than `map_iter` when the input is an `ExactSizeIterator`.
-    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = TaskResult<W>>
+    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
     {
-        let (tx, rx) = hive::outcome_channel();
+        let (tx, rx) = outcome_channel();
         let num_tasks = self.send_batch(batch, Some(tx)).len();
-        rx.take_results(num_tasks)
+        rx.take_ordered(num_tasks)
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
@@ -142,14 +143,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// This method is more efficient than `map_unordered` when the input is an
     /// `ExactSizeIterator`.
-    pub fn swarm_unordered<T>(&self, batch: T) -> impl Iterator<Item = TaskResult<W>>
+    pub fn swarm_unordered<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
     {
-        let (tx, rx) = hive::outcome_channel();
+        let (tx, rx) = outcome_channel();
         let num_tasks = self.send_batch(batch, Some(tx)).len();
-        rx.into_iter().take(num_tasks).map(Outcome::into)
+        rx.into_iter().take(num_tasks)
     }
 
     /// Sends a `batch`` of inputs to the `Hive` for processing, and returns a range of indices.
@@ -183,13 +184,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     pub fn map(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = TaskResult<W>> {
-        let (tx, rx) = hive::outcome_channel();
+    ) -> impl Iterator<Item = Outcome<W>> {
+        let (tx, rx) = outcome_channel();
         let num_tasks = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
             .count();
-        rx.take_results(num_tasks)
+        rx.take_ordered(num_tasks)
     }
 
     /// Iterates over `inputs`, sends each one to the `Hive` for processing, and returns an
@@ -199,13 +200,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     pub fn map_unordered(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = TaskResult<W>> {
-        let (tx, rx) = hive::outcome_channel();
+    ) -> impl Iterator<Item = Outcome<W>> {
+        let (tx, rx) = outcome_channel();
         let num_tasks = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
             .count();
-        rx.into_iter().take(num_tasks).map(Outcome::into)
+        rx.into_iter().take(num_tasks)
     }
 
     /// Iterates over `inputs` and sends each one to the `Hive` for processing. Returns a `Vec` of
@@ -247,7 +248,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     where
         F: FnMut(&mut St, T) -> W::Input,
     {
-        let (tx, rx) = hive::outcome_channel();
+        let (tx, rx) = outcome_channel();
         let (indices, fold_value) = self.scan_send(items, tx, init, f);
         let mut outcomes: Vec<_> = rx.into_iter().take(indices.len()).collect();
         outcomes.sort();
@@ -267,7 +268,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     where
         F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
-        let (tx, rx) = hive::outcome_channel();
+        let (tx, rx) = outcome_channel();
         let (indices, fold_value) = self.try_scan_send(items, tx, init, f)?;
         let mut outcomes: Vec<_> = rx.into_iter().take(indices.len()).collect();
         outcomes.sort();

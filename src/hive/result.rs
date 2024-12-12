@@ -1,7 +1,8 @@
-use crate::hive::{HiveError, TaskResult};
 use crate::task::{ApplyError, Worker, WorkerResult};
 use crate::Panic;
 use std::{cmp::Ordering, collections::HashMap, fmt::Debug, panic};
+
+pub type TaskResult<W> = Result<<W as Worker>::Output, <W as Worker>::Error>;
 
 /// The possible outcomes of a task execution. Each outcome includes the index of the task that
 /// produced it.
@@ -47,14 +48,17 @@ impl<W: Worker> Outcome<W> {
                 error,
                 index,
             },
-            Err(ApplyError::Cancelled { input } | ApplyError::Retryable { input, .. }) => {
-                Self::Unprocessed { input, index }
-            }
+            Err(ApplyError::Retryable { input, error, .. }) => Self::Failure {
+                input: Some(input),
+                error,
+                index,
+            },
             Err(ApplyError::NotRetryable { input, error }) => Self::Failure {
                 input,
                 error,
                 index,
             },
+            Err(ApplyError::Cancelled { input }) => Self::Unprocessed { input, index },
             Err(ApplyError::Panic { input, payload }) => Self::Panic {
                 input,
                 payload,
@@ -79,11 +83,23 @@ impl<W: Worker> Outcome<W> {
         }
     }
 
-    /// Returns the value of this `Success` outcome. Panics if this is not a `Success` outcome.
+    /// Consumes this `Outcome` and returns the value of this `Success` outcome. Panics if this is
+    /// not a `Success` outcome.
     pub fn unwrap(self) -> W::Output {
         match self {
             Outcome::Success { value, .. } => value,
             _ => panic!("not a Success outcome"),
+        }
+    }
+
+    /// Consumes this `Outcome` and returns the wrapped error. Panics if this `Outcome` is not an
+    /// error (i.e., it's a `Success` or `Unprocessed` outcome).
+    pub fn into_error(self) -> W::Error {
+        match self {
+            Outcome::Failure { error, .. } | Outcome::MaxRetriesAttempted { error, .. } => error,
+            Outcome::Success { .. } => panic!("not an error outcome"),
+            Outcome::Unprocessed { .. } => panic!("unprocessed input"),
+            Outcome::Panic { payload, .. } => payload.resume(),
         }
     }
 }
@@ -108,16 +124,17 @@ impl<W: Worker> Ord for Outcome<W> {
     }
 }
 
+/// Consumes this `Outcome` and depending on the variant:
+/// * Returns `Ok(W::Input)` if this is a `Success` outcome,
+/// * Returns `Err(W::Error)` if this is a `Failure` or `MaxRetriesAttempted` outcome,
+/// * Panics if this is an `Unprocessed` outcome
+/// * Resumes unwinding if this is a `Panic` outcome
 impl<W: Worker> From<Outcome<W>> for TaskResult<W> {
     fn from(value: Outcome<W>) -> TaskResult<W> {
-        match value {
-            Outcome::Success { value, .. } => Ok(value),
-            Outcome::Failure { error, .. } => Err(HiveError::Failed(error)),
-            Outcome::MaxRetriesAttempted { error, .. } => {
-                Err(HiveError::MaxRetriesAttempted(error))
-            }
-            Outcome::Unprocessed { input: value, .. } => Err(HiveError::Unprocessed(value)),
-            Outcome::Panic { payload, .. } => Err(HiveError::Panic(payload)),
+        if let Outcome::Success { value, .. } = value {
+            Ok(value)
+        } else {
+            Err(value.into_error())
         }
     }
 }
@@ -201,24 +218,23 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
 }
 
 pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized {
-    /// Consumes this iterator and returns an ordered iterator over `TaskResult`s.
-    fn into_results(self) -> impl Iterator<Item = TaskResult<W>>
+    fn into_ordered(self) -> impl Iterator<Item = Outcome<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self).map(Outcome::into)
+        OutcomeIterator::new(self)
     }
 
     /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
-    fn take_results(self, n: usize) -> impl Iterator<Item = TaskResult<W>>
+    fn take_ordered(self, n: usize) -> impl Iterator<Item = Outcome<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::with_limit(self, n).map(Outcome::into)
+        OutcomeIterator::with_limit(self, n)
     }
 
     /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
-    fn into_unordered_results(self) -> impl Iterator<Item = TaskResult<W>>
+    fn into_results(self) -> impl Iterator<Item = TaskResult<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
@@ -227,11 +243,60 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 
     /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
     /// `TaskResult`s.
-    fn take_unordered_results(self, n: usize) -> impl Iterator<Item = TaskResult<W>>
+    fn take_results(self, n: usize) -> impl Iterator<Item = TaskResult<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
         self.into_iter().map(Outcome::into).take(n)
+    }
+
+    /// Consumes this iterator and returns an ordered iterator over `TaskResult`s.
+    fn into_ordered_results(self) -> impl Iterator<Item = TaskResult<W>>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        OutcomeIterator::new(self).map(Outcome::into)
+    }
+
+    /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
+    fn take_ordered_results(self, n: usize) -> impl Iterator<Item = TaskResult<W>>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        OutcomeIterator::with_limit(self, n).map(Outcome::into)
+    }
+
+    /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
+    fn into_outputs(self) -> impl Iterator<Item = W::Output>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        self.into_iter().map(Outcome::unwrap)
+    }
+
+    /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
+    /// output values.
+    fn take_outputs(self, n: usize) -> impl Iterator<Item = W::Output>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        self.into_iter().map(Outcome::unwrap).take(n)
+    }
+
+    /// Consumes this iterator and returns an ordered iterator over output values.
+    fn into_ordered_outputs(self) -> impl Iterator<Item = W::Output>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        OutcomeIterator::new(self).map(Outcome::unwrap)
+    }
+
+    /// Consumes this iterator and returns an ordered iterator over a maximum of `n` output values.
+    fn take_ordered_outputs(self, n: usize) -> impl Iterator<Item = W::Output>
+    where
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        OutcomeIterator::with_limit(self, n).map(Outcome::unwrap)
     }
 }
 
