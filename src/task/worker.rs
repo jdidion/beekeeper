@@ -1,4 +1,4 @@
-use crate::task::Context;
+use crate::task::{ApplyError, Context};
 use crate::Panic;
 use std::fmt::Debug;
 
@@ -6,26 +6,6 @@ use std::fmt::Debug;
 /// `W::Error` respectively.
 pub type WorkerError<W> = ApplyError<<W as Worker>::Input, <W as Worker>::Error>;
 pub type WorkerResult<W> = Result<<W as Worker>::Output, WorkerError<W>>;
-
-/// Error that can result from applying a `Worker`'s function to an input.
-#[derive(thiserror::Error, Debug)]
-pub enum ApplyError<I, E> {
-    /// The task was cancelled before it completed.
-    #[error("Task was cancelled")]
-    Cancelled { input: I },
-    /// The task failed due to a (possibly) transient error and can be retried.
-    #[error("Error is retryable")]
-    Retryable { input: I, error: E },
-    /// The task failed due to a fatal error that cannot be retried.
-    #[error("Error is not retryable")]
-    NotRetryable { input: Option<I>, error: E },
-    /// The task panicked.
-    #[error("Task panicked")]
-    Panic {
-        input: Option<I>,
-        payload: Panic<String>,
-    },
-}
 
 /// A trait for stateful, fallible, idempotent functions.
 pub trait Worker: Debug + Sized + 'static {
@@ -68,10 +48,85 @@ pub trait Worker: Debug + Sized + 'static {
     }
 }
 
+/// Alias for an `ApplyRefError` whose `I`nput and `E`rror paramters are taken from `W::Input` and
+/// `W::Error` respectively.
+pub type RefWorkerError<W> = ApplyRefError<<W as RefWorker>::Error>;
+pub type RefWorkerResult<W> = Result<<W as RefWorker>::Output, RefWorkerError<W>>;
+
+/// Error that can result from applying a `RefWorker`'s function to an input.
+#[derive(thiserror::Error, Debug)]
+pub enum ApplyRefError<E> {
+    /// The task was cancelled before it completed.
+    #[error("Task was cancelled")]
+    Cancelled,
+    /// The task failed due to a (possibly) transient error and can be retried.
+    #[error("Error is retryable")]
+    Retryable(E),
+    /// The task failed due to a fatal error that cannot be retried.
+    #[error("Error is not retryable")]
+    NotRetryable(E),
+}
+
+impl<E> ApplyRefError<E> {
+    fn into_apply_error<I>(self, input: I) -> ApplyError<I, E> {
+        match self {
+            Self::Cancelled => ApplyError::Cancelled { input },
+            Self::Retryable(error) => ApplyError::Retryable { input, error },
+            Self::NotRetryable(error) => ApplyError::NotRetryable {
+                input: Some(input),
+                error,
+            },
+        }
+    }
+}
+
+impl<E> From<E> for ApplyRefError<E> {
+    fn from(e: E) -> Self {
+        ApplyRefError::NotRetryable(e)
+    }
+}
+
+/// A trait for stateful, fallible, idempotent functions that take a reference to their input.
+pub trait RefWorker: Debug + Sized + 'static {
+    /// The type of the input to this funciton.
+    type Input: Send;
+    /// The type of the output from this function.
+    type Output: Send;
+    /// The type of error produced by this function.
+    type Error: Send + Debug;
+
+    fn apply_ref(&mut self, _: &Self::Input, _: &Context) -> RefWorkerResult<Self>;
+}
+
+/// Blanket implementation of `Worker` for `RefWorker` that calls `apply_ref` and catches any
+/// panic. This enables the `input` to be preserved on panic, whereas it is lost when implementing
+/// `Worker` directly (without manual panic handling).
+impl<I, O, E, T: RefWorker<Input = I, Output = O, Error = E>> Worker for T
+where
+    I: Send,
+    O: Send,
+    E: Send + Debug,
+{
+    type Input = I;
+    type Output = O;
+    type Error = E;
+
+    fn apply(&mut self, input: Self::Input, ctx: &Context) -> WorkerResult<Self> {
+        match Panic::try_call(None, || self.apply_ref(&input, ctx)) {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(error)) => Err(error.into_apply_error(input)),
+            Err(payload) => Err(ApplyError::Panic {
+                input: Some(input),
+                payload,
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Worker, WorkerResult};
-    use crate::task::Context;
+    use super::{ApplyRefError, RefWorker, RefWorkerResult, Worker, WorkerResult};
+    use crate::task::{ApplyError, Context};
 
     #[derive(Debug)]
     struct MyWorker;
@@ -98,5 +153,40 @@ mod tests {
                 .into_iter()
                 .sum()
         );
+    }
+
+    #[derive(Debug)]
+    struct MyRefWorker;
+
+    impl RefWorker for MyRefWorker {
+        type Input = u8;
+        type Output = u8;
+        type Error = ();
+
+        fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
+            match *input {
+                0 => Err(ApplyRefError::Retryable(())),
+                1 => Err(ApplyRefError::NotRetryable(())),
+                2 => Err(ApplyRefError::Cancelled),
+                i => Ok(i + 1),
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply() {
+        let mut worker = MyRefWorker;
+        let ctx = Context::empty();
+        assert!(matches!(worker.apply(5, &ctx), Ok(6)));
+    }
+
+    #[test]
+    fn test_apply_fail() {
+        let mut worker = MyRefWorker;
+        let ctx = Context::empty();
+        assert!(matches!(
+            worker.apply(0, &ctx),
+            Err(ApplyError::Retryable { input: 0, .. })
+        ));
     }
 }
