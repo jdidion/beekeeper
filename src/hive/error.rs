@@ -2,8 +2,7 @@ use crate::task::Worker;
 use crate::Panic;
 use std::fmt::Debug;
 
-pub type HiveResult<T, W> = Result<T, HiveError<W>>;
-pub type TaskResult<W> = HiveResult<<W as Worker>::Output, W>;
+pub type TaskResult<W> = Result<<W as Worker>::Output, HiveError<W>>;
 
 /// The possible errors that can occur during task execution.
 #[derive(thiserror::Error, Debug)]
@@ -18,22 +17,17 @@ pub enum HiveError<W: Worker> {
     Panic(Panic<String>),
 }
 
-pub trait HiveResultExt<T, W: Worker> {
+impl<W: Worker> HiveError<W> {
     /// Depending on variant of `self`:
-    /// * Returns `Ok(t)` if the result is `Ok(t)`
-    /// * Returns `Err(e)` if the result is `Err(Error::Failed(e))`
-    /// * Resumes unwinding if the result is `Err(Error::Panic(ctx))`
-    /// * Otherwise panics
-    fn ok_or_unwrap_error(self) -> Result<T, W::Error>;
-}
-
-impl<T, W: Worker> HiveResultExt<T, W> for HiveResult<T, W> {
-    fn ok_or_unwrap_error(self) -> Result<T, W::Error> {
+    /// * Returns `Ok(input)` if the result is `Unprocessed(input)`
+    /// * Returns `Err(error)` if the result is `Error::Failed(error)` or
+    /// `Error::MaxRetriesAttempted(error)`
+    /// * Resumes unwinding if the result is `Error::Panic`
+    pub fn unwrap(self) -> Result<W::Input, W::Error> {
         match self {
-            Ok(value) => Ok(value),
-            Err(HiveError::Failed(error)) => Err(error),
-            Err(HiveError::Panic(panic)) => panic.resume(),
-            Err(_) => panic!("unexpected error variant"),
+            HiveError::Unprocessed(input) => Ok(input),
+            HiveError::Failed(error) | HiveError::MaxRetriesAttempted(error) => Err(error),
+            HiveError::Panic(panic) => panic.resume(),
         }
     }
 }

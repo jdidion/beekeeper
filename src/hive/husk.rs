@@ -1,6 +1,6 @@
 #[cfg(feature = "affinity")]
 use crate::hive::Cores;
-use crate::hive::{Builder, Hive, HiveResult, Outcome, OutcomeSender, Stored};
+use crate::hive::{BatchResult, Builder, Hive, Outcome, OutcomeSender, Stored};
 use crate::task::{Queen, Worker};
 use std::{
     collections::HashMap,
@@ -94,12 +94,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Converts all `Outcome`s into `Result`s and returns a `Vec` with the stored values, or
     /// an error if there were any stored failure `Outcome`s.
-    pub fn into_result(self) -> HiveResult<Vec<W::Output>, W> {
-        self.outcomes
-            .into_values()
-            .into_iter()
-            .map(Outcome::into)
-            .collect()
+    pub fn into_result(self) -> BatchResult<W> {
+        self.outcomes.into_values().map(Outcome::into).into()
     }
 
     /// Consumes this `Husk` and returns the `Queen` and `Outcome`s.
@@ -184,7 +180,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Stored<W> for Husk<W, Q> {
 #[cfg(test)]
 mod tests {
     use crate::hive::{
-        outcome_channel, Builder, HiveResultExt, OutcomeIteratorExt, Stored, TaskResultIteratorExt,
+        outcome_channel, Builder, OutcomeIteratorExt, Stored, TaskResultIteratorExt,
     };
     use crate::util::{PunkWorker, Thunk, ThunkWorker};
 
@@ -280,6 +276,6 @@ mod tests {
         );
         hive.join();
         let result = hive.into_husk().into_result();
-        let _ = result.ok_or_unwrap_error();
+        let _ = result.ok_or_unwrap_errors(true);
     }
 }

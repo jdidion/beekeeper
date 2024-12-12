@@ -1,12 +1,7 @@
 use crate::hive::{HiveError, TaskResult};
 use crate::task::{ApplyError, Worker, WorkerResult};
 use crate::Panic;
-use std::{
-    cmp::Ordering,
-    collections::HashMap,
-    fmt::Debug,
-    panic,
-};
+use std::{cmp::Ordering, collections::HashMap, fmt::Debug, panic};
 
 /// The possible outcomes of a task execution. Each outcome includes the index of the task that
 /// produced it.
@@ -40,22 +35,11 @@ pub enum Outcome<W: Worker> {
 }
 
 impl<W: Worker> Outcome<W> {
-    /// Returns the index of the task that produced this outcome.
-    pub fn index(&self) -> usize {
-        match self {
-            Outcome::Success { index, .. }
-            | Outcome::Failure { index, .. }
-            | Outcome::MaxRetriesAttempted { index, .. }
-            | Outcome::Unprocessed { index, .. }
-            | Outcome::Panic { index, .. } => *index,
-        }
-    }
-
     pub(crate) fn from_worker_result(
         result: WorkerResult<W>,
         index: usize,
         retryable: bool,
-    ) -> Outcome<W> {
+    ) -> Self {
         match result {
             Ok(value) => Self::Success { index, value },
             Err(ApplyError::Retryable { input, error }) if retryable => Self::MaxRetriesAttempted {
@@ -76,6 +60,30 @@ impl<W: Worker> Outcome<W> {
                 payload,
                 index,
             },
+        }
+    }
+
+    /// Returns `true` if this is a `Success` outcome.
+    pub fn is_success(&self) -> bool {
+        matches!(self, Outcome::Success { .. })
+    }
+
+    /// Returns the index of the task that produced this outcome.
+    pub fn index(&self) -> usize {
+        match self {
+            Outcome::Success { index, .. }
+            | Outcome::Failure { index, .. }
+            | Outcome::MaxRetriesAttempted { index, .. }
+            | Outcome::Unprocessed { index, .. }
+            | Outcome::Panic { index, .. } => *index,
+        }
+    }
+
+    /// Returns the value of this `Success` outcome. Panics if this is not a `Success` outcome.
+    pub fn unwrap(self) -> W::Output {
+        match self {
+            Outcome::Success { value, .. } => value,
+            _ => panic!("not a Success outcome"),
         }
     }
 }

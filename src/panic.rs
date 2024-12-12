@@ -29,6 +29,12 @@ impl<T: Send + Debug + Eq> Panic<T> {
             .map_err(|payload| Self { payload, detail })
     }
 
+    #[cfg(test)]
+    pub(crate) fn new(msg: &str, detail: Option<T>) -> Self {
+        let payload = panic::catch_unwind(|| panic!("{}", msg)).err().unwrap();
+        Self { payload, detail }
+    }
+
     /// Returns the payload of the panic.
     pub fn payload(&self) -> &PanicPayload {
         &self.payload

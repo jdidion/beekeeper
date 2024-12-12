@@ -1,8 +1,8 @@
 #[cfg(feature = "affinity")]
 use crate::hive::Cores;
 use crate::hive::{
-    self, spawn, HiveError, HiveResult, Husk, Outcome, OutcomeIteratorExt, OutcomeSender, Shared,
-    Stored, TaskResult, TaskSender,
+    self, spawn, BatchResult, Husk, Outcome, OutcomeIteratorExt, OutcomeSender, Shared, Stored,
+    TaskResult, TaskSender,
 };
 use crate::task::{Queen, Worker};
 use crossbeam_utils::Backoff;
@@ -243,7 +243,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         items: impl IntoIterator<Item = T>,
         init: St,
         f: F,
-    ) -> HiveResult<(Vec<W::Output>, St), W>
+    ) -> (BatchResult<W>, St)
     where
         F: FnMut(&mut St, T) -> W::Input,
     {
@@ -251,37 +251,27 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         let (indices, fold_value) = self.scan_send(items, tx, init, f);
         let mut outcomes: Vec<_> = rx.into_iter().take(indices.len()).collect();
         outcomes.sort();
-        let task_outputs = outcomes
-            .into_iter()
-            .map(Outcome::into)
-            .collect::<HiveResult<Vec<_>, _>>()?;
-        Ok((task_outputs, fold_value))
+        (outcomes.into_iter().map(Outcome::into).into(), fold_value)
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
     /// or an error. This function returns a `Vec` of the outputs in the order they were
     /// submitted and the final state value, or an error if any calls to `f` resulted in an error.
-    pub fn try_scan<St, T, F>(
+    pub fn try_scan<St, T, E, F>(
         &self,
         items: impl IntoIterator<Item = T>,
         init: St,
         f: F,
-    ) -> HiveResult<(Vec<W::Output>, St), W>
+    ) -> Result<(BatchResult<W>, St), E>
     where
-        F: FnMut(&mut St, T) -> Result<W::Input, W::Error>,
+        F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
         let (tx, rx) = hive::outcome_channel();
-        let (indices, fold_value) = self
-            .try_scan_send(items, tx, init, f)
-            .map_err(HiveError::Failed)?;
+        let (indices, fold_value) = self.try_scan_send(items, tx, init, f)?;
         let mut outcomes: Vec<_> = rx.into_iter().take(indices.len()).collect();
         outcomes.sort();
-        let task_outputs = outcomes
-            .into_iter()
-            .map(Outcome::into)
-            .collect::<HiveResult<Vec<_>, _>>()?;
-        Ok((task_outputs, fold_value))
+        Ok((outcomes.into_iter().map(Outcome::into).into(), fold_value))
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
@@ -312,15 +302,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// or an error. The outputs are sent to `tx` in the order they become available. This
     /// function returns a `Vec` of the task indicies and final state value, or an error if any
     /// calls to `f` resulted in an error.
-    pub fn try_scan_send<St, T, F>(
+    pub fn try_scan_send<St, T, E, F>(
         &self,
         inputs: impl IntoIterator<Item = T>,
         tx: OutcomeSender<W>,
         init: St,
         mut f: F,
-    ) -> Result<(Vec<usize>, St), W::Error>
+    ) -> Result<(Vec<usize>, St), E>
     where
-        F: FnMut(&mut St, T) -> Result<W::Input, W::Error>,
+        F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
         inputs
             .into_iter()

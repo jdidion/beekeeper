@@ -1,5 +1,6 @@
 #[cfg(feature = "affinity")]
 mod affinity;
+mod batch;
 mod builder;
 mod error;
 mod husk;
@@ -13,11 +14,12 @@ mod thread;
 pub use crate::channel::channel as outcome_channel;
 #[cfg(feature = "affinity")]
 pub use affinity::{CoreId, Cores};
+pub use batch::BatchResult;
 pub use builder::{
     reset_defaults, set_max_retries_default, set_num_threads_default, set_num_threads_default_all,
     set_retries_default_disabled, set_retry_factor_default, Builder,
 };
-pub use error::{HiveError, HiveResult, HiveResultExt, TaskResult, TaskResultIteratorExt};
+pub use error::{HiveError, TaskResult, TaskResultIteratorExt};
 pub use husk::Husk;
 pub use outcome::{Outcome, OutcomeIteratorExt};
 pub use stored::Stored;
@@ -27,7 +29,7 @@ pub(self) use shared::{OutcomeSender, Shared, Task, TaskSender};
 
 pub mod prelude {
     pub use super::{
-        Builder, Hive, HiveError, HiveResultExt, Husk, Outcome, OutcomeIteratorExt, Stored,
+        BatchResult, Builder, Hive, HiveError, Husk, Outcome, OutcomeIteratorExt, Stored,
         TaskResultIteratorExt,
     };
 }
@@ -666,7 +668,7 @@ mod test {
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
             .into_iter()
-            .map(|i| hive.remove_success(i).unwrap())
+            .map(|i| (i, hive.remove_success(i).unwrap()))
             .collect();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
         indices.sort();
@@ -754,7 +756,7 @@ mod test {
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
             .into_iter()
-            .map(|i| hive.remove_success(i).unwrap())
+            .map(|i| (i, hive.remove_success(i).unwrap()))
             .collect();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
         indices.sort();
@@ -767,12 +769,11 @@ mod test {
         let hive = Builder::new()
             .num_threads(4)
             .build_with(Caller::of(|i| i * i));
-        let (outputs, state) = hive
-            .scan(0..10, 0, |acc, i| {
-                *acc += i;
-                *acc
-            })
-            .unwrap();
+        let (outputs, state) = hive.scan(0..10, 0, |acc, i| {
+            *acc += i;
+            *acc
+        });
+        let outputs = outputs.unwrap();
         assert_eq!(outputs.len(), 10);
         assert_eq!(state, 45);
         assert_eq!(
@@ -831,7 +832,7 @@ mod test {
         let (mut indices, state) = hive
             .try_scan_send(0..10, tx, 0, |acc, i| {
                 *acc += i;
-                Ok(*acc)
+                Ok::<_, String>(*acc)
             })
             .unwrap();
         assert_eq!(indices.len(), 10);
@@ -864,7 +865,7 @@ mod test {
     fn test_try_scan_send_fail() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(OnceCaller::of(|i: i32| Ok(i * i)));
+            .build_with(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)));
         let (tx, _) = super::outcome_channel();
         hive.try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
             .unwrap();
@@ -888,7 +889,7 @@ mod test {
         let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
             .clone()
             .into_iter()
-            .map(|i| hive.remove_success(i).unwrap())
+            .map(|i| (i, hive.remove_success(i).unwrap()))
             .unzip();
         assert_eq!(
             values,
@@ -925,7 +926,7 @@ mod test {
         let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
             .clone()
             .into_iter()
-            .map(|i| hive.remove_success(i).unwrap())
+            .map(|i| (i, hive.remove_success(i).unwrap()))
             .unzip();
         assert_eq!(
             values,

@@ -76,3 +76,44 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ApplyRefError, RefWorker, RefWorkerResult};
+    use crate::task::{ApplyError, Context, Worker};
+
+    #[derive(Debug)]
+    struct MyWorker;
+
+    impl RefWorker for MyWorker {
+        type Input = u8;
+        type Output = u8;
+        type Error = ();
+
+        fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
+            match *input {
+                0 => Err(ApplyRefError::Retryable(())),
+                1 => Err(ApplyRefError::NotRetryable(())),
+                2 => Err(ApplyRefError::Cancelled),
+                i => Ok(i + 1),
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply() {
+        let mut worker = MyWorker;
+        let ctx = Context::empty();
+        assert!(matches!(worker.apply(5, &ctx), Ok(6)));
+    }
+
+    #[test]
+    fn test_apply_fail() {
+        let mut worker = MyWorker;
+        let ctx = Context::empty();
+        assert!(matches!(
+            worker.apply(0, &ctx),
+            Err(ApplyError::Retryable { input: 0, .. })
+        ));
+    }
+}
