@@ -35,7 +35,8 @@ use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicU32, AtomicU64, A
 use crate::task::{Context, Queen, Worker};
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
 type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
@@ -123,7 +124,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
     #[cfg(feature = "retry")]
-    has_retries: AtomicBool,
+    next_retry: RwLock<Option<Instant>>,
 }
 
 #[cfg(test)]

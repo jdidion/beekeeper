@@ -25,7 +25,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             #[cfg(feature = "retry")]
             retry_queue: Default::default(),
             #[cfg(feature = "retry")]
-            has_retries: Default::default(),
+            next_retry: Default::default(),
         }
     }
 
@@ -280,7 +280,8 @@ mod retry {
     use crate::atomic::{Atomic, AtomicNumber};
     use crate::hive::{Husk, OutcomeSender, Shared, Task};
     use crate::task::{Context, Queen, Worker};
-    use std::time::Duration;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Returns `true` if the hive is configured to retry tasks.
@@ -290,6 +291,17 @@ mod retry {
                 .get()
                 .map(|max_retries| ctx.attempt() < max_retries)
                 .unwrap_or(false)
+        }
+
+        fn update_next_retry(&self, instant: Option<Instant>) {
+            let mut next_retry = self.next_retry.write().unwrap();
+            if let Some(new_val) = instant {
+                if next_retry.map(|cur_val| new_val < cur_val).unwrap_or(true) {
+                    next_retry.replace(new_val);
+                }
+            } else {
+                next_retry.take();
+            }
         }
 
         pub fn queue_retry(
@@ -316,8 +328,8 @@ mod retry {
             let task = Task::new(input, ctx, outcome_tx);
             let mut queue = self.retry_queue.lock();
             self.queued_count.add(1);
-            self.has_retries.set(true);
-            queue.push(task, delay);
+            let available_at = queue.push(task, delay);
+            self.update_next_retry(Some(available_at));
         }
 
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
@@ -325,24 +337,35 @@ mod retry {
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
         pub fn next_task(&self) -> Option<Task<W>> {
+            // time to wait in between polling the retry queue and then the task receiver
+            const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+
             if self.is_suspended() {
-                None
-            } else {
-                self.has_retries
-                    .get()
-                    .then(|| {
-                        let mut queue = self.retry_queue.lock();
-                        queue.try_pop().inspect(|_| {
-                            self.has_retries.set(!queue.is_empty());
-                        })
-                    })
-                    .flatten()
-                    .or_else(|| self.task_rx.lock().recv().ok())
-                    .inspect(|_| {
-                        self.active_count.add(1);
-                        self.queued_count.sub(1);
-                    })
+                return None;
             }
+
+            loop {
+                let has_retry = {
+                    let next_retry = self.next_retry.read().unwrap();
+                    next_retry.is_some_and(|next_retry| next_retry <= Instant::now())
+                };
+                if has_retry {
+                    let mut queue = self.retry_queue.lock();
+                    if let Some(task) = queue.try_pop() {
+                        self.update_next_retry(queue.next_available());
+                        break Some(task);
+                    }
+                }
+                match self.task_rx.lock().recv_timeout(RECV_TIMEOUT) {
+                    Ok(task) => break Some(task),
+                    Err(RecvTimeoutError::Disconnected) => break None,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                }
+            }
+            .inspect(|_| {
+                self.active_count.add(1);
+                self.queued_count.sub(1);
+            })
         }
 
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored

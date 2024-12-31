@@ -6,13 +6,18 @@ use std::time::{Duration, Instant};
 pub struct DelayQueue<T>(BinaryHeap<Delayed<T>>);
 
 impl<T> DelayQueue<T> {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+    /// Pushes an item onto the queue. Returns the `Instant` at which the item will be available.
+    pub fn push(&mut self, item: T, delay: Duration) -> Instant {
+        let delayed = Delayed::new(item, delay);
+        let until = delayed.until;
+        self.0.push(delayed);
+        until
     }
 
-    /// Pushes an item onto the queue.
-    pub fn push(&mut self, item: T, delay: Duration) {
-        self.0.push(Delayed::new(item, delay));
+    /// Retursn the `Instant` at which the next item will be available. Returns `None` if the queue
+    /// is empty.
+    pub fn next_available(&self) -> Option<Instant> {
+        self.0.peek().map(|head| head.until)
     }
 
     /// Returns the item at the head of the queue, if one exists, and removes it.
@@ -110,7 +115,6 @@ mod tests {
         assert_eq!(queue.try_pop(), Some(3));
         assert_eq!(queue.0.len(), 0);
 
-        assert!(queue.is_empty());
         assert_eq!(queue.try_pop(), None);
     }
 
