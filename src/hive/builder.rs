@@ -1,14 +1,5 @@
-#[cfg(feature = "affinity")]
-use crate::hive::Cores;
-use crate::hive::{Hive, Shared};
+use super::{Config, Hive};
 use crate::task::{CloneQueen, DefaultQueen, Queen, Worker};
-use std::{
-    sync::{
-        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        mpsc, Arc,
-    },
-    time::Duration,
-};
 
 /// A `Builder` for a `Hive`.
 ///
@@ -19,15 +10,15 @@ use std::{
 /// * `thread_stack_size`: stack size (in bytes) for each of the threads spawned by the built
 ///   [`Hive`].
 /// * `max_retries`: maximum number of times a `Worker` will retry an [`ApplyError::Retryable`]
-///   before giving up.
+///   before giving up. Only available with feature `retry`.
 /// * `retry_factor`: `Duration` factor for exponential backoff when retrying an
-///   `ApplyError::Retryable` error.
+///   `ApplyError::Retryable` error. Only available with feature `retry`.
 /// * `affinity`: List of CPU core indicies to which the threads should be pinned. Only available
 ///   with feature `affinity`.
 ///
 /// Calling `Builder::new()` creates an unconfigured `Builder`, while calling `Builder::default()`
 /// creates a `Builder` with `num_threads`, `max_retries`, and `retry_factor` set to the global
-/// default values, which can be changed using the `drudge::hive::set_*` functions.
+/// default values, which can be changed using the `drudge::hive::set_*_default` functions.
 ///
 /// [`Hive`]: hive/struct.Hive.html
 /// [`ApplyError::Retryable`]: task/enum.ApplyError.html#variant.Retryable
@@ -45,81 +36,12 @@ use std::{
 ///     .build_with_default::<MyWorker>();
 /// ```
 #[derive(Clone)]
-pub struct Builder {
-    num_threads: Option<usize>,
-    thread_name: Option<String>,
-    thread_stack_size: Option<usize>,
-    max_retries: Option<u32>,
-    retry_factor: Option<Duration>,
-    #[cfg(feature = "affinity")]
-    affinity: Option<Cores>,
-}
-
-const DEFAULT_DEFAULT_NUM_THREADS: usize = 4;
-const DEFAULT_DEFAULT_MAX_RETRIES: u32 = 3;
-const DEFAULT_DEFAULT_RETRY_FACTOR_SECS: u64 = 1;
-
-static DEFAULT_NUM_THREADS: AtomicUsize = AtomicUsize::new(DEFAULT_DEFAULT_NUM_THREADS);
-static DEFAULT_MAX_RETRIES: AtomicU32 = AtomicU32::new(DEFAULT_DEFAULT_MAX_RETRIES);
-static DEFAULT_RETRY_FACTOR: AtomicU64 =
-    AtomicU64::new(Duration::from_secs(DEFAULT_DEFAULT_RETRY_FACTOR_SECS).as_nanos() as u64);
-
-/// Sets the number of threads a `Builder` is configured with when using `Builder::default()`.
-pub fn set_num_threads_default(num_threads: usize) {
-    DEFAULT_NUM_THREADS.store(num_threads, Ordering::SeqCst);
-}
-
-/// Sets the number of threads a `Builder` is configured with when using `Builder::default()` to
-/// the number of available CPU cores.
-pub fn set_num_threads_default_all() {
-    DEFAULT_NUM_THREADS.store(num_cpus::get(), Ordering::SeqCst);
-}
-
-/// Sets the max number of retries a `Builder` is configured with when using `Builder::default()`.
-pub fn set_max_retries_default(num_retries: u32) {
-    DEFAULT_MAX_RETRIES.store(num_retries, Ordering::SeqCst);
-}
-
-/// Sets the retry factor a `Builder` is configured with when using `Builder::default()`.
-pub fn set_retry_factor_default(retry_factor: Duration) {
-    DEFAULT_RETRY_FACTOR.store(retry_factor.as_nanos() as u64, Ordering::SeqCst);
-}
-
-/// Specifies that retries should be disabled by default when using `Builder::default()`.
-pub fn set_retries_default_disabled() {
-    set_max_retries_default(0);
-}
-
-/// Resets all builder defaults to their original values.
-pub fn reset_defaults() {
-    DEFAULT_NUM_THREADS.store(DEFAULT_DEFAULT_NUM_THREADS, Ordering::SeqCst);
-    DEFAULT_MAX_RETRIES.store(DEFAULT_DEFAULT_MAX_RETRIES, Ordering::SeqCst);
-    DEFAULT_RETRY_FACTOR.store(
-        Duration::from_secs(DEFAULT_DEFAULT_RETRY_FACTOR_SECS).as_nanos() as u64,
-        Ordering::SeqCst,
-    );
-}
+pub struct Builder(Config);
 
 impl Builder {
-    fn with_defaults(
-        num_threads: Option<usize>,
-        max_retries: Option<u32>,
-        retry_factor: Option<Duration>,
-    ) -> Self {
-        Self {
-            num_threads,
-            thread_name: None,
-            thread_stack_size: None,
-            max_retries,
-            retry_factor,
-            #[cfg(feature = "affinity")]
-            affinity: None,
-        }
-    }
-
     /// Returns a new `Builder` with no options configured.
     pub fn new() -> Self {
-        Self::with_defaults(None, None, None)
+        Self(Config::empty())
     }
 
     /// Sets the maximum number of worker threads that will be alive at any given moment in the
@@ -150,9 +72,9 @@ impl Builder {
     /// ```
     pub fn num_threads(mut self, num: usize) -> Self {
         let _ = if num == 0 {
-            self.num_threads.take()
+            self.0.num_threads.set(None)
         } else {
-            self.num_threads.replace(num)
+            self.0.num_threads.set(Some(num))
         };
         self
     }
@@ -182,7 +104,7 @@ impl Builder {
     /// # }
     /// ```
     pub fn all_threads(mut self) -> Self {
-        let _ = self.num_threads.replace(num_cpus::get());
+        let _ = self.0.num_threads.set(Some(num_cpus::get()));
         self
     }
 
@@ -214,7 +136,7 @@ impl Builder {
     /// # }
     /// ```
     pub fn thread_name<T: Into<String>>(mut self, name: T) -> Self {
-        let _ = self.thread_name.replace(name.into());
+        let _ = self.0.thread_name.set(Some(name.into()));
         self
     }
 
@@ -246,151 +168,7 @@ impl Builder {
     /// # }
     /// ```
     pub fn thread_stack_size(mut self, size: usize) -> Self {
-        let _ = self.thread_stack_size.replace(size);
-        self
-    }
-
-    /// Sets the maximum number of times to retry an [`ApplyError::Retryable`] error. A worker
-    /// thread will retry a task until it either returns `Err(ApplyError::NotRetryable)` or the
-    /// maximum number of retries is reached. Each time a task is retried, the worker thread will
-    /// first sleep for `retry_factor * (2 ** (attempt - 1))` before attempting the task again. If
-    /// not specified, tasks are retried a default number of times. Set to `0` to disable retrying.
-    ///
-    /// [`ApplyError::Retryable`]: enum.ApplyError.html#variant.Retryable
-    /// [`Hive`]: hive/struct.Hive.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::task::{ApplyError, Context};
-    /// # use drudge::util::RetryCaller;
-    /// # use std::time;
-    ///
-    /// fn sometimes_fail(
-    ///     i: usize,
-    ///     _: &Context
-    /// ) -> Result<String, ApplyError<usize, String>> {
-    ///     match i % 3 {
-    ///         0 => Ok("Success".into()),
-    ///         1 => Err(ApplyError::Retryable { input: i, error: "Retryable".into() }),
-    ///         2 => Err(ApplyError::NotRetryable { input: Some(i), error: "NotRetryable".into() }),
-    ///         _ => unreachable!(),
-    ///     }
-    /// }
-    ///
-    /// # fn main() {
-    /// let hive = Builder::default()
-    ///     .max_retries(3)
-    ///     .build_with(RetryCaller::of(sometimes_fail));
-    ///
-    /// for i in 0..10 {
-    ///     hive.apply_store(i);
-    /// }
-    /// # hive.join();
-    /// # }
-    /// ```
-    pub fn max_retries(mut self, limit: u32) -> Self {
-        let _ = if limit == 0 {
-            self.max_retries.take()
-        } else {
-            self.max_retries.replace(limit)
-        };
-        self
-    }
-
-    /// Sets the exponential back-off factor for retrying tasks. Each time a task is retried, the
-    /// thread will first sleep for `retry_factor * (2 ** (attempt - 1))`. If not specififed, a
-    /// default retry factor is used. Set to `Duration::ZERO` to disable exponential backoff.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::task::{ApplyError, Context};
-    /// # use drudge::util::RetryCaller;
-    /// # use std::time;
-    ///
-    /// fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
-    ///     let attempt = ctx.attempt();
-    ///     if attempt == 3 {
-    ///         Ok("Success".into())
-    ///     } else {
-    ///         // the delay between each message should be exponential
-    ///         println!("Task {} attempt {}: {:?}", i, attempt, time::SystemTime::now());
-    ///         Err(ApplyError::Retryable { input: i, error: "Retryable".into() })
-    ///     }
-    /// }
-    ///
-    /// # fn main() {
-    /// let hive = Builder::default()
-    ///     .max_retries(3)
-    ///     .retry_factor(time::Duration::from_secs(1))
-    ///     .build_with(RetryCaller::of(echo_time));
-    ///
-    /// for i in 0..10 {
-    ///     hive.apply_store(i);
-    /// }
-    /// # hive.join();
-    /// # }
-    /// ```
-    pub fn retry_factor(mut self, duration: Duration) -> Self {
-        let _ = if duration == Duration::ZERO {
-            self.retry_factor.take()
-        } else {
-            self.retry_factor.replace(duration)
-        };
-        self
-    }
-
-    /// Disables retrying tasks.
-    pub fn no_retries(self) -> Self {
-        self.max_retries(0).retry_factor(Duration::ZERO)
-    }
-
-    /// Sets set list of CPU core indicies to which threads in the `Hive` should be pinned.
-    ///
-    /// Core indices are integers in the range `0..N`, where `N` is the number of available CPU
-    /// cores as reported by `num_cpus::get()`. The mapping between core indicies and core IDs is
-    /// platform-specific. All CPU cores on a given system should be equivalent, and thus it does
-    /// not matter which cores are pinned so long as a core is not pinned to multiple threads.
-    ///
-    /// Excess core indicies (i.e. if `affinity.len() > num_threads`) are ignored. If
-    /// `affinity.len() < num_threads` then the excess threads will not be pinned.
-    ///
-    /// # Examples
-    ///
-    /// Each thread spawned by this hive will be pinned to a core:
-    ///
-    /// ```
-    /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::util::{Thunk, ThunkWorker};
-    /// # fn main() {
-    /// let hive = Builder::new()
-    ///     .num_threads(4)
-    ///     .thread_affinity(0..4)
-    ///     .build_with_default::<ThunkWorker<()>>();
-    ///
-    /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
-    ///         println!("This thread is pinned!");
-    ///     }));
-    /// }
-    /// # hive.join();
-    /// # }
-    /// ```
-    #[cfg(feature = "affinity")]
-    pub fn thread_affinity<B: Into<Cores>>(mut self, affinity: B) -> Self {
-        let _ = self.affinity.replace(affinity.into());
-        self
-    }
-
-    /// Sets the set of CPU core indicies to which threads in the `Hive` should be pinned to all
-    /// avaialable core indices. If `num_threads` is less than the available number of CPU cores,
-    /// then some cores might not be pinned.
-    #[cfg(feature = "affinity")]
-    pub fn with_thread_affinity(mut self) -> Self {
-        let _ = self.affinity.replace(Cores::all());
+        let _ = self.0.thread_stack_size.set(Some(size));
         self
     }
 
@@ -464,33 +242,13 @@ impl Builder {
     /// # }
     /// ```
     pub fn build<W: Worker, Q: Queen<Kind = W>>(self, queen: Q) -> Hive<W, Q> {
-        let (tx, rx) = mpsc::channel();
-        let shared = Arc::new(Shared::new(
-            queen,
-            rx,
-            self.thread_name,
-            self.thread_stack_size,
-            self.max_retries,
-            self.retry_factor,
-        ));
-        let hive = Hive::new(tx, shared);
-        if let Some(num_threads) = self.num_threads {
-            #[cfg(feature = "affinity")]
-            if let Some(affinity) = self.affinity {
-                hive.set_num_threads_with_affinity(num_threads, &affinity);
-            } else {
-                hive.set_num_threads(num_threads);
-            }
-            #[cfg(not(feature = "affinity"))]
-            hive.set_num_threads(num_threads);
-        }
-        hive
+        Hive::new(self.0, queen)
     }
 
     /// Consumes this `Builder` and returns a new `Hive` using a `Queen` created with
     /// `Q::default()` to create `Worker`s.
     pub fn build_default<W: Worker, Q: Queen<Kind = W> + Default>(self) -> Hive<W, Q> {
-        self.build(Q::default())
+        Hive::new(self.0, Q::default())
     }
 
     /// Consumes this `Builder` and returns a new `Hive` with `Worker`s created by cloning
@@ -543,7 +301,7 @@ impl Builder {
     where
         W: Worker + Send + Sync + Clone,
     {
-        self.build(CloneQueen::new(worker))
+        Hive::new(self.0, CloneQueen::new(worker))
     }
 
     /// Consumes this `Builder` and returns a new `Hive` with `Worker`s created using
@@ -589,106 +347,194 @@ impl Builder {
     /// # }
     /// ```
     pub fn build_with_default<W: Worker + Send + Sync + Default>(self) -> Hive<W, DefaultQueen<W>> {
-        self.build(DefaultQueen::default())
+        Hive::new(self.0, DefaultQueen::default())
     }
 }
 
 impl Default for Builder {
     /// Creates a new `Builder` with default configuration options:
     /// * `num_threads = DEFAULT_THREADS`
+    ///
+    /// The following default configuration options are used when the `retry` feature is enabled:
     /// * `max_retries = DEFAULT_RETRIES`
     /// * `retry_factor = DEFAULT_RETRY_FACTOR`
     fn default() -> Self {
-        Self::with_defaults(
-            Some(DEFAULT_NUM_THREADS.load(Ordering::SeqCst)),
-            Some(DEFAULT_MAX_RETRIES.load(Ordering::SeqCst)),
-            Some(Duration::from_nanos(
-                DEFAULT_RETRY_FACTOR.load(Ordering::SeqCst),
-            )),
-        )
+        Builder(Config::with_defaults())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serial_test::serial;
+impl From<Config> for Builder {
+    fn from(value: Config) -> Self {
+        Self(value)
+    }
+}
 
-    // Struct that resets the default values when `drop`ped.
-    struct Reset;
+#[cfg(feature = "affinity")]
+mod affinity {
+    use super::Builder;
+    use crate::hive::cores::Cores;
 
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            reset_defaults();
+    impl Builder {
+        /// Sets set list of CPU core indicies to which threads in the `Hive` should be pinned.
+        ///
+        /// Core indices are integers in the range `0..N`, where `N` is the number of available CPU
+        /// cores as reported by `num_cpus::get()`. The mapping between core indicies and core IDs is
+        /// platform-specific. All CPU cores on a given system should be equivalent, and thus it does
+        /// not matter which cores are pinned so long as a core is not pinned to multiple threads.
+        ///
+        /// Excess core indicies (i.e. if `affinity.len() > num_threads`) are ignored. If
+        /// `affinity.len() < num_threads` then the excess threads will not be pinned.
+        ///
+        /// # Examples
+        ///
+        /// Each thread spawned by this hive will be pinned to a core:
+        ///
+        /// ```
+        /// # use drudge::hive::{Builder, Hive};
+        /// # use drudge::util::{Thunk, ThunkWorker};
+        /// # fn main() {
+        /// let hive = Builder::new()
+        ///     .num_threads(4)
+        ///     .thread_affinity(0..4)
+        ///     .build_with_default::<ThunkWorker<()>>();
+        ///
+        /// for _ in 0..100 {
+        ///     hive.apply_store(Thunk::of(|| {
+        ///         println!("This thread is pinned!");
+        ///     }));
+        /// }
+        /// # hive.join();
+        /// # }
+        /// ```
+        pub fn thread_affinity<B: Into<Cores>>(mut self, affinity: B) -> Self {
+            let _ = self.0.affinity.set(Some(affinity.into()));
+            self
+        }
+
+        /// Specifies that worker threads should be pinned to all available CPU cores. If `num_threads`
+        /// is greater than the available number of CPU cores, then some threads might not be pinned.
+        pub fn with_thread_affinity(mut self) -> Self {
+            let _ = self.0.affinity.set(Some(Cores::all()));
+            self
         }
     }
 
-    #[test]
-    #[serial]
-    fn test_set_num_threads_default() {
-        let reset = Reset;
-        super::set_num_threads_default(2);
-        let builder = Builder::default();
-        assert_eq!(builder.num_threads, Some(2));
-        // Dropping `Reset` should reset the defaults
-        drop(reset);
+    #[cfg(test)]
+    mod tests {
+        use crate::hive::cores::Cores;
+        use crate::hive::Builder;
 
-        let reset = Reset;
-        super::set_num_threads_default_all();
-        let builder = Builder::default();
-        assert_eq!(builder.num_threads, Some(num_cpus::get()));
-        drop(reset);
-
-        let builder = Builder::default();
-        assert_eq!(builder.num_threads, Some(DEFAULT_DEFAULT_NUM_THREADS));
-    }
-
-    #[test]
-    #[serial]
-    fn test_set_max_retries_default() {
-        let reset = Reset;
-        super::set_max_retries_default(1);
-        let builder = Builder::default();
-        assert_eq!(builder.max_retries, Some(1));
-        // Dropping `Reset` should reset the defaults
-        drop(reset);
-
-        let reset = Reset;
-        super::set_retries_default_disabled();
-        let builder = Builder::default();
-        assert_eq!(builder.max_retries, Some(0));
-        drop(reset);
-
-        let builder = Builder::default();
-        assert_eq!(builder.max_retries, Some(DEFAULT_DEFAULT_MAX_RETRIES));
-    }
-
-    #[test]
-    #[serial]
-    fn test_set_retry_factor_default() {
-        let reset = Reset;
-        super::set_retry_factor_default(Duration::from_secs(2));
-        let builder = Builder::default();
-        assert_eq!(builder.retry_factor, Some(Duration::from_secs(2)));
-        // Dropping `Reset` should reset the defaults
-        drop(reset);
-        let builder = Builder::default();
-        assert_eq!(
-            builder.retry_factor,
-            Some(Duration::from_secs(DEFAULT_DEFAULT_RETRY_FACTOR_SECS))
-        );
+        #[test]
+        fn test_with_affinity() {
+            let mut builder = Builder::new();
+            builder = builder.with_thread_affinity();
+            assert_eq!(builder.0.affinity.get(), Some(Cores::all()));
+        }
     }
 }
 
-#[cfg(all(test, feature = "affinity"))]
-mod affinity_tests {
+#[cfg(feature = "retry")]
+mod retry {
     use super::Builder;
-    use crate::hive::Cores;
+    use std::time::Duration;
 
-    #[test]
-    fn test_with_affinity() {
-        let mut builder = Builder::new();
-        builder = builder.with_thread_affinity();
-        assert_eq!(builder.affinity, Some(Cores::all()));
+    impl Builder {
+        /// Sets the maximum number of times to retry an [`ApplyError::Retryable`] error. A worker
+        /// thread will retry a task until it either returns `Err(ApplyError::NotRetryable)` or the
+        /// maximum number of retries is reached. Each time a task is retried, the worker thread will
+        /// first sleep for `retry_factor * (2 ** (attempt - 1))` before attempting the task again. If
+        /// not specified, tasks are retried a default number of times. Set to `0` to disable retrying.
+        ///
+        /// [`ApplyError::Retryable`]: enum.ApplyError.html#variant.Retryable
+        /// [`Hive`]: hive/struct.Hive.html
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use drudge::hive::{Builder, Hive};
+        /// # use drudge::task::{ApplyError, Context};
+        /// # use drudge::util::RetryCaller;
+        /// # use std::time;
+        ///
+        /// fn sometimes_fail(
+        ///     i: usize,
+        ///     _: &Context
+        /// ) -> Result<String, ApplyError<usize, String>> {
+        ///     match i % 3 {
+        ///         0 => Ok("Success".into()),
+        ///         1 => Err(ApplyError::Retryable { input: i, error: "Retryable".into() }),
+        ///         2 => Err(ApplyError::NotRetryable { input: Some(i), error: "NotRetryable".into() }),
+        ///         _ => unreachable!(),
+        ///     }
+        /// }
+        ///
+        /// # fn main() {
+        /// let hive = Builder::default()
+        ///     .max_retries(3)
+        ///     .build_with(RetryCaller::of(sometimes_fail));
+        ///
+        /// for i in 0..10 {
+        ///     hive.apply_store(i);
+        /// }
+        /// # hive.join();
+        /// # }
+        /// ```
+        pub fn max_retries(mut self, limit: u32) -> Self {
+            let _ = if limit == 0 {
+                self.0.max_retries.set(None)
+            } else {
+                self.0.max_retries.set(Some(limit))
+            };
+            self
+        }
+
+        /// Sets the exponential back-off factor for retrying tasks. Each time a task is retried, the
+        /// thread will first sleep for `retry_factor * (2 ** (attempt - 1))`. If not specififed, a
+        /// default retry factor is used. Set to `Duration::ZERO` to disable exponential backoff.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use drudge::hive::{Builder, Hive};
+        /// # use drudge::task::{ApplyError, Context};
+        /// # use drudge::util::RetryCaller;
+        /// # use std::time;
+        ///
+        /// fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
+        ///     let attempt = ctx.attempt();
+        ///     if attempt == 3 {
+        ///         Ok("Success".into())
+        ///     } else {
+        ///         // the delay between each message should be exponential
+        ///         println!("Task {} attempt {}: {:?}", i, attempt, time::SystemTime::now());
+        ///         Err(ApplyError::Retryable { input: i, error: "Retryable".into() })
+        ///     }
+        /// }
+        ///
+        /// # fn main() {
+        /// let hive = Builder::default()
+        ///     .max_retries(3)
+        ///     .retry_factor(time::Duration::from_secs(1))
+        ///     .build_with(RetryCaller::of(echo_time));
+        ///
+        /// for i in 0..10 {
+        ///     hive.apply_store(i);
+        /// }
+        /// # hive.join();
+        /// # }
+        /// ```
+        pub fn retry_factor(mut self, duration: Duration) -> Self {
+            let _ = if duration == Duration::ZERO {
+                self.0.retry_factor.set(None)
+            } else {
+                self.0.set_retry_factor_from(duration)
+            };
+            self
+        }
+
+        /// Disables retrying tasks.
+        pub fn no_retries(self) -> Self {
+            self.max_retries(0).retry_factor(Duration::ZERO)
+        }
     }
 }

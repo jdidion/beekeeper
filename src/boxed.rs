@@ -1,4 +1,4 @@
-pub(crate) trait BoxedFnOnce {
+pub trait BoxedFnOnce {
     type Output;
 
     fn call_box(self: Box<Self>) -> Self::Output;

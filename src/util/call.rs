@@ -2,7 +2,8 @@
 use crate::task::{
     ApplyError, ApplyRefError, Context, RefWorker, RefWorkerResult, Worker, WorkerResult,
 };
-use std::{fmt::Debug, marker::PhantomData};
+use std::fmt::Debug;
+use std::marker::PhantomData;
 
 /// Wraps a closure or function pointer and calls it when applied. For this `Callable` to be
 /// useable by a `Worker`, the function must be `FnMut` *and* `Clone`able.

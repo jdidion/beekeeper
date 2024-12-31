@@ -1,4 +1,4 @@
-use crate::task::Worker;
+use super::Worker;
 use std::marker::PhantomData;
 
 /// A trait for stateful factories that create `Worker`s.

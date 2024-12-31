@@ -1,9 +1,7 @@
-use crate::boxed::BoxedFnOnce;
-use std::{
-    any::Any,
-    fmt::Debug,
-    panic::{self, AssertUnwindSafe},
-};
+use super::boxed::BoxedFnOnce;
+use std::any::Any;
+use std::fmt::Debug;
+use std::panic::AssertUnwindSafe;
 
 pub type PanicPayload = Box<dyn Any + Send + 'static>;
 
@@ -18,14 +16,15 @@ impl<T: Send + Debug + Eq> Panic<T> {
     /// Attempts to call the provided function `f` and catches any panic. Returns either the return
     /// value of the function or a `Panic` created from the panic payload and the provided `detail`.
     pub fn try_call<O, F: FnOnce() -> O>(detail: Option<T>, f: F) -> Result<O, Self> {
-        panic::catch_unwind(AssertUnwindSafe(|| f())).map_err(|payload| Self { payload, detail })
+        std::panic::catch_unwind(AssertUnwindSafe(|| f()))
+            .map_err(|payload| Self { payload, detail })
     }
 
     pub(crate) fn try_call_boxed<O, F: BoxedFnOnce<Output = O> + ?Sized>(
         detail: Option<T>,
         f: Box<F>,
     ) -> Result<O, Self> {
-        panic::catch_unwind(AssertUnwindSafe(|| f.call_box()))
+        std::panic::catch_unwind(AssertUnwindSafe(|| f.call_box()))
             .map_err(|payload| Self { payload, detail })
     }
 
@@ -41,16 +40,7 @@ impl<T: Send + Debug + Eq> Panic<T> {
 
     /// Consumes this `Panic` and resumes unwinding the thread.
     pub fn resume(self) -> ! {
-        panic::resume_unwind(self.payload)
-    }
-}
-
-#[cfg(test)]
-impl<T: Send + Debug + Eq> Panic<T> {
-    /// Panics with `msg` and immediately catches it to create a new `Panic` instance for testing.
-    pub(crate) fn new(msg: &str, detail: Option<T>) -> Self {
-        let payload = panic::catch_unwind(|| panic!("{}", msg)).err().unwrap();
-        Self { payload, detail }
+        std::panic::resume_unwind(self.payload)
     }
 }
 
@@ -65,6 +55,17 @@ impl<T: Send + Debug + Eq> Eq for Panic<T> {}
 #[cfg(test)]
 mod tests {
     use super::Panic;
+    use std::fmt::Debug;
+
+    impl<T: Send + Debug + Eq> Panic<T> {
+        /// Panics with `msg` and immediately catches it to create a new `Panic` instance for testing.
+        pub fn new(msg: &str, detail: Option<T>) -> Self {
+            let payload = std::panic::catch_unwind(|| panic!("{}", msg))
+                .err()
+                .unwrap();
+            Self { payload, detail }
+        }
+    }
 
     #[test]
     fn test_catch_panic() {

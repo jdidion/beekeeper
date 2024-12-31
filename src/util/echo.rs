@@ -1,5 +1,6 @@
 use crate::task::{Context, Worker, WorkerResult};
-use std::{fmt::Debug, marker::PhantomData};
+use std::fmt::Debug;
+use std::marker::PhantomData;
 
 /// A `Worker` that simply returns the input.
 #[derive(Debug)]

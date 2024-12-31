@@ -1,38 +1,136 @@
-#[cfg(feature = "affinity")]
-mod affinity;
-mod batch;
 mod builder;
+mod config;
+mod hive;
 mod husk;
-mod result;
+mod outcome;
 //mod scoped;
 mod shared;
-mod spawn;
-mod stored;
-mod thread;
+mod task;
+
+#[cfg(feature = "affinity")]
+pub mod cores;
+#[cfg(feature = "retry")]
+mod delay;
 
 pub use crate::channel::channel as outcome_channel;
-#[cfg(feature = "affinity")]
-pub use affinity::{CoreId, Cores};
-pub use batch::BatchResult;
-pub use builder::{
-    reset_defaults, set_max_retries_default, set_num_threads_default, set_num_threads_default_all,
-    set_retries_default_disabled, set_retry_factor_default, Builder,
-};
-pub use husk::Husk;
-pub use result::{Outcome, OutcomeIteratorExt, TaskResult};
-pub use stored::Stored;
-pub use thread::Hive;
 
-pub(self) use shared::{OutcomeSender, Shared, Task, TaskSender};
+pub use builder::Builder;
+pub use config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
+pub use husk::Husk;
+pub use outcome::{Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
+
+#[cfg(feature = "retry")]
+pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
 pub mod prelude {
-    pub use super::{BatchResult, Builder, Hive, Husk, Outcome, OutcomeIteratorExt, Stored};
+    pub use super::{
+        Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt,
+        OutcomeStore,
+    };
+}
+
+pub(self) use outcome::{Outcomes, OutcomesDeref};
+
+use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicU32, AtomicU64, AtomicUsize};
+use crate::task::{Context, Queen, Worker};
+use parking_lot::{Condvar, Mutex};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
+type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
+type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
+//pub type OutcomeReceiver<W> = channel::Receiver<Outcome<W>>;
+
+type Usize = AtomicOption<usize, AtomicUsize>;
+type U32 = AtomicOption<u32, AtomicU32>;
+type U64 = AtomicOption<u64, AtomicU64>;
+type Any<T> = AtomicOption<T, AtomicAny<T>>;
+
+/// A pool of worker threads that each execute the same function. A `Hive` is created by a
+/// [`Builder`].
+///
+/// A `Hive` has a [`Queen`] that creates a [`Worker`] for each thread in the pool. The `Worker` has
+/// a [`try_apply`] method that is called to execute a task, which consists of an input value, a
+/// `Context`, and an optional output channel. If the `Worker` processes the task successfully, the
+/// output is sent to the output channel if one is provided, otherwise it is retained in the `Hive`
+/// for later retrieval. If the `Worker` encounters an error, then it will retry the task if the
+/// error is retryable and the `Hive` has been configured to retry tasks. If a task cannot be
+/// processed after the maximum number of retries, then an error is sent to the output channel or
+/// retained in the `Hive` for later retrieval.
+///
+/// A `Worker` should never panic, but if it does, the worker thread will terminate and the `Hive`
+/// will spawn a new worker thread with a new `Worker`.
+///
+/// When a `Hive` is dropped, all the worker threads are terminated automatically. Prior to
+/// dropping the `Hive`, the `into_husk()` method can be called to retrieve all of the `Hive` data
+/// necessary to build a new `Hive`, as well as any stored outcomes (those that were not sent to an
+/// output channel).
+///
+/// [`Builder`]: hive/struct.Builder.html
+/// [`Worker`]: task/trait.Worker.html
+/// [`Queen`]: task/trait.Queen.html
+/// [`try_apply`]: task/trait.Worker.html#method.try_apply
+#[derive(Debug)]
+pub struct Hive<W: Worker, Q: Queen<Kind = W>> {
+    task_tx: TaskSender<W>,
+    shared: Arc<Shared<W, Q>>,
+}
+
+/// Internal representation of a task to be processed by a `Hive`.
+struct Task<W: Worker> {
+    input: W::Input,
+    ctx: Context,
+    outcome_tx: Option<OutcomeSender<W>>,
+}
+
+/// Core configuration parameters that are set by a `Builder`, used in a `Hive`, and preserved in a
+/// `Husk`. Fields are `AtomicOption`s, which enables them to be transitioned back and forth
+/// between thread-safe and non-thread-safe contexts.
+#[derive(Clone, Debug, Default)]
+struct Config {
+    /// Number of worker threads to spawn
+    num_threads: Usize,
+    /// Name to give each worker thread
+    thread_name: Any<String>,
+    /// Stack size for each worker thread
+    thread_stack_size: Usize,
+    /// Maximum number of retries for a task
+    #[cfg(feature = "retry")]
+    max_retries: U32,
+    /// Multiplier for the retry backoff strategy
+    #[cfg(feature = "retry")]
+    retry_factor: U64,
+    /// CPU cores to which worker threads can be pinned
+    #[cfg(feature = "affinity")]
+    affinity: Any<cores::Cores>,
+}
+
+/// Data shared by all worker threads in a `Hive`.
+struct Shared<W: Worker, Q: Queen<Kind = W>> {
+    config: Config,
+    queen: Mutex<Q>,
+    task_rx: Mutex<TaskReceiver<W>>,
+    queued_count: AtomicUsize,
+    active_count: AtomicUsize,
+    panic_count: AtomicUsize,
+    next_index: AtomicUsize,
+    suspended: Arc<AtomicBool>,
+    outcomes: Mutex<HashMap<usize, Outcome<W>>>,
+    empty_trigger: Mutex<()>,
+    empty_condvar: Condvar,
+    join_generation: AtomicUsize,
+    #[cfg(feature = "retry")]
+    retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
+    #[cfg(feature = "retry")]
+    has_retries: AtomicBool,
 }
 
 #[cfg(test)]
 mod test {
-    use super::{Builder, Hive, Outcome, OutcomeIteratorExt, Stored};
+    use super::{Builder, Hive, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
     use crate::channel::{Message, ReceiverExt};
+    use crate::hive::outcome::OutcomesDeref;
     use crate::task::{ApplyError, Context, DefaultQueen, Worker, WorkerResult};
     use crate::util::{Caller, OnceCaller, RefCaller, RetryCaller, Thunk, ThunkWorker};
     use std::{
@@ -84,7 +182,7 @@ mod test {
         thread::sleep(ONE_SEC);
         assert_eq!(hive.queued_count(), 1);
         assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
-        hive.set_num_threads(1);
+        hive.grow(1);
         thread::sleep(ONE_SEC);
         assert_eq!(hive.queued_count(), 0);
         assert!(matches!(
@@ -104,7 +202,7 @@ mod test {
         assert_eq!(hive.active_count(), TEST_TASKS);
         // increase the number of threads
         let new_thread_amount = TEST_TASKS + 8;
-        hive.set_num_threads(new_thread_amount);
+        hive.grow(new_thread_amount);
         // queue some more long-running tasks
         for _ in 0..(new_thread_amount - TEST_TASKS) {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -122,7 +220,7 @@ mod test {
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| ()));
         }
-        hive.set_num_threads(new_thread_amount);
+        hive.grow(new_thread_amount);
         for _ in 0..new_thread_amount {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         }
@@ -164,7 +262,7 @@ mod test {
         }
 
         b0.wait();
-        hive.set_num_threads(TEST_TASKS);
+        hive.grow(TEST_TASKS);
 
         assert_eq!(hive.active_count(), test_tasks_begin);
         b1.wait();
@@ -382,6 +480,9 @@ mod test {
     }
 
     #[test]
+    fn test_cancel() {}
+
+    #[test]
     fn test_name() {
         let name = "test";
         let hive = Builder::new()
@@ -400,7 +501,7 @@ mod test {
         }
 
         // new spawn thread should share the name "test" too.
-        hive.set_num_threads(3);
+        hive.grow(3);
         let tx_clone = tx.clone();
         hive.apply_store(Thunk::of(move || {
             let name = thread::current().name().unwrap().to_owned();
@@ -651,7 +752,7 @@ mod test {
         }));
         hive.join();
         for i in indices.iter() {
-            assert!(hive.has_success(*i))
+            assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
@@ -739,7 +840,7 @@ mod test {
         }));
         hive.join();
         for i in indices.iter() {
-            assert!(hive.has_success(*i))
+            assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
         let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
             .clone()
@@ -872,7 +973,7 @@ mod test {
         assert_eq!(state, 45);
         hive.join();
         for i in indices.iter() {
-            assert!(hive.has_success(*i))
+            assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
         let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
             .clone()
@@ -909,7 +1010,7 @@ mod test {
         assert_eq!(state, 45);
         hive.join();
         for i in indices.iter() {
-            assert!(hive.has_success(*i))
+            assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
         let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
             .clone()
@@ -949,7 +1050,7 @@ mod test {
         hive1.join();
         let mut husk1 = hive1.into_husk();
         for i in indices.iter() {
-            assert!(husk1.has_success(*i));
+            assert!(husk1.outcomes_deref().get(i).unwrap().is_success());
             assert!(matches!(husk1.get(*i), Some(Outcome::Success { .. })));
         }
 
@@ -967,14 +1068,14 @@ mod test {
         let mut husk2 = hive2.into_husk();
 
         let mut outputs1 = husk1
-            .take_all()
+            .remove_all()
             .into_iter()
             .into_ordered()
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs1.sort();
         let mut outputs2 = husk2
-            .take_all()
+            .remove_all()
             .into_iter()
             .into_ordered()
             .map(Outcome::unwrap)
@@ -994,7 +1095,6 @@ mod test {
         let (_, outcomes3) = husk3.into_parts();
         let mut outputs3 = outcomes3
             .into_iter()
-            .into_ordered()
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs3.sort();

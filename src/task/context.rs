@@ -1,10 +1,6 @@
-use std::{
-    fmt::Debug,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use crate::atomic::{Atomic, AtomicBool};
+use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Context for a task.
 #[derive(Debug, Default)]
@@ -24,12 +20,12 @@ impl Context {
         }
     }
 
-    /// Creates an empty `Context`. This is primarily for testing.
+    /// Creates an empty `Context`.
     pub fn empty() -> Self {
         Self {
             index: 0,
             attempt: 0,
-            cancelled: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::from(false)),
         }
     }
 
@@ -44,13 +40,13 @@ impl Context {
         self.attempt
     }
 
-    pub(crate) fn inc_attempt(&mut self) {
+    pub fn inc_attempt(&mut self) {
         self.attempt += 1;
     }
 
     /// Returns `true` if the task has been cancelled. A long-running `Worker` should check this
-    /// periodically and exit early if it returns `true`.
+    /// periodically and, if it returns `true`, exit early with an `ApplyError::Cancelled` result.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.cancelled.get()
     }
 }

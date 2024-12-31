@@ -125,11 +125,10 @@
 //! [`Thunk<T>`]: util/struct.Thunk.html
 //! [`std::sync::mpsc`]: https://doc.rust-lang.org/stable/std/sync/mpsc/
 
+mod atomic;
 mod boxed;
 pub mod channel;
 pub mod hive;
-mod panic;
+pub mod panic;
 pub mod task;
 pub mod util;
-
-pub use panic::Panic;

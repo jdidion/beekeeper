@@ -6,7 +6,7 @@ pub use call::{Caller, OnceCaller, RefCaller, RetryCaller};
 pub use echo::Echo;
 pub use thunk::{FunkWorker, PunkWorker, Thunk, ThunkWorker};
 
-use crate::hive::{BatchResult, Builder, Outcome};
+use crate::hive::{Builder, Outcome, OutcomeBatch};
 use crate::task::{ApplyError, Context};
 use std::fmt::Debug;
 
@@ -46,6 +46,7 @@ where
 /// # Examples
 ///
 /// ```
+/// # use drudge::hive::OutcomeDerefStore;
 /// # fn main() {
 /// let result = drudge::util::try_map(4, 0..10, |i| {
 ///     if i == 5 {
@@ -54,14 +55,14 @@ where
 ///         Ok(i * i)
 ///     }
 /// });
-/// assert!(result.has_errors());
+/// assert!(result.has_failures());
 /// # }
 /// ```
 pub fn try_map<I, O, E, Inputs, F>(
     num_threads: usize,
     inputs: Inputs,
     f: F,
-) -> BatchResult<OnceCaller<I, O, E, F>>
+) -> OutcomeBatch<OnceCaller<I, O, E, F>>
 where
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
@@ -86,7 +87,7 @@ where
 /// # Examples
 ///
 /// ```
-/// # use drudge::hive::BatchResult;
+/// # use drudge::hive::OutcomeDerefStore;
 /// # use drudge::task::ApplyError;
 /// # use drudge::util::RetryCaller;
 ///
@@ -98,7 +99,7 @@ where
 /// } else {
 ///     Ok(i * i)
 /// });
-/// assert!(result.has_errors());
+/// assert!(result.has_failures());
 /// # }
 /// ```
 pub fn try_map_retryable<I, O, E, Inputs, F>(
@@ -106,7 +107,7 @@ pub fn try_map_retryable<I, O, E, Inputs, F>(
     max_retries: u32,
     inputs: Inputs,
     f: F,
-) -> BatchResult<RetryCaller<I, O, E, F>>
+) -> OutcomeBatch<RetryCaller<I, O, E, F>>
 where
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
@@ -124,7 +125,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::hive::Outcome;
+    use crate::hive::{Outcome, OutcomeDerefStore, OutcomeStore};
     use crate::task::ApplyError;
 
     #[test]
@@ -146,15 +147,18 @@ mod tests {
                 }
             },
         );
-        assert!(result.has_errors());
-        assert_eq!(1, result.num_errors());
-        assert!(matches!(result.errors()[0], Outcome::Failure { .. }));
+        assert!(result.has_failures());
+        assert_eq!(1, result.num_failures());
+        assert!(matches!(
+            result.iter_failures().next().unwrap(),
+            Outcome::Failure { .. }
+        ));
         assert_eq!(99, result.num_successes());
         assert!(matches!(result.ok_or_unwrap_errors(true), Err(_)));
     }
 
     #[test]
-    fn test_try_map_retyrable() {
+    fn test_try_map_retryable() {
         let result = super::try_map_retryable(4, 3, 0..100, |i, ctx| {
             if i != 50 {
                 Ok(i + 1)
@@ -167,7 +171,7 @@ mod tests {
                 })
             }
         });
-        assert!(!result.has_errors());
+        assert!(!result.has_failures());
     }
 
     #[test]
@@ -182,10 +186,10 @@ mod tests {
                 })
             }
         });
-        assert!(result.has_errors());
-        assert!(result.num_errors() == 1);
+        assert!(result.has_failures());
+        assert!(result.num_failures() == 1);
         assert!(matches!(
-            result.errors()[0],
+            result.iter_failures().next().unwrap(),
             Outcome::MaxRetriesAttempted { .. }
         ))
     }

@@ -1,7 +1,8 @@
 use crate::boxed::BoxedFnOnce;
+use crate::panic::Panic;
 use crate::task::{ApplyError, Context, Worker, WorkerResult};
-use crate::Panic;
-use std::{fmt::Debug, marker::PhantomData};
+use std::fmt::Debug;
+use std::marker::PhantomData;
 
 /// A `Worker` that executes infallible `Thunk<T>`s when applied.
 #[derive(Debug)]

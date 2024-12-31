@@ -1,5 +1,5 @@
-use crate::task::{ApplyError, Context};
-use crate::Panic;
+use super::{ApplyError, Context};
+use crate::panic::Panic;
 use std::fmt::Debug;
 
 /// Alias for an `ApplyError` whose `I`nput and `E`rror paramters are taken from `W::Input` and
