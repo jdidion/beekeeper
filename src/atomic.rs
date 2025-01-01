@@ -272,15 +272,15 @@ where
         }
     }
 
-    // If this is a `Sync` variant, consumes `self` and returns the corresponding `Unsync` variant
-    // by cloning the current value of the wrapped `Atomic`. Otherwise returns `self`.
-    // pub fn clone_into_unsync(self) -> Self {
-    //     if let Self::Sync(opt) = self {
-    //         Self::Unsync(opt.map(|atomic| atomic.get()))
-    //     } else {
-    //         self
-    //     }
-    // }
+    /// Returns a `Sync` variant that is set from the default value of the wrapped `Atomic` if the
+    /// value is unset, otherwise returns `self.into_sync()`.
+    pub fn into_sync_default(self) -> Self {
+        match self {
+            Self::Unsync(None) | Self::Sync(None) => Self::Sync(Some(A::from(P::default()))),
+            Self::Unsync(opt) => Self::Sync(opt.map(A::from)),
+            _ => self,
+        }
+    }
 
     /// If this is a `Sync` variant, consumes `self` and returns the corresponding `Unsync` variant
     /// by consuming the wrapped `Atomic` and `take`ing its current value (which may panic if the

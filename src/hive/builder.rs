@@ -71,11 +71,7 @@ impl Builder {
     /// # }
     /// ```
     pub fn num_threads(mut self, num: usize) -> Self {
-        let _ = if num == 0 {
-            self.0.num_threads.set(None)
-        } else {
-            self.0.num_threads.set(Some(num))
-        };
+        let _ = self.0.num_threads.set(Some(num));
         self
     }
 

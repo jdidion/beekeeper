@@ -47,7 +47,7 @@ impl Config {
 
     pub fn into_sync(self) -> Self {
         Self {
-            num_threads: self.num_threads.into_sync(),
+            num_threads: self.num_threads.into_sync_default(),
             thread_name: self.thread_name.into_sync(),
             thread_stack_size: self.thread_stack_size.into_sync(),
             #[cfg(feature = "retry")]

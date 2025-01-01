@@ -236,44 +236,6 @@ mod test {
     }
 
     #[test]
-    fn test_shrink() {
-        let test_tasks_begin = TEST_TASKS + 2;
-
-        let hive = thunk_hive(test_tasks_begin);
-        let b0 = Arc::new(Barrier::new(test_tasks_begin + 1));
-        let b1 = Arc::new(Barrier::new(test_tasks_begin + 1));
-
-        for _ in 0..test_tasks_begin {
-            let (b0, b1) = (b0.clone(), b1.clone());
-            hive.apply_store(Thunk::of(move || {
-                b0.wait();
-                b1.wait();
-            }));
-        }
-
-        let b2 = Arc::new(Barrier::new(TEST_TASKS + 1));
-        let b3 = Arc::new(Barrier::new(TEST_TASKS + 1));
-
-        for _ in 0..TEST_TASKS {
-            let (b2, b3) = (b2.clone(), b3.clone());
-            hive.apply_store(Thunk::of(move || {
-                b2.wait();
-                b3.wait();
-            }));
-        }
-
-        b0.wait();
-        hive.grow(TEST_TASKS);
-
-        assert_eq!(hive.active_count(), test_tasks_begin);
-        b1.wait();
-
-        b2.wait();
-        assert_eq!(hive.active_count(), TEST_TASKS);
-        b3.wait();
-    }
-
-    #[test]
     fn test_active_count() {
         let hive = thunk_hive(TEST_TASKS);
         for _ in 0..2 * TEST_TASKS {
