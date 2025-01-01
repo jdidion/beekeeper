@@ -294,7 +294,7 @@ mod retry {
         }
 
         fn update_next_retry(&self, instant: Option<Instant>) {
-            let mut next_retry = self.next_retry.write().unwrap();
+            let mut next_retry = self.next_retry.write();
             if let Some(new_val) = instant {
                 if next_retry.map(|cur_val| new_val < cur_val).unwrap_or(true) {
                     next_retry.replace(new_val);
@@ -346,7 +346,7 @@ mod retry {
 
             loop {
                 let has_retry = {
-                    let next_retry = self.next_retry.read().unwrap();
+                    let next_retry = self.next_retry.read();
                     next_retry.is_some_and(|next_retry| next_retry <= Instant::now())
                 };
                 if has_retry {

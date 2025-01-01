@@ -69,9 +69,11 @@ impl Core {
     }
 }
 
-/// A sequence of CPU core indices. Indices are numbered from `0..num_cpus::get()`. The mapping
-/// between CPU indices and core IDs is platform-specific, but the same index is guaranteed to
-/// always refer to the same physical core.
+/// A sequence of CPU core indices. An index in the range `0..num_cpus::get()` may be associated
+/// with a CPU core, while an index outside this range will never be associated with a CPU core.
+///
+/// The mapping between CPU indices and core IDs is platform-specific, but the same index is
+/// guaranteed to always refer to the same physical core.
 #[derive(Default, Clone, PartialEq, Eq, Debug)]
 pub struct Cores(Vec<usize>);
 
@@ -209,7 +211,7 @@ mod tests {
         let b = Cores::from(3..6);
         assert_eq!(a.clone() | b.clone(), Cores::from(0..6));
         assert_eq!(a.clone() - b.clone(), Cores::from(0..3));
-        assert_eq!(b.clone() - a.clone(), Cores::from(3..6));
+        assert_eq!(b.clone() - a.clone(), Cores::from(4..6));
     }
 
     #[test]
@@ -228,8 +230,6 @@ mod tests {
         let core_ids = core_affinity::get_core_ids().unwrap();
         let n = core_ids.len();
         let pairs: Vec<_> = Cores::from(0..n).iter().collect();
-        assert_eq!(pairs.len(), n);
-        let pairs: Vec<_> = Cores::from(0..(n + 1)).iter().collect();
         assert_eq!(pairs.len(), n);
     }
 }

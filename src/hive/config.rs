@@ -61,15 +61,15 @@ impl Config {
 
     pub fn into_unsync(self) -> Self {
         Self {
-            num_threads: self.num_threads.take_into_unsync(),
-            thread_name: self.thread_name.take_into_unsync(),
-            thread_stack_size: self.thread_stack_size.take_into_unsync(),
+            num_threads: self.num_threads.into_unsync(),
+            thread_name: self.thread_name.into_unsync(),
+            thread_stack_size: self.thread_stack_size.into_unsync(),
             #[cfg(feature = "retry")]
-            max_retries: self.max_retries.take_into_unsync(),
+            max_retries: self.max_retries.into_unsync(),
             #[cfg(feature = "retry")]
-            retry_factor: self.retry_factor.take_into_unsync(),
+            retry_factor: self.retry_factor.into_unsync(),
             #[cfg(feature = "affinity")]
-            affinity: self.affinity.take_into_unsync(),
+            affinity: self.affinity.into_unsync(),
         }
     }
 }

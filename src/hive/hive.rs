@@ -657,7 +657,7 @@ mod retry {
                     true
                 }
                 result => {
-                    let outcome = Outcome::from_worker_result(result, ctx.index(), false);
+                    let outcome = Outcome::from_worker_result(result, ctx.index(), true);
                     // Send the outcome to the receiver or store it in the hive
                     if let Some(tx) = outcome_tx {
                         tx.send(outcome).is_ok()

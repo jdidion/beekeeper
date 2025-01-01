@@ -28,7 +28,7 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
 macro_rules! atomic {
     ($type:ident) => {
         paste! {
-            #[derive(Debug, Default)]
+            #[derive(Default)]
             pub struct [<Atomic $type:camel>](std::sync::atomic::[<Atomic $type:camel>]);
 
             impl Atomic<$type> for [<Atomic $type:camel>] {
@@ -61,6 +61,12 @@ macro_rules! atomic {
             impl Clone for [<Atomic $type:camel>] {
                 fn clone(&self) -> Self {
                     Self(self.get().into())
+                }
+            }
+
+            impl Debug for [<Atomic $type:camel>] {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    self.0.fmt(f)
                 }
             }
 
@@ -110,7 +116,7 @@ atomic_number!(usize);
 
 /// Wrapper for `parking_lot::RwLock` that implements the `Atomic` trait. This enables any type
 /// that is `Clone + Default` to be used in an `Atomic` context.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AtomicAny<T: Clone + Debug + Default + Sync + Send + PartialEq>(parking_lot::RwLock<T>);
 
 impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Clone for AtomicAny<T> {
@@ -161,6 +167,12 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Atomic<T> for AtomicA
     }
 }
 
+impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Debug for AtomicAny<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
 /// A wrapper around an `Option<P>` with different behavior in single- and multi-threaded contexts:
 ///
 /// * The `Unsync` variant wraps `Option<P>`. It is intended to be used in a single-threaded
@@ -170,7 +182,7 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Atomic<T> for AtomicA
 /// * The `Sync` variant wraps `Option<Atomic<P>>`. It is intended to be used in a multi-threaded
 ///   context, where the value can be set either by regular or interior mutability (using the
 ///   `update` or `try_update` method).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum AtomicOption<P, A>
 where
     P: Clone + Debug + Default,
@@ -285,7 +297,7 @@ where
     /// If this is a `Sync` variant, consumes `self` and returns the corresponding `Unsync` variant
     /// by consuming the wrapped `Atomic` and `take`ing its current value (which may panic if the
     /// inner value cannot be `take`n). Otherwise returns `self`.
-    pub fn take_into_unsync(self) -> Self {
+    pub fn into_unsync(self) -> Self {
         if let Self::Sync(opt) = self {
             Self::Unsync(opt.map(|atomic| atomic.into_inner()))
         } else {
@@ -378,5 +390,19 @@ where
 {
     fn default() -> Self {
         Self::Unsync(None)
+    }
+}
+
+impl<P, A> Debug for AtomicOption<P, A>
+where
+    P: Clone + Debug + Default,
+    A: Atomic<P>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsync(None) | Self::Sync(None) => write!(f, "None"),
+            Self::Unsync(Some(val)) => val.fmt(f),
+            Self::Sync(Some(val)) => val.fmt(f),
+        }
     }
 }

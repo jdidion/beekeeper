@@ -33,9 +33,9 @@ pub(self) use outcome::{Outcomes, OutcomesDeref};
 
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicU32, AtomicU64, AtomicUsize};
 use crate::task::{Context, Queen, Worker};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
@@ -513,7 +513,7 @@ mod test {
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
-            "Hive { task_tx: Sender { .. }, shared: Shared { name: Some(\"hello\"), queued_count: 0, active_count: 0, max_count: 4 } }"
+            "Hive { task_tx: Sender { .. }, shared: Shared { name: \"hello\", queued_count: 0, active_count: 0, max_count: 4 } }"
         );
 
         let hive = thunk_hive(4);
