@@ -8,7 +8,7 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
     /// Returns the current value of this `Atomic` using `Acquire` ordering.
     fn get(&self) -> T;
 
-    /// Sets the value of this `Atomic` using `Release` ordering.
+    /// Sets the value of this `Atomic` using `Release` ordering and returns the previous value.
     fn set(&self, value: T) -> T;
 
     /// If the current value of this `Atomic` is `current`, sets it to `new` using `AcqRel`
@@ -192,14 +192,6 @@ where
     Sync(Option<A>),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum MutError {
-    #[error("cannot use interior mutability to modify value in Unsync variant")]
-    Unsync,
-    #[error("cannot use interior mutability to modify value in an unset Sync variant")]
-    Unset,
-}
-
 impl<P, A> AtomicOption<P, A>
 where
     P: Clone + Debug + Default,
@@ -253,27 +245,6 @@ where
     //     }
     // }
 
-    // Sets the value to `value` using interior mutability if possible, otherwise returns a
-    // `MutError`. This method only returns `Ok` when called on `Sync(Some(_))`.
-    // pub fn try_update(&self, value: P) -> Result<P, MutError> {
-    //     match self {
-    //         Self::Unsync(_) => Err(MutError::Unsync),
-    //         Self::Sync(None) => Err(MutError::Unset),
-    //         Self::Sync(Some(atomic)) => Ok(atomic.set(value)),
-    //     }
-    // }
-
-    /// Sets the value to the result of applying `f` to the current value using interior
-    /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous value
-    /// is returned, otherwise the value is not updated and an error is returned.
-    pub fn try_update_with<F: FnMut(P) -> Option<P>>(&self, f: F) -> Result<P, MutError> {
-        match self {
-            Self::Unsync(_) => Err(MutError::Unsync),
-            Self::Sync(None) => Err(MutError::Unset),
-            Self::Sync(Some(atomic)) => Ok(atomic.set_with(f)),
-        }
-    }
-
     /// If this is an `Unsync` variant, consumes `self` and returns the corresponding `Sync`
     /// variant. Otherwise returns `self`.
     pub fn into_sync(self) -> Self {
@@ -302,6 +273,47 @@ where
             Self::Unsync(opt.map(|atomic| atomic.into_inner()))
         } else {
             self
+        }
+    }
+}
+
+#[cfg(feature = "affinity")]
+mod affinity {
+    use super::{Atomic, AtomicOption};
+    use std::fmt::Debug;
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum MutError {
+        #[error("cannot use interior mutability to modify value in Unsync variant")]
+        Unsync,
+        #[error("cannot use interior mutability to modify value in an unset Sync variant")]
+        Unset,
+    }
+
+    impl<P, A> AtomicOption<P, A>
+    where
+        P: Clone + Debug + Default,
+        A: Atomic<P>,
+    {
+        // Sets the value to `value` using interior mutability if possible, otherwise returns a
+        // `MutError`. This method only returns `Ok` when called on `Sync(Some(_))`.
+        // pub fn try_update(&self, value: P) -> Result<P, MutError> {
+        //     match self {
+        //         Self::Unsync(_) => Err(MutError::Unsync),
+        //         Self::Sync(None) => Err(MutError::Unset),
+        //         Self::Sync(Some(atomic)) => Ok(atomic.set(value)),
+        //     }
+        // }
+
+        /// Sets the value to the result of applying `f` to the current value using interior
+        /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous value
+        /// is returned, otherwise the value is not updated and an error is returned.
+        pub fn try_update_with<F: FnMut(P) -> Option<P>>(&self, f: F) -> Result<P, MutError> {
+            match self {
+                Self::Unsync(_) => Err(MutError::Unsync),
+                Self::Sync(None) => Err(MutError::Unset),
+                Self::Sync(Some(atomic)) => Ok(atomic.set_with(f)),
+            }
         }
     }
 }

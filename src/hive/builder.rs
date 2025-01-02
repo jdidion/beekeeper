@@ -89,7 +89,7 @@ impl Builder {
     ///
     /// # fn main() {
     /// let hive = Builder::new()
-    ///     .all_threads()
+    ///     .thread_per_core()
     ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
@@ -99,7 +99,7 @@ impl Builder {
     /// }
     /// # }
     /// ```
-    pub fn all_threads(mut self) -> Self {
+    pub fn thread_per_core(mut self) -> Self {
         let _ = self.0.num_threads.set(Some(num_cpus::get()));
         self
     }

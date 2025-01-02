@@ -84,7 +84,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// This method is called by all the `*apply*` methotds.
     fn send_one(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> usize {
         #[cfg(debug_assertions)]
-        if self.max_count() == 0 {
+        if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task = self.shared.prepare_task(input, outcome_tx);
@@ -132,7 +132,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         T::IntoIter: ExactSizeIterator,
     {
         #[cfg(debug_assertions)]
-        if self.max_count() == 0 {
+        if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let iter = batch.into_iter();
@@ -392,29 +392,36 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             })
     }
 
-    /// Returns the number of tasks currently queued for processing.
-    pub fn queued_count(&self) -> usize {
-        self.shared.queued_count.get()
-    }
-
-    /// Returns the number of tasks currently being processed.
-    pub fn active_count(&self) -> usize {
-        self.shared.active_count.get()
-    }
-
-    /// Returns the maximum number of tasks that can be processed concurrently.
-    pub fn max_count(&self) -> usize {
+    /// Returns the number of worker threads, i.e., the maximum number of tasks that can be
+    /// processed concurrently.
+    pub fn num_threads(&self) -> usize {
         self.shared.config.num_threads.get_or_default()
     }
 
-    /// Returns the number of times one of this `Hive`'s worker threads has panicked.
-    pub fn panic_count(&self) -> usize {
-        self.shared.panic_count.get()
+    /// Returns the number of tasks currently queued for processing.
+    pub fn num_tasks_queued(&self) -> usize {
+        self.shared.num_tasks_queued.get()
     }
 
-    /// Sets the suspended flag, which enables worker threads to terminate early. After calling
-    /// this method, no queued tasks will be processed. Call `resume` to unset the suspended flag
-    /// and continue processing tasks.
+    /// Returns the number of tasks currently being processed.
+    pub fn num_tasks_active(&self) -> usize {
+        self.shared.num_tasks_active.get()
+    }
+
+    /// Returns the number of times one of this `Hive`'s worker threads has panicked.
+    pub fn num_panics(&self) -> usize {
+        self.shared.num_panics.get()
+    }
+
+    /// Sets the suspended flag, which notifies worker threads that they a) MAY terminate their
+    /// current task early (returning an `Unprocessed` outcome), and b) MUST not accept new tasks,
+    /// and instead block until the suspended flag is cleared.
+    ///
+    /// Call `resume` to unset the suspended flag and continue processing tasks.
+    ///
+    /// Note: this does *not* prevent new tasks from being queued, and there is a window of time
+    /// (~1 second) after the suspended flag is set within which a worker thread may still accept a
+    /// new task.
     ///
     /// # Examples
     /// # use drudge::hive::Builder;
@@ -428,12 +435,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be processed.
     /// // There should be 4 active tasks and 6 queued tasks.
     /// hive.suspend();
-    /// assert_eq!(hive.active_count(), 4);
-    /// assert_eq!(hive.queued_count(), 6);
+    /// assert_eq!(hive.num_tasks_active(), 4);
+    /// assert_eq!(hive.num_tasks_queued(), 6);
     /// // Wait for active tasks to complete.
     /// hive.join();
-    /// assert_eq!(hive.active_count(), 0);
-    /// assert_eq!(hive.queued_count(), 6);
+    /// assert_eq!(hive.num_tasks_active(), 0);
+    /// assert_eq!(hive.num_tasks_queued(), 6);
     /// hive.resume();
     /// // Wait for remaining tasks to complete.
     /// hive.join();
@@ -574,8 +581,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
 
 #[cfg(not(feature = "affinity"))]
 mod no_affinity {
-    use crate::hive::shared::Shared;
-    use crate::hive::Hive;
+    use crate::hive::{Hive, Shared};
     use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
@@ -620,8 +626,7 @@ mod affinity {
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use crate::hive::shared::{Shared, Task};
-    use crate::hive::{Hive, Outcome};
+    use crate::hive::{Hive, Outcome, Shared, Task};
     use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {

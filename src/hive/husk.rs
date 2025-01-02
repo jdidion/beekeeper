@@ -10,7 +10,7 @@ use std::ops::{Deref, DerefMut};
 pub struct Husk<W: Worker, Q: Queen<Kind = W>> {
     config: Config,
     queen: Q,
-    panic_count: usize,
+    num_panics: usize,
     outcomes: HashMap<usize, Outcome<W>>,
 }
 
@@ -18,13 +18,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     pub(super) fn new(
         config: Config,
         queen: Q,
-        panic_count: usize,
+        num_panics: usize,
         outcomes: HashMap<usize, Outcome<W>>,
     ) -> Self {
         Self {
             config,
             queen,
-            panic_count,
+            num_panics,
             outcomes,
         }
     }
@@ -35,8 +35,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     }
 
     /// The number of panicked threads in the former `Hive`.
-    pub fn panic_count(&self) -> usize {
-        self.panic_count
+    pub fn num_panics(&self) -> usize {
+        self.num_panics
     }
 
     /// Consumes this `Husk` and returns the `Queen` and `Outcome`s.

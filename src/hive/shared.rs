@@ -5,6 +5,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::thread::Builder;
+use std::time::Duration;
 use std::{fmt, iter, mem};
 
 impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
@@ -13,15 +14,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
-            panic_count: Default::default(),
-            queued_count: Default::default(),
-            active_count: Default::default(),
-            next_index: Default::default(),
+            num_tasks_queued: Default::default(),
+            num_tasks_active: Default::default(),
+            next_task_index: Default::default(),
+            num_panics: Default::default(),
             suspended: Default::default(),
-            outcomes: Default::default(),
+            suspended_condvar: Default::default(),
             empty_condvar: Default::default(),
-            empty_trigger: Default::default(),
-            join_generation: Default::default(),
+            outcomes: Default::default(),
             #[cfg(feature = "retry")]
             retry_queue: Default::default(),
             #[cfg(feature = "retry")]
@@ -60,8 +60,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
     /// `outcome_tx` and the next index.
     pub fn prepare_task(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Task<W> {
-        self.queued_count.add(1);
-        let index = self.next_index.add(1);
+        self.num_tasks_queued.add(1);
+        let index = self.next_task_index.add(1);
         let ctx = Context::new(index, self.suspended.clone());
         Task::new(input, ctx, outcome_tx)
     }
@@ -74,8 +74,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         inputs: T,
         outcome_tx: Option<OutcomeSender<W>>,
     ) -> impl Iterator<Item = Task<W>> + 'a {
-        self.queued_count.add(min_size);
-        let index_start = self.next_index.add(min_size);
+        self.num_tasks_queued.add(min_size);
+        let index_start = self.next_task_index.add(min_size);
         let index_end = index_start + min_size;
         inputs
             .map(Some)
@@ -101,9 +101,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
     pub fn finish_task(&self, panicking: bool) {
-        self.active_count.sub(1);
+        self.num_tasks_active.sub(1);
         if panicking {
-            self.panic_count.add(1);
+            self.num_panics.add(1);
         }
         self.no_work_notify_all();
     }
@@ -111,13 +111,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Returns `true` if there are either active tasks or if there are queued tasks and the
     /// cancelled flag hasn't been set.
     pub fn has_work(&self) -> bool {
-        self.active_count.get() > 0 || (!self.is_suspended() && self.queued_count.get() > 0)
+        self.num_tasks_active.get() > 0 || (!self.is_suspended() && self.num_tasks_queued.get() > 0)
     }
 
     /// Notify all observers joining this hive if there is no more work to do.
     pub fn no_work_notify_all(&self) {
         if !self.has_work() {
-            let _lock = self.empty_trigger.lock();
             self.empty_condvar.notify_all();
         }
     }
@@ -125,8 +124,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Sets the `cancelled` flag. Worker threads may terminate early. No new worker threads will
     /// be spawned. Returns `true` if the value was changed.
     pub fn set_suspended(&self, suspended: bool) -> bool {
-        let old_val = self.suspended.set(suspended);
-        old_val == suspended
+        if self.suspended.set(suspended) == suspended {
+            false
+        } else {
+            if !suspended {
+                self.suspended_condvar.notify_all();
+            }
+            true
+        }
     }
 
     /// Returns `true` if the `cancelled` flag has been set.
@@ -166,18 +171,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     }
 
     /// Blocks the current thread until all active tasks have been processed. Also waits until all
-    /// queued tasks have been processed unless the cancelled flag has been set.
+    /// queued tasks have been processed unless the suspended flag has been set.
     pub fn wait_on_done(&self) {
         if self.has_work() {
-            let generation = self.join_generation.get();
-            let mut lock = self.empty_trigger.lock();
-            while generation == self.join_generation.get() && self.has_work() {
-                self.empty_condvar.wait(&mut lock);
-            }
-            // increase generation for the first thread to come out of the loop
-            let _ = self
-                .join_generation
-                .set_when(generation, generation.wrapping_add(1));
+            self.empty_condvar.wait_while(|| self.has_work());
         }
     }
 }
@@ -186,9 +183,9 @@ impl<W: Worker, Q: Queen<Kind = W>> fmt::Debug for Shared<W, Q> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Shared")
             .field("name", &self.config.thread_name)
-            .field("queued_count", &self.queued_count)
-            .field("active_count", &self.active_count)
-            .field("max_count", &self.config.num_threads)
+            .field("num_threads", &self.config.num_threads)
+            .field("num_tasks_queued", &self.num_tasks_queued)
+            .field("num_tasks_active", &self.num_tasks_active)
             .finish()
     }
 }
@@ -229,6 +226,9 @@ fn insert_unprocessed_into<W: Worker>(task: Task<W>, outcomes: &mut HashMap<usiz
     );
 }
 
+// time to wait in between polling the retry queue and then the task receiver
+const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn drain_task_receiver_into<W: Worker>(
     rx: TaskReceiver<W>,
     outcomes: &mut HashMap<usize, Outcome<W>>,
@@ -238,24 +238,30 @@ fn drain_task_receiver_into<W: Worker>(
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use crate::atomic::AtomicNumber;
-    use crate::hive::{Shared, Task};
-    use crate::task::{Context, Queen, Worker};
+    use super::NextTaskError;
+    use crate::atomic::{Atomic, AtomicNumber};
+    use crate::hive::{Husk, Shared, Task};
+    use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
-        fn next_task(&self) -> Option<Task<W>> {
-            if self.is_suspended() {
-                None
-            } else {
-                self.task_rx.lock().recv().ok().inspect(|_| {
-                    self.active_count.add(1);
-                    self.queued_count.sub(1);
-                })
+        pub fn next_task(&self) -> Option<Task<W>> {
+            loop {
+                self.suspended_condvar.wait_while(|| self.is_suspended());
+
+                match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
+                    Ok(task) => break Some(task),
+                    Err(RecvTimeoutError::Disconnected) => break None,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                }
             }
+            .inspect(|_| {
+                self.num_tasks_queued.sub(1);
+                self.num_tasks_active.add(1);
+            })
         }
 
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
@@ -264,11 +270,11 @@ mod no_retry {
         pub fn into_husk(self) -> Husk<W, Q> {
             let task_rx = self.task_rx.into_inner();
             let mut outcomes = self.outcomes.into_inner();
-            drain_task_receiver_into(task_rx, &mut outcomes);
+            super::drain_task_receiver_into(task_rx, &mut outcomes);
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),
-                self.panic_count.into_inner(),
+                self.num_panics.into_inner(),
                 outcomes,
             )
         }
@@ -327,7 +333,7 @@ mod retry {
                 .unwrap_or_default();
             let task = Task::new(input, ctx, outcome_tx);
             let mut queue = self.retry_queue.lock();
-            self.queued_count.add(1);
+            self.num_tasks_queued.add(1);
             let available_at = queue.push(task, delay);
             self.update_next_retry(Some(available_at));
         }
@@ -337,14 +343,9 @@ mod retry {
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
         pub fn next_task(&self) -> Option<Task<W>> {
-            // time to wait in between polling the retry queue and then the task receiver
-            const RECV_TIMEOUT: Duration = Duration::from_secs(1);
-
-            if self.is_suspended() {
-                return None;
-            }
-
             loop {
+                self.suspended_condvar.wait_while(|| self.is_suspended());
+
                 let has_retry = {
                     let next_retry = self.next_retry.read();
                     next_retry.is_some_and(|next_retry| next_retry <= Instant::now())
@@ -356,15 +357,15 @@ mod retry {
                         break Some(task);
                     }
                 }
-                match self.task_rx.lock().recv_timeout(RECV_TIMEOUT) {
+                match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
                     Ok(task) => break Some(task),
                     Err(RecvTimeoutError::Disconnected) => break None,
                     Err(RecvTimeoutError::Timeout) => continue,
                 }
             }
             .inspect(|_| {
-                self.active_count.add(1);
-                self.queued_count.sub(1);
+                self.num_tasks_queued.sub(1);
+                self.num_tasks_active.add(1);
             })
         }
 
@@ -382,7 +383,7 @@ mod retry {
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),
-                self.panic_count.into_inner(),
+                self.num_panics.into_inner(),
                 outcomes,
             )
         }

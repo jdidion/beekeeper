@@ -1,4 +1,5 @@
 mod builder;
+mod condvar;
 mod config;
 mod hive;
 mod husk;
@@ -12,6 +13,13 @@ pub mod cores;
 #[cfg(feature = "retry")]
 mod delay;
 
+pub mod prelude {
+    pub use super::{
+        Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt,
+        OutcomeStore,
+    };
+}
+
 pub use crate::channel::channel as outcome_channel;
 
 pub use builder::Builder;
@@ -22,21 +30,14 @@ pub use outcome::{Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt, 
 #[cfg(feature = "retry")]
 pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
-pub mod prelude {
-    pub use super::{
-        Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt,
-        OutcomeStore,
-    };
-}
-
 pub(self) use outcome::{Outcomes, OutcomesDeref};
 
-use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicU32, AtomicU64, AtomicUsize};
+use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::task::{Context, Queen, Worker};
-use parking_lot::{Condvar, Mutex, RwLock};
+use condvar::{MutexCondvar, PhasedCondvar};
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
 type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
@@ -44,9 +45,20 @@ type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
 //pub type OutcomeReceiver<W> = channel::Receiver<Outcome<W>>;
 
 type Usize = AtomicOption<usize, AtomicUsize>;
-type U32 = AtomicOption<u32, AtomicU32>;
-type U64 = AtomicOption<u64, AtomicU64>;
 type Any<T> = AtomicOption<T, AtomicAny<T>>;
+
+#[cfg(feature = "retry")]
+mod retry_prelude {
+    pub use parking_lot::RwLock;
+    pub use std::time::Instant;
+
+    use crate::atomic::{AtomicOption, AtomicU32, AtomicU64};
+
+    pub type U32 = AtomicOption<u32, AtomicU32>;
+    pub type U64 = AtomicOption<u64, AtomicU64>;
+}
+#[cfg(feature = "retry")]
+use retry_prelude::*;
 
 /// A pool of worker threads that each execute the same function. A `Hive` is created by a
 /// [`Builder`].
@@ -112,15 +124,14 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     config: Config,
     queen: Mutex<Q>,
     task_rx: Mutex<TaskReceiver<W>>,
-    queued_count: AtomicUsize,
-    active_count: AtomicUsize,
-    panic_count: AtomicUsize,
-    next_index: AtomicUsize,
+    num_tasks_queued: AtomicUsize,
+    num_tasks_active: AtomicUsize,
+    next_task_index: AtomicUsize,
+    num_panics: AtomicUsize,
     suspended: Arc<AtomicBool>,
+    suspended_condvar: MutexCondvar,
+    empty_condvar: PhasedCondvar,
     outcomes: Mutex<HashMap<usize, Outcome<W>>>,
-    empty_trigger: Mutex<()>,
-    empty_condvar: Condvar,
-    join_generation: AtomicUsize,
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
     #[cfg(feature = "retry")]
@@ -132,8 +143,11 @@ mod test {
     use super::{Builder, Hive, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
     use crate::channel::{Message, ReceiverExt};
     use crate::hive::outcome::OutcomesDeref;
-    use crate::task::{ApplyError, Context, DefaultQueen, Worker, WorkerResult};
-    use crate::util::{Caller, OnceCaller, RefCaller, RetryCaller, Thunk, ThunkWorker};
+    use crate::task::{
+        ApplyError, ApplyRefError, Context, DefaultQueen, RefWorker, RefWorkerResult, Worker,
+        WorkerResult,
+    };
+    use crate::util::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use std::{
         fmt::Debug,
         io::{self, BufRead, BufReader, Write},
@@ -143,7 +157,7 @@ mod test {
             Arc, Barrier,
         },
         thread,
-        time::{self, Duration},
+        time::Duration,
     };
 
     const TEST_TASKS: usize = 4;
@@ -181,11 +195,11 @@ mod test {
         let (tx, rx) = super::outcome_channel();
         let _ = hive.apply_send(Thunk::of(|| 0), tx);
         thread::sleep(ONE_SEC);
-        assert_eq!(hive.queued_count(), 1);
+        assert_eq!(hive.num_tasks_queued(), 1);
         assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
         hive.grow(1);
         thread::sleep(ONE_SEC);
-        assert_eq!(hive.queued_count(), 0);
+        assert_eq!(hive.num_tasks_queued(), 0);
         assert!(matches!(
             rx.try_recv_msg(),
             Message::Received(Outcome::Success { value: 0, .. })
@@ -193,50 +207,95 @@ mod test {
     }
 
     #[test]
-    fn test_set_num_threads_increasing() {
+    fn test_grow() {
         let hive = thunk_hive(TEST_TASKS);
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         }
         thread::sleep(ONE_SEC);
-        assert_eq!(hive.active_count(), TEST_TASKS);
+        assert_eq!(hive.num_tasks_active(), TEST_TASKS);
         // increase the number of threads
-        let new_thread_amount = TEST_TASKS + 8;
-        hive.grow(new_thread_amount);
+        let new_threads = 4;
+        let total_threads = new_threads + TEST_TASKS;
+        hive.grow(new_threads);
         // queue some more long-running tasks
-        for _ in 0..(new_thread_amount - TEST_TASKS) {
+        for _ in 0..new_threads {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         }
         thread::sleep(ONE_SEC);
-        assert_eq!(hive.active_count(), new_thread_amount);
+        assert_eq!(hive.num_tasks_active(), total_threads);
         let husk = hive.into_husk();
-        assert_eq!(husk.iter_successes().count(), new_thread_amount);
+        assert_eq!(husk.iter_successes().count(), total_threads);
     }
 
     #[test]
-    fn test_set_num_threads_decreasing() {
-        let new_thread_amount = 2;
+    fn test_suspend() {
         let hive = thunk_hive(TEST_TASKS);
-        for _ in 0..TEST_TASKS {
-            hive.apply_store(Thunk::of(|| ()));
-        }
-        hive.grow(new_thread_amount);
-        for _ in 0..new_thread_amount {
-            hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
+        // queue some long-running tasks
+        let total_tasks = 2 * TEST_TASKS;
+        for _ in 0..total_tasks {
+            hive.apply_store(Thunk::of(|| thread::sleep(SHORT_TASK)));
         }
         thread::sleep(ONE_SEC);
-        assert_eq!(hive.active_count(), new_thread_amount);
-        hive.join();
-        let husk = hive.into_husk();
-        assert_eq!(
-            husk.iter_successes().count(),
-            TEST_TASKS + new_thread_amount
-        );
+        assert_eq!(hive.num_tasks_active(), TEST_TASKS);
+        assert_eq!(hive.num_tasks_queued(), TEST_TASKS);
+        hive.suspend();
+        // active tasks should finish but no more tasks should be started
+        thread::sleep(SHORT_TASK);
+        assert_eq!(hive.num_tasks_active(), 0);
+        assert_eq!(hive.num_tasks_queued(), TEST_TASKS);
+        assert_eq!(hive.num_successes(), TEST_TASKS);
+        hive.resume();
+        // new tasks should start
+        thread::sleep(ONE_SEC);
+        assert_eq!(hive.num_tasks_active(), TEST_TASKS);
+        assert_eq!(hive.num_tasks_queued(), 0);
+        thread::sleep(SHORT_TASK);
+        // all tasks should be completed
+        assert_eq!(hive.num_tasks_active(), 0);
+        assert_eq!(hive.num_tasks_queued(), 0);
+        assert_eq!(hive.num_successes(), total_tasks);
+    }
+
+    #[derive(Debug, Default)]
+    struct MyRefWorker;
+
+    impl RefWorker for MyRefWorker {
+        type Input = u8;
+        type Output = u8;
+        type Error = ();
+
+        fn apply_ref(&mut self, input: &Self::Input, ctx: &Context) -> RefWorkerResult<Self> {
+            for _ in 0..3 {
+                thread::sleep(Duration::from_secs(1));
+                if ctx.is_cancelled() {
+                    return Err(ApplyRefError::Cancelled);
+                }
+            }
+            Ok(*input)
+        }
     }
 
     #[test]
-    fn test_active_count() {
+    fn test_suspend_with_cancelled_tasks() {
+        let hive = Builder::new()
+            .num_threads(TEST_TASKS)
+            .build_with_default::<MyRefWorker>();
+        hive.swarm_store(0..TEST_TASKS as u8);
+        hive.suspend();
+        // wait for tasks to be cancelled
+        thread::sleep(Duration::from_secs(2));
+        hive.resume_store();
+        thread::sleep(Duration::from_secs(1));
+        // unprocessed tasks should be requeued
+        assert_eq!(hive.num_tasks_active(), TEST_TASKS);
+        thread::sleep(Duration::from_secs(3));
+        assert_eq!(hive.num_successes(), TEST_TASKS);
+    }
+
+    #[test]
+    fn test_num_tasks_active() {
         let hive = thunk_hive(TEST_TASKS);
         for _ in 0..2 * TEST_TASKS {
             hive.apply_store(Thunk::of(|| loop {
@@ -244,16 +303,16 @@ mod test {
             }));
         }
         thread::sleep(ONE_SEC);
-        let active_count = hive.active_count();
-        assert_eq!(active_count, TEST_TASKS);
-        let initialized_count = hive.max_count();
-        assert_eq!(initialized_count, TEST_TASKS);
+        let num_tasks_active = hive.num_tasks_active();
+        assert_eq!(num_tasks_active, TEST_TASKS);
+        let num_threads = hive.num_threads();
+        assert_eq!(num_threads, TEST_TASKS);
     }
 
     #[test]
     fn test_all_threads() {
         let hive = Builder::new()
-            .all_threads()
+            .thread_per_core()
             .build_with_default::<ThunkWorker<()>>();
         let num_threads = num_cpus::get();
         for _ in 0..num_threads {
@@ -262,10 +321,10 @@ mod test {
             }));
         }
         thread::sleep(ONE_SEC);
-        let active_count = hive.active_count();
-        assert_eq!(active_count, num_threads);
-        let initialized_count = hive.max_count();
-        assert_eq!(initialized_count, num_threads);
+        let num_tasks_active = hive.num_tasks_active();
+        assert_eq!(num_tasks_active, num_threads);
+        let num_threads = hive.num_threads();
+        assert_eq!(num_threads, num_threads);
     }
 
     #[test]
@@ -278,9 +337,9 @@ mod test {
         }
         hive.join();
         // Ensure that none of the threads have panicked
-        assert_eq!(hive.panic_count(), TEST_TASKS);
+        assert_eq!(hive.num_panics(), TEST_TASKS);
         let husk = hive.into_husk();
-        assert_eq!(husk.panic_count(), TEST_TASKS);
+        assert_eq!(husk.num_panics(), TEST_TASKS);
     }
 
     #[test]
@@ -297,7 +356,7 @@ mod test {
         }
         hive.join();
         // Ensure that none of the threads have panicked
-        assert_eq!(hive.panic_count(), 0);
+        assert_eq!(hive.num_panics(), 0);
         // Check that all the results are Outcome::Panic
         for outcome in rx.into_iter().take(TEST_TASKS) {
             assert!(matches!(outcome, Outcome::Panic { .. }));
@@ -350,100 +409,19 @@ mod test {
         }
 
         b0.wait();
-        assert_eq!(hive.active_count(), TEST_TASKS);
+        assert_eq!(hive.num_tasks_active(), TEST_TASKS);
         b1.wait();
 
         assert_eq!(rx.iter().take(test_tasks).sum::<usize>(), test_tasks);
         hive.join();
 
-        let atomic_active_count = hive.active_count();
+        let atomic_num_tasks_active = hive.num_tasks_active();
         assert!(
-            atomic_active_count == 0,
-            "atomic_active_count: {}",
-            atomic_active_count
+            atomic_num_tasks_active == 0,
+            "atomic_num_tasks_active: {}",
+            atomic_num_tasks_active
         );
     }
-
-    fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
-        let attempt = ctx.attempt();
-        if attempt == 3 {
-            Ok("Success".into())
-        } else {
-            // the delay between each message should be exponential
-            println!(
-                "Task {} attempt {}: {:?}",
-                i,
-                attempt,
-                time::SystemTime::now()
-            );
-            Err(ApplyError::Retryable {
-                input: i,
-                error: "Retryable".into(),
-            })
-        }
-    }
-
-    #[test]
-    fn test_retries() {
-        let hive = Builder::new()
-            .all_threads()
-            .max_retries(3)
-            .retry_factor(time::Duration::from_secs(1))
-            .build_with(RetryCaller::of(echo_time));
-
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
-        assert_eq!(v.unwrap().len(), 10);
-    }
-
-    #[test]
-    fn test_retries_fail() {
-        fn sometimes_fail(i: usize, _: &Context) -> Result<String, ApplyError<usize, String>> {
-            match i % 3 {
-                0 => Ok("Success".into()),
-                1 => Err(ApplyError::Retryable {
-                    input: i,
-                    error: "Retryable".into(),
-                }),
-                2 => Err(ApplyError::NotRetryable {
-                    input: Some(i),
-                    error: "NotRetryable".into(),
-                }),
-                _ => unreachable!(),
-            }
-        }
-
-        let hive = Builder::new()
-            .all_threads()
-            .max_retries(3)
-            .build_with(RetryCaller::of(sometimes_fail));
-
-        let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
-            (0, 0, 0),
-            |(success, retry_failed, not_retried), outcome| match outcome {
-                Outcome::Success { .. } => (success + 1, retry_failed, not_retried),
-                Outcome::MaxRetriesAttempted { .. } => (success, retry_failed + 1, not_retried),
-                Outcome::Failure { .. } => (success, retry_failed, not_retried + 1),
-                _ => unreachable!(),
-            },
-        );
-
-        assert_eq!(success, 4);
-        assert_eq!(retry_failed, 3);
-        assert_eq!(not_retried, 3);
-    }
-
-    #[test]
-    fn test_disable_retries() {
-        let hive = Builder::new()
-            .all_threads()
-            .no_retries()
-            .build_with(RetryCaller::of(echo_time));
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
-        assert!(matches!(v, Err(_)));
-    }
-
-    #[test]
-    fn test_cancel() {}
 
     #[test]
     fn test_name() {
@@ -503,7 +481,7 @@ mod test {
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
-            "Hive { task_tx: Sender { .. }, shared: Shared { name: None, queued_count: 0, active_count: 0, max_count: 4 } }"
+            "Hive { task_tx: Sender { .. }, shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
         );
 
         let hive = Builder::new()
@@ -513,7 +491,7 @@ mod test {
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
-            "Hive { task_tx: Sender { .. }, shared: Shared { name: \"hello\", queued_count: 0, active_count: 0, max_count: 4 } }"
+            "Hive { task_tx: Sender { .. }, shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
         );
 
         let hive = thunk_hive(4);
@@ -522,7 +500,7 @@ mod test {
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
-            "Hive { task_tx: Sender { .. }, shared: Shared { name: None, queued_count: 0, active_count: 1, max_count: 4 } }"
+            "Hive { task_tx: Sender { .. }, shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 1 } }"
         );
     }
 
@@ -1309,7 +1287,7 @@ mod affinity_tests {
     #[test]
     fn test_affinity() {
         let hive = Builder::new()
-            .thread_name("clone example")
+            .thread_name("affinity example")
             .num_threads(2)
             .thread_affinity(0..2)
             .build_with_default::<ThunkWorker<()>>();
@@ -1321,5 +1299,103 @@ mod affinity_tests {
                 }
             })
         }));
+    }
+
+    #[test]
+    fn test_use_all_cores() {
+        let hive = Builder::new()
+            .thread_name("affinity example")
+            .thread_per_core()
+            .with_thread_affinity()
+            .build_with_default::<ThunkWorker<()>>();
+
+        hive.map_store((0..num_cpus::get()).map(move |i| {
+            Thunk::of(move || {
+                if let Some(affininty) = core_affinity::get_core_ids() {
+                    println!("task {} on thread with affinity {:?}", i, affininty);
+                }
+            })
+        }));
+    }
+}
+
+#[cfg(all(test, feature = "retry"))]
+mod retry_tests {
+    use crate::hive::{Builder, Outcome, OutcomeIteratorExt};
+    use crate::task::{ApplyError, Context};
+    use crate::util::RetryCaller;
+    use std::time::{Duration, SystemTime};
+
+    fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
+        let attempt = ctx.attempt();
+        if attempt == 3 {
+            Ok("Success".into())
+        } else {
+            // the delay between each message should be exponential
+            println!("Task {} attempt {}: {:?}", i, attempt, SystemTime::now());
+            Err(ApplyError::Retryable {
+                input: i,
+                error: "Retryable".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_retries() {
+        let hive = Builder::new()
+            .thread_per_core()
+            .max_retries(3)
+            .retry_factor(Duration::from_secs(1))
+            .build_with(RetryCaller::of(echo_time));
+
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
+        assert_eq!(v.unwrap().len(), 10);
+    }
+
+    #[test]
+    fn test_retries_fail() {
+        fn sometimes_fail(i: usize, _: &Context) -> Result<String, ApplyError<usize, String>> {
+            match i % 3 {
+                0 => Ok("Success".into()),
+                1 => Err(ApplyError::Retryable {
+                    input: i,
+                    error: "Retryable".into(),
+                }),
+                2 => Err(ApplyError::NotRetryable {
+                    input: Some(i),
+                    error: "NotRetryable".into(),
+                }),
+                _ => unreachable!(),
+            }
+        }
+
+        let hive = Builder::new()
+            .thread_per_core()
+            .max_retries(3)
+            .build_with(RetryCaller::of(sometimes_fail));
+
+        let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
+            (0, 0, 0),
+            |(success, retry_failed, not_retried), outcome| match outcome {
+                Outcome::Success { .. } => (success + 1, retry_failed, not_retried),
+                Outcome::MaxRetriesAttempted { .. } => (success, retry_failed + 1, not_retried),
+                Outcome::Failure { .. } => (success, retry_failed, not_retried + 1),
+                _ => unreachable!(),
+            },
+        );
+
+        assert_eq!(success, 4);
+        assert_eq!(retry_failed, 3);
+        assert_eq!(not_retried, 3);
+    }
+
+    #[test]
+    fn test_disable_retries() {
+        let hive = Builder::new()
+            .thread_per_core()
+            .no_retries()
+            .build_with(RetryCaller::of(echo_time));
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
+        assert!(matches!(v, Err(_)));
     }
 }
