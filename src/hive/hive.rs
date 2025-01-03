@@ -160,7 +160,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     {
         let (tx, rx) = outcome_channel();
         let num_tasks = self.send_batch(batch, Some(tx)).len();
-        rx.take_ordered(num_tasks)
+        rx.into_ordered().take(num_tasks)
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
@@ -218,7 +218,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
             .count();
-        rx.take_ordered(num_tasks)
+        rx.into_ordered().take(num_tasks)
     }
 
     /// Iterates over `inputs`, sends each one to the `Hive` for processing, and returns an
@@ -634,7 +634,7 @@ mod no_retry {
         pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) -> bool {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
-            let outcome = Outcome::from_worker_result(result, ctx.index(), false);
+            let outcome = Outcome::from_worker_result(result, ctx.index());
             // Send the outcome to the receiver or store it in the hive
             if let Some(tx) = outcome_tx {
                 tx.send(outcome).is_ok()
@@ -662,7 +662,7 @@ mod retry {
                     true
                 }
                 result => {
-                    let outcome = Outcome::from_worker_result(result, ctx.index(), true);
+                    let outcome = Outcome::from_worker_result(result, ctx.index());
                     // Send the outcome to the receiver or store it in the hive
                     if let Some(tx) = outcome_tx {
                         tx.send(outcome).is_ok()

@@ -19,12 +19,6 @@ pub enum Outcome<W: Worker> {
         error: W::Error,
         index: usize,
     },
-    /// The task failed after retrying the maximum number of times.
-    MaxRetriesAttempted {
-        input: W::Input,
-        error: W::Error,
-        index: usize,
-    },
     /// The task was not executed before the Hive was closed.
     Unprocessed { input: W::Input, index: usize },
     /// The task panicked. The input value that caused the panic is provided if possible.
@@ -33,27 +27,38 @@ pub enum Outcome<W: Worker> {
         payload: Panic<String>,
         index: usize,
     },
+    /// The task failed after retrying the maximum number of times.
+    #[cfg(feature = "retry")]
+    MaxRetriesAttempted {
+        input: W::Input,
+        error: W::Error,
+        index: usize,
+    },
 }
 
 impl<W: Worker> Outcome<W> {
-    pub(in crate::hive) fn from_worker_result(
-        result: WorkerResult<W>,
-        index: usize,
-        retryable: bool,
-    ) -> Self {
+    pub(in crate::hive) fn from_worker_result(result: WorkerResult<W>, index: usize) -> Self {
         match result {
             Ok(value) => Self::Success { index, value },
-            Err(ApplyError::Retryable { input, error }) if retryable => Self::MaxRetriesAttempted {
-                input,
-                error,
-                index,
-            },
-            Err(ApplyError::Retryable { input, error, .. }) => Self::Failure {
-                input: Some(input),
-                error,
-                index,
-            },
-            Err(ApplyError::NotRetryable { input, error }) => Self::Failure {
+            Err(ApplyError::Retryable { input, error }) => {
+                #[cfg(feature = "retry")]
+                {
+                    Self::MaxRetriesAttempted {
+                        input,
+                        error,
+                        index,
+                    }
+                }
+                #[cfg(not(feature = "retry"))]
+                {
+                    Self::Failure {
+                        input: Some(input),
+                        error,
+                        index,
+                    }
+                }
+            }
+            Err(ApplyError::Fatal { input, error }) => Self::Failure {
                 input,
                 error,
                 index,
@@ -79,10 +84,12 @@ impl<W: Worker> Outcome<W> {
 
     /// Returns `true` if this outcome represents a task failure.
     pub fn is_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::Failure { .. } | Self::MaxRetriesAttempted { .. } | Self::Panic { .. }
-        )
+        match self {
+            Self::Failure { .. } | Self::Panic { .. } => true,
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { .. } => true,
+            _ => false,
+        }
     }
 
     /// Returns the index of the task that produced this outcome.
@@ -90,9 +97,10 @@ impl<W: Worker> Outcome<W> {
         match self {
             Self::Success { index, .. }
             | Self::Failure { index, .. }
-            | Self::MaxRetriesAttempted { index, .. }
             | Self::Unprocessed { index, .. }
             | Self::Panic { index, .. } => *index,
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { index, .. } => *index,
         }
     }
 
@@ -110,9 +118,10 @@ impl<W: Worker> Outcome<W> {
         match self {
             Self::Success { .. } => None,
             Self::Failure { input, .. } => input,
-            Self::MaxRetriesAttempted { input, .. } => Some(input),
             Self::Unprocessed { input, .. } => Some(input),
             Self::Panic { input, .. } => input,
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { input, .. } => Some(input),
         }
     }
 
@@ -123,16 +132,29 @@ impl<W: Worker> Outcome<W> {
     pub fn into_error(self) -> W::Error {
         match self {
             Self::Success { .. } => panic!("not an error outcome"),
-            Self::Failure { error, .. } | Self::MaxRetriesAttempted { error, .. } => error,
+            Self::Failure { error, .. } => error,
             Self::Unprocessed { .. } => panic!("unprocessed input"),
             Self::Panic { payload, .. } => payload.resume(),
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { error, .. } => error,
         }
     }
 }
 
 impl<W: Worker> PartialEq for Outcome<W> {
     fn eq(&self, other: &Self) -> bool {
-        self.index() == other.index()
+        match (self, other) {
+            (Self::Success { index: a, .. }, Self::Success { index: b, .. }) => a == b,
+            (Self::Failure { index: a, .. }, Self::Failure { index: b, .. }) => a == b,
+            (Self::Unprocessed { index: a, .. }, Self::Unprocessed { index: b, .. }) => a == b,
+            (Self::Panic { index: a, .. }, Self::Panic { index: b, .. }) => a == b,
+            #[cfg(feature = "retry")]
+            (
+                Self::MaxRetriesAttempted { index: a, .. },
+                Self::MaxRetriesAttempted { index: b, .. },
+            ) => a == b,
+            _ => false,
+        }
     }
 }
 

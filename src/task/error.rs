@@ -4,15 +4,15 @@ use std::fmt::Debug;
 /// Error that can result from applying a `Worker`'s function to an input.
 #[derive(thiserror::Error, Debug)]
 pub enum ApplyError<I, E> {
+    /// The task failed due to a fatal error that cannot be retried.
+    #[error("Task failed (and is not retryable)")]
+    Fatal { input: Option<I>, error: E },
+    /// The task failed due to a (possibly) transient error and can be retried.
+    #[error("Task failed, but is retryable")]
+    Retryable { input: I, error: E },
     /// The task was cancelled before it completed.
     #[error("Task was cancelled")]
     Cancelled { input: I },
-    /// The task failed due to a (possibly) transient error and can be retried.
-    #[error("Error is retryable")]
-    Retryable { input: I, error: E },
-    /// The task failed due to a fatal error that cannot be retried.
-    #[error("Error is not retryable")]
-    NotRetryable { input: Option<I>, error: E },
     /// The task panicked.
     #[error("Task panicked")]
     Panic {
@@ -25,9 +25,9 @@ impl<I, E> ApplyError<I, E> {
     /// Returns the input value associated with this error, if available.
     pub fn input(&self) -> Option<&I> {
         match self {
-            Self::Cancelled { input, .. } => Some(input),
+            Self::Fatal { input, .. } => input.as_ref(),
             Self::Retryable { input, .. } => Some(input),
-            Self::NotRetryable { input, .. } => input.as_ref(),
+            Self::Cancelled { input, .. } => Some(input),
             Self::Panic { input, .. } => input.as_ref(),
         }
     }
@@ -35,9 +35,9 @@ impl<I, E> ApplyError<I, E> {
     /// Consumes this `ApplyError` and returns the input value associated with it, if available.
     pub fn into_input(self) -> Option<I> {
         match self {
-            Self::Cancelled { input, .. } => Some(input),
+            Self::Fatal { input, .. } => input,
             Self::Retryable { input, .. } => Some(input),
-            Self::NotRetryable { input, .. } => input,
+            Self::Cancelled { input, .. } => Some(input),
             Self::Panic { input, .. } => input,
         }
     }
@@ -48,9 +48,9 @@ impl<I, E> ApplyError<I, E> {
     /// * Returns `Some(E)` otherwise
     pub fn into_source(self) -> Option<E> {
         match self {
-            Self::Cancelled { .. } => None,
+            Self::Fatal { input: _, error } => Some(error),
             Self::Retryable { input: _, error } => Some(error),
-            Self::NotRetryable { input: _, error } => Some(error),
+            Self::Cancelled { .. } => None,
             Self::Panic { input: _, payload } => payload.resume(),
         }
     }
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(&42, retryable.input().unwrap());
         assert_eq!(42, retryable.into_input().unwrap());
 
-        let not_retryable: TestError = ApplyError::NotRetryable {
+        let not_retryable: TestError = ApplyError::Fatal {
             input: Some(42),
             error: "bork",
         };
@@ -108,7 +108,7 @@ mod tests {
         };
         assert_eq!(Some("bork"), retryable.into_source());
 
-        let not_retryable: TestError = ApplyError::NotRetryable {
+        let not_retryable: TestError = ApplyError::Fatal {
             input: Some(42),
             error: "bork",
         };

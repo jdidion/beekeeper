@@ -1253,11 +1253,10 @@ mod test {
             type Error = io::Error;
 
             fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
-                self.write_char(input)
-                    .map_err(|error| ApplyError::NotRetryable {
-                        input: Some(input),
-                        error,
-                    })
+                self.write_char(input).map_err(|error| ApplyError::Fatal {
+                    input: Some(input),
+                    error,
+                })
             }
         }
 
@@ -1361,7 +1360,7 @@ mod retry_tests {
                     input: i,
                     error: "Retryable".into(),
                 }),
-                2 => Err(ApplyError::NotRetryable {
+                2 => Err(ApplyError::Fatal {
                     input: Some(i),
                     error: "NotRetryable".into(),
                 }),

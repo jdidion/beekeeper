@@ -41,7 +41,7 @@ pub trait Worker: Debug + Sized + 'static {
         inputs.into_iter().map(move |input| {
             self.apply(input, &ctx).map_err(|error| match error {
                 ApplyError::Retryable { error, .. } => error,
-                ApplyError::NotRetryable { error, .. } => error,
+                ApplyError::Fatal { error, .. } => error,
                 _ => panic!("unexpected error"),
             })
         })
@@ -72,7 +72,7 @@ impl<E> ApplyRefError<E> {
         match self {
             Self::Cancelled => ApplyError::Cancelled { input },
             Self::Retryable(error) => ApplyError::Retryable { input, error },
-            Self::NotRetryable(error) => ApplyError::NotRetryable {
+            Self::NotRetryable(error) => ApplyError::Fatal {
                 input: Some(input),
                 error,
             },

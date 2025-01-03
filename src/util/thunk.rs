@@ -43,7 +43,7 @@ impl<T: Send + Debug + 'static, E: Send + Debug + 'static> Worker for FunkWorker
     #[inline]
     fn apply(&mut self, f: Self::Input, _: &Context) -> WorkerResult<Self> {
         f.0.call_box()
-            .map_err(|error| ApplyError::NotRetryable { error, input: None })
+            .map_err(|error| ApplyError::Fatal { error, input: None })
     }
 }
 
@@ -119,7 +119,7 @@ mod tests {
         let _error = String::from("failure");
         assert!(matches!(
             result,
-            Err(ApplyError::NotRetryable {
+            Err(ApplyError::Fatal {
                 input: None,
                 error: _error
             })

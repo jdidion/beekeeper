@@ -173,6 +173,12 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Debug for AtomicAny<T
     }
 }
 
+impl<T: Clone + Debug + Default + Sync + Send + PartialEq> PartialEq for AtomicAny<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
 /// A wrapper around an `Option<P>` with different behavior in single- and multi-threaded contexts:
 ///
 /// * The `Unsync` variant wraps `Option<P>`. It is intended to be used in a single-threaded
@@ -182,7 +188,7 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Debug for AtomicAny<T
 /// * The `Sync` variant wraps `Option<Atomic<P>>`. It is intended to be used in a multi-threaded
 ///   context, where the value can be set either by regular or interior mutability (using the
 ///   `update` or `try_update` method).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AtomicOption<P, A>
 where
     P: Clone + Debug + Default,
@@ -197,6 +203,11 @@ where
     P: Clone + Debug + Default,
     A: Atomic<P>,
 {
+    // Returns `AtomicOption::Unsync(Some(value))`.
+    // pub fn new(value: P) -> Self {
+    //     Self::Unsync(Some(value))
+    // }
+
     // Returns `true` if this is a `Sync` variant.
     // pub fn is_sync(&self) -> bool {
     //     matches!(self, Self::Sync(_))
@@ -223,7 +234,7 @@ where
         self.get().unwrap_or_default()
     }
 
-    /// Sets the value to `value` using regular mutability.
+    /// Sets the value to `value` using regular mutability. Returns the previous value.
     pub fn set(&mut self, value: Option<P>) -> Option<P> {
         match (self, value) {
             (Self::Sync(opt), Some(value)) => {
@@ -277,18 +288,72 @@ where
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MutError {
+    #[error("cannot use interior mutability to modify value in Unsync variant")]
+    Unsync,
+    #[error("cannot use interior mutability to modify value in an unset Sync variant")]
+    Unset,
+}
+
+impl<P, A> AtomicOption<P, A>
+where
+    P: Copy + Debug + Default + Add<Output = P> + PartialOrd<P>,
+    A: AtomicNumber<P>,
+{
+    /// If this is a `Sync` variant whose value is `Some`, updates the value to be the sum of
+    /// the current value and `value` and returns the previous value. Otherwise returns a
+    /// `MutError`.
+    pub fn add(&self, rhs: P) -> Result<P, MutError> {
+        match self {
+            Self::Unsync(_) => Err(MutError::Unsync),
+            Self::Sync(None) => Err(MutError::Unset),
+            Self::Sync(Some(atomic)) => Ok(atomic.add(rhs)),
+        }
+    }
+
+    /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
+    /// current value and `rhs` if it is set and returns the previous value. Otherwise returns a
+    /// `MutError`.
+    pub fn set_max(&self, rhs: P) -> Result<P, MutError> {
+        match self {
+            Self::Unsync(_) => Err(MutError::Unsync),
+            Self::Sync(None) => Err(MutError::Unset),
+            Self::Sync(Some(atomic)) => {
+                Ok(atomic.set_with(move |current| (current < rhs).then_some(rhs)))
+            }
+        }
+    }
+}
+
+impl<P, A> Default for AtomicOption<P, A>
+where
+    P: Clone + Debug + Default,
+    A: Atomic<P>,
+{
+    fn default() -> Self {
+        Self::Unsync(None)
+    }
+}
+
+impl<P, A> Debug for AtomicOption<P, A>
+where
+    P: Clone + Debug + Default,
+    A: Atomic<P>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsync(None) | Self::Sync(None) => write!(f, "None"),
+            Self::Unsync(Some(val)) => val.fmt(f),
+            Self::Sync(Some(val)) => val.fmt(f),
+        }
+    }
+}
+
 #[cfg(feature = "affinity")]
 mod affinity {
-    use super::{Atomic, AtomicOption};
+    use super::{Atomic, AtomicOption, MutError};
     use std::fmt::Debug;
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum MutError {
-        #[error("cannot use interior mutability to modify value in Unsync variant")]
-        Unsync,
-        #[error("cannot use interior mutability to modify value in an unset Sync variant")]
-        Unset,
-    }
 
     impl<P, A> AtomicOption<P, A>
     where
@@ -316,105 +381,180 @@ mod affinity {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::atomic::{AtomicAny, AtomicOption, MutError};
+
+        #[test]
+        fn test_try_update_with() {
+            let mut a: AtomicOption<String, AtomicAny<String>> = AtomicOption::default();
+            a.set(Some("hello".into()));
+            let b = a.into_sync();
+            assert_eq!(b.try_update_with(|_| None).unwrap(), "hello");
+            assert_eq!(b.get(), Some("hello".into()));
+            assert_eq!(
+                b.try_update_with(|_| Some("world".into())).unwrap(),
+                "hello"
+            );
+            assert_eq!(b.get(), Some("world".into()));
+        }
+
+        #[test]
+        fn test_try_update_with_unset() {
+            let a: AtomicOption<String, AtomicAny<String>> = AtomicOption::default();
+            assert!(matches!(a.try_update_with(|_| None), Err(MutError::Unsync)));
+            let b = a.into_sync();
+            assert!(matches!(b.try_update_with(|_| None), Err(MutError::Unset)));
+        }
+    }
 }
 
-impl<P, A> AtomicOption<P, A>
-where
-    P: Copy + Debug + Default + Add<Output = P> + PartialOrd<P>,
-    A: AtomicNumber<P>,
-{
-    /// Updates the value to be the sum of `rhs` and either the current value if it is set or the
-    /// default value if it is not set.
-    // pub fn add(&mut self, rhs: P) -> P {
-    //     match self {
-    //         Self::Unsync(opt @ None) => {
-    //             let cur = P::default();
-    //             let lhs = opt.insert(cur.clone());
-    //             *lhs = lhs.clone() + rhs;
-    //             cur
-    //         }
-    //         Self::Sync(opt @ None) => {
-    //             let cur = P::default();
-    //             let _ = opt.insert(cur.clone().into()).add(rhs);
-    //             cur
-    //         }
-    //         Self::Unsync(Some(lhs)) => {
-    //             let cur = lhs.clone();
-    //             *lhs = cur.clone() + rhs;
-    //             cur
-    //         }
-    //         Self::Sync(Some(lhs)) => lhs.add(rhs),
-    //     }
-    // }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use paste::paste;
 
-    /// If this is a `Sync` variant whose value is `Some`, updates the value to be the sum of
-    /// the current value and `value` and returns the previous value. Otherwise panics.
-    pub fn add_update(&self, rhs: P) -> P {
-        match self {
-            Self::Unsync(_) => panic!("Cannot call `add_update` on an `Unsync` variant"),
-            Self::Sync(None) => {
-                panic!("Cannot call `add_update` on an `Sync` variant with no value")
+    macro_rules! test_numeric_type {
+        ($type:ident) => {
+            paste! {
+                #[test]
+                fn [<test_ $type:snake>]() {
+                    let a = $type::from(42);
+                    assert_eq!(a.get(), 42);
+                    assert_eq!(a.set(43), 42);
+                    assert_eq!(a.get(), 43);
+                    assert_eq!(a.set_when(43, 44), 43);
+                    assert_eq!(a.get(), 44);
+                    assert_eq!(a.set_when(43, 45), 44);
+                    assert_eq!(a.get(), 44);
+                    assert_eq!(a.set_with(|val| Some(val + 1)), 44);
+                    assert_eq!(a.get(), 45);
+                    assert_eq!(a.set_with(|_| None), 45);
+                    assert_eq!(a.get(), 45);
+                    assert_eq!(a.add(1), 45);
+                    assert_eq!(a.get(), 46);
+                    assert_eq!(a.sub(1), 46);
+                    assert_eq!(a.get(), 45);
+                    let b = a.clone();
+                    assert_eq!(b.into_inner(), 45);
+                }
             }
-            Self::Sync(Some(atomic)) => atomic.add(rhs),
-        }
+        };
     }
 
-    /// Adds the value to the current value using interior mutability if possible and returns the
-    /// previous value, otherwise returns a `MutError` and . This method only returns `Ok` when
-    /// called on `Sync(Some(_))`.
-    // pub fn try_add_update(&self, rhs: P) -> Result<P, MutError> {
-    //     match self {
-    //         Self::Unsync(_) => Err(MutError::Unsync),
-    //         Self::Sync(None) => Err(MutError::Unset),
-    //         Self::Sync(Some(atomic)) => Ok(atomic.add(rhs)),
-    //     }
-    // }
+    test_numeric_type!(AtomicU32);
+    test_numeric_type!(AtomicU64);
+    test_numeric_type!(AtomicUsize);
 
-    /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
-    /// current value and `rhs` if it is set and returns the previous value. Otherwise panics.
-    pub fn set_max(&self, rhs: P) -> P {
-        match self {
-            Self::Unsync(_) => panic!("Cannot call `set_max` on an `Unsync` variant"),
-            Self::Sync(None) => panic!("Cannot call `set_max` on an `Sync` variant with no value"),
-            Self::Sync(Some(atomic)) => {
-                atomic.set_with(move |current| (current < rhs).then_some(rhs))
-            }
-        }
+    #[test]
+    fn test_atomic_any() {
+        let a = AtomicAny::from("hello".to_string());
+        assert_eq!(a.get(), "hello");
+        assert_eq!(a.set("world".into()), "hello");
+        assert_eq!(a.set_with(|val| Some(val.to_uppercase())), "world");
+        assert_eq!(a.get(), "WORLD");
+        assert_eq!(a.set_with(|_| None), "WORLD");
+        assert_eq!(a.get(), "WORLD");
+        assert_eq!(a.set_when("WORLD".into(), "world".into()), "WORLD");
+        assert_eq!(a.get(), "world");
+        assert_eq!(a.set_when("hello".into(), "HELLO".into()), "world");
+        assert_eq!(a.get(), "world");
+        let b = a.clone();
+        assert_eq!(b.into_inner(), "world");
     }
 
-    // Sets the value to the maximum of the current value and `rhs` using interior mutability if
-    // possible and returns the previous value, otherwise otherwise returns a `MutError`.
-    // pub fn try_set_max(&self, rhs: P) -> Result<P, MutError> {
-    //     match self {
-    //         Self::Unsync(_) => Err(MutError::Unsync),
-    //         Self::Sync(None) => Err(MutError::Unset),
-    //         Self::Sync(Some(atomic)) => {
-    //             Ok(atomic.set_with(move |current| (current < rhs).then_some(rhs)))
-    //         }
-    //     }
-    // }
-}
-
-impl<P, A> Default for AtomicOption<P, A>
-where
-    P: Clone + Debug + Default,
-    A: Atomic<P>,
-{
-    fn default() -> Self {
-        Self::Unsync(None)
+    #[test]
+    fn test_atomic_option_default() {
+        let mut a: AtomicOption<String, AtomicAny<String>> = AtomicOption::default();
+        assert_eq!(a.get(), None);
+        assert_eq!(a.set(Some("hello".into())), None);
+        assert_eq!(a.get(), Some("hello".into()));
+        assert_eq!(a.set(None), Some("hello".into()));
     }
-}
 
-impl<P, A> Debug for AtomicOption<P, A>
-where
-    P: Clone + Debug + Default,
-    A: Atomic<P>,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsync(None) | Self::Sync(None) => write!(f, "None"),
-            Self::Unsync(Some(val)) => val.fmt(f),
-            Self::Sync(Some(val)) => val.fmt(f),
-        }
+    #[test]
+    fn test_atomic_option_new() {
+        let mut a: AtomicOption<String, AtomicAny<String>> =
+            AtomicOption::Unsync(Some("hello".into()));
+        assert_eq!(a.get(), Some("hello".into()));
+        assert_eq!(a.set(Some("world".into())), Some("hello".into()));
+        assert_eq!(a.get(), Some("world".into()));
+        assert_eq!(a.set(None), Some("world".into()));
+    }
+
+    #[test]
+    fn test_atomic_option_none_into_sync() {
+        let a: AtomicOption<String, AtomicAny<String>> = AtomicOption::default();
+        let mut b = a.into_sync();
+        assert_eq!(b.get(), None);
+        assert_eq!(b.get_or_default(), String::default());
+        assert_eq!(b.set(Some("hello".into())), None);
+        assert_eq!(b.get(), Some("hello".into()));
+    }
+
+    #[test]
+    fn test_atomic_option_none_into_sync_default() {
+        let a: AtomicOption<String, AtomicAny<String>> = AtomicOption::default();
+        let mut b = a.into_sync_default();
+        assert_eq!(b.get(), Some(String::default()));
+        assert_eq!(b.set(Some("hello".into())), Some(String::default()));
+        assert_eq!(b.get(), Some("hello".into()));
+        let mut c = b.clone();
+        let d = b.into_sync_default();
+        assert_eq!(c, d);
+        assert_eq!(c.set(None), Some("hello".into()));
+        assert_eq!(c.get(), None);
+    }
+
+    #[test]
+    fn test_atomic_option_sync_into_unsync() {
+        let a: AtomicOption<String, AtomicAny<String>> = AtomicOption::Unsync(Some("hello".into()));
+        assert_eq!(a.get(), Some("hello".into()));
+        let b = a.into_sync();
+        assert_eq!(b.get(), Some("hello".into()));
+        let c = b.clone();
+        let d = b.into_sync();
+        assert_eq!(c, d);
+        let e = d.into_unsync();
+        assert_eq!(e.get(), Some("hello".into()));
+        let f = e.clone();
+        let g = e.into_unsync();
+        assert_eq!(f, g);
+    }
+
+    #[test]
+    fn test_atomic_option_numeric() {
+        let mut a: AtomicOption<u32, AtomicU32> = AtomicOption::default();
+        assert_eq!(a.get(), None);
+        assert_eq!(a.set(Some(42)), None);
+        assert_eq!(a.get(), Some(42));
+        assert_eq!(a.set(None), Some(42));
+        assert_eq!(a.get(), None);
+    }
+
+    #[test]
+    fn test_atomic_option_numeric_ops() {
+        let a: AtomicOption<u32, AtomicU32> = AtomicOption::Unsync(Some(42));
+        let b = a.into_sync();
+        assert!(matches!(b.add(1), Ok(42)));
+        assert_eq!(b.get(), Some(43));
+        assert!(matches!(b.set_max(44), Ok(43)));
+        assert_eq!(b.get(), Some(44));
+    }
+
+    #[test]
+    fn test_atomic_option_unsync() {
+        let a: AtomicOption<u32, AtomicU32> = AtomicOption::default();
+        assert!(matches!(a.add(1), Err(MutError::Unsync)));
+        assert!(matches!(a.set_max(1), Err(MutError::Unsync)));
+    }
+
+    #[test]
+    fn test_atomic_option_unset() {
+        let a: AtomicOption<u32, AtomicU32> = AtomicOption::default();
+        let b = a.into_sync();
+        assert!(matches!(b.add(1), Err(MutError::Unset)));
+        assert!(matches!(b.set_max(1), Err(MutError::Unset)));
     }
 }

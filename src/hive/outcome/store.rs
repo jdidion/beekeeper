@@ -313,7 +313,7 @@ mod tests {
     use crate::task::{Context, Worker, WorkerResult};
 
     #[derive(Debug)]
-    struct TestWorker;
+    pub(super) struct TestWorker;
 
     impl Worker for TestWorker {
         type Input = u8;
@@ -334,15 +334,10 @@ mod tests {
             error: (),
             index: 2,
         });
-        store.insert(Outcome::MaxRetriesAttempted {
-            input: 4,
-            error: (),
-            index: 3,
-        });
         store.insert(Outcome::Panic {
             input: Some(5),
             payload: Panic::new("oh no!", None),
-            index: 4,
+            index: 3,
         });
         store
     }
@@ -358,7 +353,7 @@ mod tests {
     #[test]
     fn test_count() {
         let store = make_batch();
-        assert_eq!(store.count(), (1, 1, 3));
+        assert_eq!(store.count(), (1, 1, 2));
     }
 
     #[test]
@@ -400,6 +395,113 @@ mod tests {
             index: 2,
         });
         store.assert_empty(true);
+    }
+
+    #[test]
+    fn test_retrieve() {
+        let store = make_batch();
+
+        assert!(store.has_successes());
+        assert!(store.get(0).unwrap().is_success());
+        for index in 1..=3 {
+            assert!(!store.get(index).unwrap().is_success());
+        }
+        assert_eq!(store.success_indices(), vec![0]);
+
+        assert!(store.has_unprocessed());
+        assert!(store.get(1).unwrap().is_unprocessed());
+        for index in vec![0, 2, 3] {
+            assert!(!store.get(index).unwrap().is_unprocessed());
+        }
+        assert_eq!(store.unprocessed_indices(), vec![1]);
+
+        assert!(store.has_failures());
+        for index in 2..=3 {
+            assert!(store.get(index).unwrap().is_failure())
+        }
+        for index in vec![0, 1] {
+            assert!(!store.get(index).unwrap().is_failure());
+        }
+        let mut failure_indices = store.failure_indices();
+        failure_indices.sort();
+        assert_eq!(failure_indices, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut store = make_batch();
+        for i in 0..4 {
+            assert!(store.remove(i).is_some())
+        }
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_remove_kinds() {
+        let mut store = make_batch();
+        assert!(matches!(store.remove_success(0), Some(1)));
+        assert!(matches!(store.remove_unprocessed(1), Some(2)));
+        assert!(matches!(
+            store.remove_failure(2),
+            Some(Outcome::Failure {
+                input: Some(3),
+                index: 2,
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.remove_failure(3),
+            Some(Outcome::Panic {
+                input: Some(5),
+                index: 3,
+                ..
+            })
+        ));
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_remove_all() {
+        let mut store = make_batch();
+        assert_eq!(vec![(0, 1)], store.remove_all_successes());
+        assert_eq!(vec![(1, 2)], store.remove_all_unprocessed());
+        assert_eq!(2, store.remove_all_failures().len());
+    }
+}
+
+#[cfg(all(test, feature = "retry"))]
+mod retry_tests {
+    use super::tests::TestWorker;
+    use super::{OutcomeDerefStore, OutcomeStore};
+    use crate::hive::{Outcome, OutcomeBatch};
+    use crate::panic::Panic;
+
+    fn make_batch() -> OutcomeBatch<TestWorker> {
+        let mut store = OutcomeBatch::empty();
+        store.insert(Outcome::Success { value: 1, index: 0 });
+        store.insert(Outcome::Unprocessed { input: 2, index: 1 });
+        store.insert(Outcome::Failure {
+            input: Some(3),
+            error: (),
+            index: 2,
+        });
+        store.insert(Outcome::MaxRetriesAttempted {
+            input: 4,
+            error: (),
+            index: 3,
+        });
+        store.insert(Outcome::Panic {
+            input: Some(5),
+            payload: Panic::new("oh no!", None),
+            index: 4,
+        });
+        store
+    }
+
+    #[test]
+    fn test_count() {
+        let store = make_batch();
+        assert_eq!(store.count(), (1, 1, 3));
     }
 
     #[test]

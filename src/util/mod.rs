@@ -137,7 +137,7 @@ mod retry {
     ///
     /// # fn main() {
     /// let result = drudge::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
-    ///     Err(ApplyError::NotRetryable { input: Some(i), error: "No fives allowed!".into() })
+    ///     Err(ApplyError::Fatal { input: Some(i), error: "No fives allowed!".into() })
     /// } else if i == 7 {
     ///     Err(ApplyError::Retryable { input: i, error: "Re-roll a 7".into() })
     /// } else {

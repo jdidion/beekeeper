@@ -44,12 +44,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Increases the maximum number of threads allowed in the `Hive` by `num_threads` and returns
     /// the previous value.
     pub fn add_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.add_update(num_threads)
+        self.config.num_threads.add(num_threads).unwrap()
     }
 
     /// Ensures that the number of threads is at least `num_threads`. Returns the previous value.
     pub fn ensure_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.set_max(num_threads)
+        self.config.num_threads.set_max(num_threads).unwrap()
     }
 
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
@@ -238,10 +238,10 @@ fn drain_task_receiver_into<W: Worker>(
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use super::NextTaskError;
     use crate::atomic::{Atomic, AtomicNumber};
     use crate::hive::{Husk, Shared, Task};
     use crate::task::{Queen, Worker};
+    use std::sync::mpsc::RecvTimeoutError;
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and

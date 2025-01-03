@@ -105,7 +105,7 @@ impl Cores {
     }
 
     /// Appends to the end of this sequence all the CPU core indices in `other` that are not
-    /// already present.
+    /// already present. Returns the number of new core indices added to the sequence.
     pub fn union(&mut self, other: &Self) -> usize {
         (*other.0)
             .iter()
@@ -203,6 +203,21 @@ mod tests {
     fn test_all() {
         let max = num_cpus::get();
         assert_eq!(Cores::all().0.len(), max);
+    }
+
+    #[test]
+    fn test_append() {
+        let mut a = Cores::from(0..4);
+        a.append(4);
+        assert_eq!(a, Cores::from(0..5));
+    }
+
+    #[test]
+    fn test_union() {
+        let mut a = Cores::from(0..4);
+        let b = Cores::from(3..6);
+        a.union(&b);
+        assert_eq!(a, Cores::from(0..6));
     }
 
     #[test]

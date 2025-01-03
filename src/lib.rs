@@ -37,7 +37,7 @@
 //!         hive.apply_send(Thunk::of(move || i * i), tx.clone());
 //!     }
 //!
-//!     let sum: usize = rx.take_outputs(n_tasks).sum();
+//!     let sum: usize = rx.into_outputs().take(n_tasks).sum();
 //!     assert_eq!(140, sum);
 //! }
 //! ```

@@ -459,7 +459,7 @@ mod retry {
         ///     match i % 3 {
         ///         0 => Ok("Success".into()),
         ///         1 => Err(ApplyError::Retryable { input: i, error: "Retryable".into() }),
-        ///         2 => Err(ApplyError::NotRetryable { input: Some(i), error: "NotRetryable".into() }),
+        ///         2 => Err(ApplyError::Fatal { input: Some(i), error: "NotRetryable".into() }),
         ///         _ => unreachable!(),
         ///     }
         /// }

@@ -111,7 +111,7 @@ where
 
     #[inline]
     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
-        (&mut self.0.f)(input).map_err(|error| ApplyError::NotRetryable { error, input: None })
+        (&mut self.0.f)(input).map_err(|error| ApplyError::Fatal { error, input: None })
     }
 }
 
@@ -268,7 +268,7 @@ mod tests {
             if input.0 {
                 Ok(input.1 + 1)
             } else {
-                Err(ApplyError::NotRetryable {
+                Err(ApplyError::Fatal {
                     input: Some(input),
                     error: "failure".into(),
                 })
@@ -289,7 +289,7 @@ mod tests {
         let _error = String::from("failure");
         assert!(matches!(
             result,
-            Err(ApplyError::NotRetryable {
+            Err(ApplyError::Fatal {
                 input: Some((false, 5)),
                 error: _error
             })
@@ -324,7 +324,7 @@ mod tests {
         let _error = String::from("failure");
         assert!(matches!(
             result,
-            Err(ApplyError::NotRetryable {
+            Err(ApplyError::Fatal {
                 input: None,
                 error: _error
             })
@@ -359,7 +359,7 @@ mod tests {
         let _error = String::from("failure");
         assert!(matches!(
             result,
-            Err(ApplyError::NotRetryable {
+            Err(ApplyError::Fatal {
                 input: Some((false, 5)),
                 error: _error
             })
