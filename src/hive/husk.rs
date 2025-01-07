@@ -2,7 +2,7 @@ use super::{
     Builder, Config, Hive, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeSender, OutcomeStore,
     Outcomes, OutcomesDeref,
 };
-use crate::task::{Queen, Worker};
+use crate::bee::{Queen, Worker};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -115,10 +115,10 @@ impl<W: Worker, Q: Queen<Kind = W>> OutcomeStore<W> for Husk<W, Q> {}
 
 #[cfg(test)]
 mod tests {
+    use crate::bee::stock::{PunkWorker, Thunk, ThunkWorker};
     use crate::hive::{
         outcome_channel, Builder, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore,
     };
-    use crate::util::{PunkWorker, Thunk, ThunkWorker};
 
     #[test]
     fn test_unprocessed() {

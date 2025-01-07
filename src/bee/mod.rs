@@ -1,6 +1,7 @@
 mod context;
 mod error;
 mod queen;
+pub mod stock;
 mod worker;
 
 pub use context::Context;

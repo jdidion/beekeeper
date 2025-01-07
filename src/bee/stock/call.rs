@@ -1,5 +1,5 @@
 //! Worker implementations that wrap callables (closures or function pointers that are `FnMut`).
-use crate::task::{
+use crate::bee::{
     ApplyError, ApplyRefError, Context, RefWorker, RefWorkerResult, Worker, WorkerResult,
 };
 use std::fmt::Debug;
@@ -250,7 +250,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::Context;
+    use crate::bee::Context;
 
     #[test]
     fn test_call() {

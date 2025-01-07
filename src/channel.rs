@@ -1,21 +1,30 @@
 //! Support for various channel implementations. A maximum one of the channel feature may be
 //! enabled. If no channel feature is enabled, then `std::sync::mpsc` will be used.
+
 pub use prelude::channel;
 pub(crate) use prelude::*;
 
 /// Possible results of calling `ReceiverExt::try_recv_msg()` on a `Receiver`.
 pub enum Message<T> {
+    /// A message was successfully received from the channel.
     Received(T),
+    /// The channel was disconnected.
     ChannelDisconnected,
+    /// The channel had no messages to receive.
     ChannelEmpty,
 }
 
 /// Trait implemented for all channel `Receiver` types that standardizes non-blocking `recv()`.
 pub trait ReceiverExt<T> {
+    /// Attempts to receive a message from the channel. Returns `Message::Received` if a message
+    /// was successfully received, otherwise one of `Message`'s error variants.
     fn try_recv_msg(&self) -> Message<T>;
 }
 
+/// Trait implemented for channel `Receiver` types that do not already provide an `iter()` method.
 pub trait ReceiverIter<T> {
+    /// Returns an iterator that yields items from the channel. The iterator will block waiting for
+    /// messages. The iterator wilL terminate when the channel is disconnected.
     fn iter(self) -> impl Iterator<Item = T>;
 }
 

@@ -1,5 +1,5 @@
 use super::Outcome;
-use crate::task::Worker;
+use crate::bee::Worker;
 use std::collections::HashMap;
 
 pub type TaskResult<W> = Result<<W as Worker>::Output, <W as Worker>::Error>;

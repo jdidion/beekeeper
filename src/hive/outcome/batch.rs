@@ -1,5 +1,5 @@
 use super::{Outcome, OutcomeDerefStore, OutcomeStore, Outcomes, OutcomesDeref};
-use crate::task::Worker;
+use crate::bee::Worker;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 

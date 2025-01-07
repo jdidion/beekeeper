@@ -1,10 +1,10 @@
 use super::{Outcome, OutcomeIteratorExt};
-use crate::task::Worker;
+use crate::bee::Worker;
 
 /// Traits with methods that should only be accessed internally by public traits.
 pub mod sealed {
     use crate::hive::Outcome;
-    use crate::task::Worker;
+    use crate::bee::Worker;
     use std::{
         collections::HashMap,
         ops::{Deref, DerefMut},
@@ -310,7 +310,7 @@ mod tests {
     use super::{OutcomeDerefStore, OutcomeStore};
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
-    use crate::task::{Context, Worker, WorkerResult};
+    use crate::bee::{Context, Worker, WorkerResult};
 
     #[derive(Debug)]
     pub(super) struct TestWorker;

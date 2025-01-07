@@ -1,6 +1,6 @@
 use crate::boxed::BoxedFnOnce;
 use crate::panic::Panic;
-use crate::task::{ApplyError, Context, Worker, WorkerResult};
+use crate::bee::{ApplyError, Context, Worker, WorkerResult};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -95,7 +95,7 @@ impl<'a, T> Debug for Thunk<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::Context;
+    use crate::bee::Context;
 
     #[test]
     fn test_thunk() {

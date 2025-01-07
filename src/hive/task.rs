@@ -1,5 +1,5 @@
 use super::{OutcomeSender, Task};
-use crate::task::{Context, Worker};
+use crate::bee::{Context, Worker};
 
 impl<W: Worker> Task<W> {
     pub fn new(input: W::Input, ctx: Context, outcome_tx: Option<OutcomeSender<W>>) -> Self {

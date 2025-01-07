@@ -1,6 +1,6 @@
 use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicNumber};
-use crate::task::{Context, Queen, Worker};
+use crate::bee::{Context, Queen, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
@@ -192,9 +192,9 @@ impl<W: Worker, Q: Queen<Kind = W>> fmt::Debug for Shared<W, Q> {
 
 #[cfg(feature = "affinity")]
 mod affinity {
+    use crate::bee::{Queen, Worker};
     use crate::hive::cores::{Core, Cores};
     use crate::hive::Shared;
-    use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Adds cores to which worker threads may be pinned.
@@ -239,8 +239,8 @@ fn drain_task_receiver_into<W: Worker>(
 #[cfg(not(feature = "retry"))]
 mod no_retry {
     use crate::atomic::{Atomic, AtomicNumber};
+    use crate::bee::{Queen, Worker};
     use crate::hive::{Husk, Shared, Task};
-    use crate::task::{Queen, Worker};
     use std::sync::mpsc::RecvTimeoutError;
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
@@ -284,8 +284,8 @@ mod no_retry {
 #[cfg(feature = "retry")]
 mod retry {
     use crate::atomic::{Atomic, AtomicNumber};
+    use crate::bee::{Context, Queen, Worker};
     use crate::hive::{Husk, OutcomeSender, Shared, Task};
-    use crate::task::{Context, Queen, Worker};
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
@@ -392,8 +392,8 @@ mod retry {
 
 #[cfg(test)]
 mod tests {
-    use crate::task::DefaultQueen;
-    use crate::util::ThunkWorker;
+    use crate::bee::stock::ThunkWorker;
+    use crate::bee::DefaultQueen;
 
     type VoidThunkWorker = ThunkWorker<()>;
     type VoidThunkWorkerShared = super::Shared<VoidThunkWorker, DefaultQueen<VoidThunkWorker>>;

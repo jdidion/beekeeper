@@ -1,14 +1,7 @@
-mod call;
-mod echo;
-mod thunk;
-
-pub use call::{Caller, OnceCaller, RefCaller, RetryCaller};
-pub use echo::Echo;
-pub use thunk::{FunkWorker, PunkWorker, Thunk, ThunkWorker};
-
 #[cfg(feature = "retry")]
 pub use retry::try_map_retryable;
 
+use crate::bee::stock::{Caller, OnceCaller};
 use crate::hive::{Builder, Outcome, OutcomeBatch};
 
 use std::fmt::Debug;
@@ -116,9 +109,9 @@ mod tests {
 
 #[cfg(feature = "retry")]
 mod retry {
-    use super::RetryCaller;
+    use crate::bee::stock::RetryCaller;
+    use crate::bee::{ApplyError, Context};
     use crate::hive::{Builder, OutcomeBatch};
-    use crate::task::{ApplyError, Context};
     use std::fmt::Debug;
 
     /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -131,9 +124,9 @@ mod retry {
     /// # Examples
     ///
     /// ```
-    /// # use drudge::hive::OutcomeDerefStore;
-    /// # use drudge::task::ApplyError;
-    /// # use drudge::util::RetryCaller;
+    /// use drudge::bee::ApplyError;
+    /// use drudge::bee::stock::RetryCaller;
+    /// use drudge::hive::OutcomeDerefStore;
     ///
     /// # fn main() {
     /// let result = drudge::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
@@ -169,8 +162,8 @@ mod retry {
 
     #[cfg(test)]
     mod tests {
+        use crate::bee::ApplyError;
         use crate::hive::{Outcome, OutcomeDerefStore, OutcomeStore};
-        use crate::task::ApplyError;
 
         #[test]
         fn test_try_map_retryable() {

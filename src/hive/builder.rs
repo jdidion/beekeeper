@@ -1,5 +1,5 @@
 use super::{Config, Hive};
-use crate::task::{CloneQueen, DefaultQueen, Queen, Worker};
+use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 
 /// A `Builder` for a `Hive`.
 ///
@@ -29,7 +29,8 @@ use crate::task::{CloneQueen, DefaultQueen, Queen, Worker};
 /// a 8 MB stack size:
 ///
 /// ```
-/// # type MyWorker = drudge::util::ThunkWorker<()>;
+/// type MyWorker = drudge::bee::stock::ThunkWorker<()>;
+///
 /// let hive = drudge::hive::Builder::new()
 ///     .num_threads(8)
 ///     .thread_stack_size(8_000_000)
@@ -55,8 +56,8 @@ impl Builder {
     /// No more than eight threads will be alive simultaneously for this hive:
     ///
     /// ```
+    /// use drudge::bee::stock::{Thunk, ThunkWorker};
     /// use drudge::hive::{Builder, Hive};
-    /// use drudge::util::{Thunk, ThunkWorker};
     ///
     /// # fn main() {
     /// let hive = Builder::new()
@@ -75,6 +76,15 @@ impl Builder {
         self
     }
 
+    /// Sets the number of worker threads to the global default value.
+    pub fn with_default_num_threads(mut self) -> Self {
+        let _ = self
+            .0
+            .num_threads
+            .set(super::config::DEFAULTS.lock().num_threads.get());
+        self
+    }
+
     /// Specifies that the built [`Hive`] will use all available CPU cores for worker threads.
     ///
     /// [`Hive`]: hive/struct.Hive.html
@@ -84,8 +94,8 @@ impl Builder {
     /// All available threads will be alive simultaneously for this pool:
     ///
     /// ```
+    /// use drudge::bee::stock::{Thunk, ThunkWorker};
     /// use drudge::hive::{Builder, Hive};
-    /// use drudge::util::{Thunk, ThunkWorker};
     ///
     /// # fn main() {
     /// let hive = Builder::new()
@@ -99,7 +109,7 @@ impl Builder {
     /// }
     /// # }
     /// ```
-    pub fn thread_per_core(mut self) -> Self {
+    pub fn with_thread_per_core(mut self) -> Self {
         let _ = self.0.num_threads.set(Some(num_cpus::get()));
         self
     }
@@ -114,8 +124,8 @@ impl Builder {
     /// Each thread spawned by this hive will have the name "foo":
     ///
     /// ```
+    /// use drudge::bee::stock::{Thunk, ThunkWorker};
     /// use drudge::hive::{Builder, Hive};
-    /// use drudge::util::{Thunk, ThunkWorker};
     /// use std::thread;
     ///
     /// # fn main() {
@@ -148,8 +158,9 @@ impl Builder {
     /// Each thread spawned by this hive will have a 4 MB stack:
     ///
     /// ```
-    /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::util::{Thunk, ThunkWorker};
+    /// use drudge::bee::stock::{Thunk, ThunkWorker};
+    /// use drudge::hive::{Builder, Hive};
+    ///
     /// # fn main() {
     /// let hive = Builder::default()
     ///     .thread_stack_size(4_000_000)
@@ -175,7 +186,7 @@ impl Builder {
     ///
     /// ```
     /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::task::{Context, Queen, Worker, WorkerResult};
+    /// # use drudge::bee::{Context, Queen, Worker, WorkerResult};
     ///
     /// #[derive(Debug)]
     /// struct CounterWorker {
@@ -253,7 +264,7 @@ impl Builder {
     /// # Examples
     /// ```
     /// # use drudge::hive::{Builder, OutcomeIteratorExt};
-    /// # use drudge::task::{Context, Worker, WorkerResult};
+    /// # use drudge::bee::{Context, Worker, WorkerResult};
     ///
     /// #[derive(Debug, Clone)]
     /// struct MathWorker(isize);
@@ -306,7 +317,7 @@ impl Builder {
     /// # Examples
     /// ```
     /// # use drudge::hive::{Builder, OutcomeIteratorExt};
-    /// # use drudge::task::{Context, Worker,  WorkerResult};
+    /// # use drudge::bee::{Context, Worker,  WorkerResult};
     /// # use std::num::NonZeroIsize;
     ///
     /// #[derive(Debug, Default)]
@@ -386,8 +397,9 @@ mod affinity {
         /// Each thread spawned by this hive will be pinned to a core:
         ///
         /// ```
-        /// # use drudge::hive::{Builder, Hive};
-        /// # use drudge::util::{Thunk, ThunkWorker};
+        /// use drudge::bee::stock::{Thunk, ThunkWorker};
+        /// use drudge::hive::{Builder, Hive};
+        ///
         /// # fn main() {
         /// let hive = Builder::new()
         ///     .num_threads(4)
@@ -402,14 +414,14 @@ mod affinity {
         /// # hive.join();
         /// # }
         /// ```
-        pub fn thread_affinity<B: Into<Cores>>(mut self, affinity: B) -> Self {
+        pub fn thread_affinity<C: Into<Cores>>(mut self, affinity: C) -> Self {
             let _ = self.0.affinity.set(Some(affinity.into()));
             self
         }
 
         /// Specifies that worker threads should be pinned to all available CPU cores. If `num_threads`
         /// is greater than the available number of CPU cores, then some threads might not be pinned.
-        pub fn with_thread_affinity(mut self) -> Self {
+        pub fn with_default_thread_affinity(mut self) -> Self {
             let _ = self.0.affinity.set(Some(Cores::all()));
             self
         }
@@ -423,7 +435,7 @@ mod affinity {
         #[test]
         fn test_with_affinity() {
             let mut builder = Builder::new();
-            builder = builder.with_thread_affinity();
+            builder = builder.with_default_thread_affinity();
             assert_eq!(builder.0.affinity.get(), Some(Cores::all()));
         }
     }
@@ -447,10 +459,10 @@ mod retry {
         /// # Examples
         ///
         /// ```
-        /// # use drudge::hive::{Builder, Hive};
-        /// # use drudge::task::{ApplyError, Context};
-        /// # use drudge::util::RetryCaller;
-        /// # use std::time;
+        /// use drudge::bee::{ApplyError, Context};
+        /// use drudge::bee::stock::RetryCaller;
+        /// use drudge::hive::{Builder, Hive};
+        /// use std::time;
         ///
         /// fn sometimes_fail(
         ///     i: usize,
@@ -491,10 +503,10 @@ mod retry {
         /// # Examples
         ///
         /// ```
-        /// # use drudge::hive::{Builder, Hive};
-        /// # use drudge::task::{ApplyError, Context};
-        /// # use drudge::util::RetryCaller;
-        /// # use std::time;
+        /// use drudge::bee::{ApplyError, Context};
+        /// use drudge::bee::stock::RetryCaller;
+        /// use drudge::hive::{Builder, Hive};
+        /// use std::time;
         ///
         /// fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
         ///     let attempt = ctx.attempt();
@@ -528,8 +540,16 @@ mod retry {
             self
         }
 
+        /// Sets retry parameters to their default values.
+        pub fn with_default_retries(mut self) -> Self {
+            let defaults = crate::hive::config::DEFAULTS.lock();
+            let _ = self.0.max_retries.set(defaults.max_retries.get());
+            let _ = self.0.retry_factor.set(defaults.retry_factor.get());
+            self
+        }
+
         /// Disables retrying tasks.
-        pub fn no_retries(self) -> Self {
+        pub fn with_no_retries(self) -> Self {
             self.max_retries(0).retry_factor(Duration::ZERO)
         }
     }

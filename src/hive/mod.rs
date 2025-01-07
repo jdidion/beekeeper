@@ -15,8 +15,8 @@ mod delay;
 
 pub mod prelude {
     pub use super::{
-        Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt,
-        OutcomeStore,
+        outcome_channel, Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
+        OutcomeIteratorExt, OutcomeStore,
     };
 }
 
@@ -33,7 +33,7 @@ pub use config::{set_max_retries_default, set_retries_default_disabled, set_retr
 pub(self) use outcome::{Outcomes, OutcomesDeref};
 
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
-use crate::task::{Context, Queen, Worker};
+use crate::bee::{Context, Queen, Worker};
 use condvar::{MutexCondvar, PhasedCondvar};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -141,13 +141,13 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
 #[cfg(test)]
 mod test {
     use super::{Builder, Hive, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
-    use crate::channel::{Message, ReceiverExt};
-    use crate::hive::outcome::OutcomesDeref;
-    use crate::task::{
+    use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
+    use crate::bee::{
         ApplyError, ApplyRefError, Context, DefaultQueen, RefWorker, RefWorkerResult, Worker,
         WorkerResult,
     };
-    use crate::util::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
+    use crate::channel::{Message, ReceiverExt};
+    use crate::hive::outcome::OutcomesDeref;
     use std::{
         fmt::Debug,
         io::{self, BufRead, BufReader, Write},
@@ -312,7 +312,7 @@ mod test {
     #[test]
     fn test_all_threads() {
         let hive = Builder::new()
-            .thread_per_core()
+            .with_thread_per_core()
             .build_with_default::<ThunkWorker<()>>();
         let num_threads = num_cpus::get();
         for _ in 0..num_threads {
@@ -1105,7 +1105,7 @@ mod test {
     }
 
     type VoidThunkWorker = ThunkWorker<()>;
-    type VoidThunkWorkerHive = Hive<VoidThunkWorker, crate::task::DefaultQueen<VoidThunkWorker>>;
+    type VoidThunkWorkerHive = Hive<VoidThunkWorker, crate::bee::DefaultQueen<VoidThunkWorker>>;
 
     #[test]
     fn test_send() {
@@ -1280,8 +1280,8 @@ mod test {
 
 #[cfg(all(test, feature = "affinity"))]
 mod affinity_tests {
+    use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::hive::Builder;
-    use crate::util::{Thunk, ThunkWorker};
 
     #[test]
     fn test_affinity() {
@@ -1304,8 +1304,8 @@ mod affinity_tests {
     fn test_use_all_cores() {
         let hive = Builder::new()
             .thread_name("affinity example")
-            .thread_per_core()
-            .with_thread_affinity()
+            .with_thread_per_core()
+            .with_default_thread_affinity()
             .build_with_default::<ThunkWorker<()>>();
 
         hive.map_store((0..num_cpus::get()).map(move |i| {
@@ -1320,9 +1320,9 @@ mod affinity_tests {
 
 #[cfg(all(test, feature = "retry"))]
 mod retry_tests {
+    use crate::bee::stock::RetryCaller;
+    use crate::bee::{ApplyError, Context};
     use crate::hive::{Builder, Outcome, OutcomeIteratorExt};
-    use crate::task::{ApplyError, Context};
-    use crate::util::RetryCaller;
     use std::time::{Duration, SystemTime};
 
     fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
@@ -1342,7 +1342,7 @@ mod retry_tests {
     #[test]
     fn test_retries() {
         let hive = Builder::new()
-            .thread_per_core()
+            .with_thread_per_core()
             .max_retries(3)
             .retry_factor(Duration::from_secs(1))
             .build_with(RetryCaller::of(echo_time));
@@ -1369,7 +1369,7 @@ mod retry_tests {
         }
 
         let hive = Builder::new()
-            .thread_per_core()
+            .with_thread_per_core()
             .max_retries(3)
             .build_with(RetryCaller::of(sometimes_fail));
 
@@ -1391,8 +1391,8 @@ mod retry_tests {
     #[test]
     fn test_disable_retries() {
         let hive = Builder::new()
-            .thread_per_core()
-            .no_retries()
+            .with_thread_per_core()
+            .with_no_retries()
             .build_with(RetryCaller::of(echo_time));
         let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert!(matches!(v, Err(_)));

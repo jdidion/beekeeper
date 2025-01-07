@@ -1,9 +1,38 @@
+//! This crate provides `Hive<W: Worker, Q: Queen>`.
+
+//! A [`Hive`] is a pool of threads used to execute a (possibly) stateful function in parallel on
+//! any number of inputs.
+//!
+// To create a `Hive`, use a `Builder` and set the necessary options. `Builder::default()` creates a `Hive` with all available threads and no thread pinning. There are multiple `build*` funcitons depending on the traits that `Worker` implements.
+
+// `Hive` has four groups of functions for executing tasks:
+// - `apply`: submits a single task to the hive.
+// - `map`: submits an arbitrary-sized batch (an `Iterator`) of tasks to the hive.
+// - `swarm`: submits a batch of tasks to the hive, where the size of the batch is known (i.e., it implements `IntoIterator<IntoIter = ExactSizeIterator>`).
+// - `scan`: like map/swarm, but also takes a state value and a function; the function takes the state value and an item from the batch and returns an input that is sent to the hive for processing.
+
+// Each group of functions has multiple variants.
+// * The functions that end with `_send` all take a channel sender as a second argument and will deliver results to that channel as they become available.
+// * The functions that end with `_store` are all non-blocking functions that return the indices associated with the submitted tasks and will store the task results in the hive. The results can be retrieved from the hive later by index, e.g. using `remove_success`. Note that, since these functions are non-blocking, it is necessary to call `hive.join` or otherwise prevent the `Hive` from being `drop`ped until the tasks are completed.
+// * For executing single tasks, there is `try_apply`, which submits the tasks and blocks waiting for the result.
+// * For executing batches of tasks, there are `map`/`swarm`/`scan`, which return an iterator yields results in the same order they were submitted. There are `_unordered` versions of the same functions that yield results as they become available.
+
+// Other functions of interest:
+// - `hive.join()` _blocking_ waits for all tasks to complete.
+
+// Several example workers are provided in `drudge::utils`:
+// - A stateless `ThunkWorker<O, E>`, which executes on inputs of `Thunk<T: Result<O, E>>` - effectively argumentless functions that are `Sized + Send`. These thunks are creates by wrapping functions (`FnOnce() -> Result<T, E>`) with `Thunk::of`.
+//   - There is also `ThunkWorker<T>` for `Thunk<T>`s
+// - A `Func<I, O, E>`, which wraps a function pointer `fn(I) -> Result<O, E>`.
+//   - There is also `InfallibleFunc<I, O>`, which wraps a function pointer `fn(I) -> O`.
+// - `Identity<T>`, which simply returns the input value.
+
 use super::{
     outcome_channel, Config, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
     OutcomeIteratorExt, OutcomeSender, OutcomesDeref, Shared,
 };
 use crate::atomic::Atomic;
-use crate::task::{Queen, Worker};
+use crate::bee::{Queen, Worker};
 use crossbeam_utils::Backoff;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut, Range};
@@ -424,8 +453,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// new task.
     ///
     /// # Examples
-    /// # use drudge::hive::Builder;
-    /// # use drudge::util::{Thunk, ThunkWorker};
+    ///
+    /// ```
+    /// use drudge::bee::stock::{Thunk, ThunkWorker};
+    /// use drudge::hive::Builder;
     ///
     /// # fn main() {
     /// let hive = Builder::new()
@@ -445,6 +476,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// // Wait for remaining tasks to complete.
     /// hive.join();
     /// }
+    /// ```
     pub fn suspend(&self) {
         self.shared.set_suspended(true);
     }
@@ -581,8 +613,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
 
 #[cfg(not(feature = "affinity"))]
 mod no_affinity {
+    use crate::bee::{Queen, Worker};
     use crate::hive::{Hive, Shared};
-    use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
@@ -592,9 +624,9 @@ mod no_affinity {
 
 #[cfg(feature = "affinity")]
 mod affinity {
+    use crate::bee::{Queen, Worker};
     use crate::hive::cores::Cores;
     use crate::hive::{Hive, Shared};
-    use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
@@ -626,8 +658,8 @@ mod affinity {
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
+    use crate::bee::{Queen, Worker};
     use crate::hive::{Hive, Outcome, Shared, Task};
-    use crate::task::{Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
@@ -648,8 +680,8 @@ mod no_retry {
 
 #[cfg(feature = "retry")]
 mod retry {
+    use crate::bee::{ApplyError, Queen, Worker};
     use crate::hive::{Hive, Outcome, Shared, Task};
-    use crate::task::{ApplyError, Queen, Worker};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]

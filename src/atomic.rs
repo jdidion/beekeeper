@@ -1,9 +1,16 @@
+//! This module provides a common API for wrappers of `std::sync::atomic` types, enabling them to
+//! be used in a generic context.
+//!
+//! TODO: The `Atomic` and `AtomicNumeric` traits and implementations could be replaced with the
+//! equivalents from the `atomic`, `atomig`, or `radium` crates, but none of those seem to be
+//! well-maintained at this point.
+
 use paste::paste;
 use std::fmt::Debug;
 use std::ops::Add;
 use std::sync::atomic::Ordering;
 
-/// Trait for wrappers of `std::sync::atomic` types that provides a common API.
+/// Trait for wrappers of [`atomic`](std::sync::atomic) types that provides a common API.
 pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> + Sync {
     /// Returns the current value of this `Atomic` using `Acquire` ordering.
     fn get(&self) -> T;
@@ -25,6 +32,8 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
     fn into_inner(self) -> T;
 }
 
+/// Generates a wrapper for primitive type `T` that implement the `Atomic<T>`, `Clone`, `Debug`,
+/// and `From<T>` traits.
 macro_rules! atomic {
     ($type:ident) => {
         paste! {
@@ -79,7 +88,7 @@ macro_rules! atomic {
     };
 }
 
-/// Trait for wrappers of `std::sync::atomic` numeric types that provides a common API.
+/// Trait for wrappers of [`atomic`](std::sync::atomic) numeric types that provides a common API.
 pub trait AtomicNumber<T: Clone + Debug + Default>: Atomic<T> {
     /// Mutably adds `rhs` to the current value of this `Atomic` using `AcqRel` ordering and
     /// returns the previous value.
@@ -90,7 +99,7 @@ pub trait AtomicNumber<T: Clone + Debug + Default>: Atomic<T> {
     fn sub(&self, rhs: T) -> T;
 }
 
-/// Generate atomic type wrappers that implement the `Atomic` and `AtomicNumber` traits.
+/// Generates a wrapper for numeric type `T` that implements the `Atomic` and `AtomicNumber` traits.
 macro_rules! atomic_number {
     ($type:ident) => {
         paste! {
@@ -114,22 +123,10 @@ atomic_number!(u32);
 atomic_number!(u64);
 atomic_number!(usize);
 
-/// Wrapper for `parking_lot::RwLock` that implements the `Atomic` trait. This enables any type
-/// that is `Clone + Default` to be used in an `Atomic` context.
+/// Wrapper for [`RwLock`](parking_lot::RwLock) that implements the `Atomic` trait. This enables
+/// any type that is `Clone + Default` to be used in an `Atomic` context.
 #[derive(Default)]
-pub struct AtomicAny<T: Clone + Debug + Default + Sync + Send + PartialEq>(parking_lot::RwLock<T>);
-
-impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Clone for AtomicAny<T> {
-    fn clone(&self) -> Self {
-        Self(parking_lot::RwLock::new(self.0.read().clone()))
-    }
-}
-
-impl<T: Clone + Debug + Default + Sync + Send + PartialEq> From<T> for AtomicAny<T> {
-    fn from(value: T) -> Self {
-        AtomicAny(parking_lot::RwLock::new(value))
-    }
-}
+pub struct AtomicAny<T: Clone + Debug + Default + Sync + Send>(parking_lot::RwLock<T>);
 
 impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Atomic<T> for AtomicAny<T> {
     fn get(&self) -> T {
@@ -173,6 +170,18 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Debug for AtomicAny<T
     }
 }
 
+impl<T: Clone + Debug + Default + Sync + Send> Clone for AtomicAny<T> {
+    fn clone(&self) -> Self {
+        Self(parking_lot::RwLock::new(self.0.read().clone()))
+    }
+}
+
+impl<T: Clone + Debug + Default + Sync + Send> From<T> for AtomicAny<T> {
+    fn from(value: T) -> Self {
+        AtomicAny(parking_lot::RwLock::new(value))
+    }
+}
+
 impl<T: Clone + Debug + Default + Sync + Send + PartialEq> PartialEq for AtomicAny<T> {
     fn eq(&self, other: &Self) -> bool {
         self.get() == other.get()
@@ -183,11 +192,8 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> PartialEq for AtomicA
 ///
 /// * The `Unsync` variant wraps `Option<P>`. It is intended to be used in a single-threaded
 ///   context, where the value can be set only via regular mutability (using the `set` method).
-///   Calling `update` on an `Unsync` will always panic, and calling `try_update` will return an
-///   `Err`.
 /// * The `Sync` variant wraps `Option<Atomic<P>>`. It is intended to be used in a multi-threaded
-///   context, where the value can be set either by regular or interior mutability (using the
-///   `update` or `try_update` method).
+///   context, where the value can be set either by regular or interior mutability.
 #[derive(Clone, PartialEq, Eq)]
 pub enum AtomicOption<P, A>
 where
@@ -203,24 +209,6 @@ where
     P: Clone + Debug + Default,
     A: Atomic<P>,
 {
-    // Returns `AtomicOption::Unsync(Some(value))`.
-    // pub fn new(value: P) -> Self {
-    //     Self::Unsync(Some(value))
-    // }
-
-    // Returns `true` if this is a `Sync` variant.
-    // pub fn is_sync(&self) -> bool {
-    //     matches!(self, Self::Sync(_))
-    // }
-
-    // Returns `true` if the value is set.
-    // pub fn is_set(&self) -> bool {
-    //     match self {
-    //         Self::Unsync(opt) => opt.is_some(),
-    //         Self::Sync(opt) => opt.is_some(),
-    //     }
-    // }
-
     /// Returns the value if it is set.
     pub fn get(&self) -> Option<P> {
         match self {
@@ -245,16 +233,6 @@ where
             (Self::Unsync(opt), None) => opt.take(),
         }
     }
-
-    // Sets the value to `value` using interior mutability if possible, otherwise panics. This
-    // method only succeeds when called on `Sync(Some(_))`.
-    // pub fn update(&self, value: P) -> P {
-    //     match self {
-    //         Self::Unsync(_) => panic!("Cannot call `update` on an `Unsync` variant"),
-    //         Self::Sync(None) => panic!("Cannot call `update` on an `Sync` variant with no value"),
-    //         Self::Sync(Some(atomic)) => atomic.set(value),
-    //     }
-    // }
 
     /// If this is an `Unsync` variant, consumes `self` and returns the corresponding `Sync`
     /// variant. Otherwise returns `self`.
@@ -288,6 +266,7 @@ where
     }
 }
 
+/// Errors for invalid interior mutability operations.
 #[derive(Debug, thiserror::Error)]
 pub enum MutError {
     #[error("cannot use interior mutability to modify value in Unsync variant")]
@@ -298,7 +277,7 @@ pub enum MutError {
 
 impl<P, A> AtomicOption<P, A>
 where
-    P: Copy + Debug + Default + Add<Output = P> + PartialOrd<P>,
+    P: Copy + Debug + Default + Add<P, Output = P>,
     A: AtomicNumber<P>,
 {
     /// If this is a `Sync` variant whose value is `Some`, updates the value to be the sum of
@@ -311,10 +290,15 @@ where
             Self::Sync(Some(atomic)) => Ok(atomic.add(rhs)),
         }
     }
+}
 
+impl<P, A> AtomicOption<P, A>
+where
+    P: Copy + Debug + Default + PartialOrd<P>,
+    A: AtomicNumber<P>,
+{
     /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
-    /// current value and `rhs` if it is set and returns the previous value. Otherwise returns a
-    /// `MutError`.
+    /// current value and `rhs` and returns the previous value. Otherwise returns a `MutError`.
     pub fn set_max(&self, rhs: P) -> Result<P, MutError> {
         match self {
             Self::Unsync(_) => Err(MutError::Unsync),
@@ -360,16 +344,6 @@ mod affinity {
         P: Clone + Debug + Default,
         A: Atomic<P>,
     {
-        // Sets the value to `value` using interior mutability if possible, otherwise returns a
-        // `MutError`. This method only returns `Ok` when called on `Sync(Some(_))`.
-        // pub fn try_update(&self, value: P) -> Result<P, MutError> {
-        //     match self {
-        //         Self::Unsync(_) => Err(MutError::Unsync),
-        //         Self::Sync(None) => Err(MutError::Unset),
-        //         Self::Sync(Some(atomic)) => Ok(atomic.set(value)),
-        //     }
-        // }
-
         /// Sets the value to the result of applying `f` to the current value using interior
         /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous value
         /// is returned, otherwise the value is not updated and an error is returned.

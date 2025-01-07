@@ -7,9 +7,9 @@ use std::sync::LazyLock;
 
 const DEFAULT_NUM_THREADS: usize = 4;
 
-static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
+pub(super) static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
     let mut config = Config::default();
-    reset_config_defaults(&mut config);
+    config.set_const_defaults();
     Mutex::new(config)
 });
 
@@ -27,13 +27,7 @@ pub fn set_num_threads_default_all() {
 /// Resets all builder defaults to their original values.
 pub fn reset_defaults() {
     let mut config = DEFAULTS.lock();
-    reset_config_defaults(&mut config);
-}
-
-fn reset_config_defaults(config: &mut Config) {
-    config.num_threads.set(Some(DEFAULT_NUM_THREADS));
-    #[cfg(feature = "retry")]
-    retry::reset_config_defaults(config);
+    config.set_const_defaults();
 }
 
 impl Config {
@@ -43,6 +37,12 @@ impl Config {
 
     pub fn with_defaults() -> Self {
         DEFAULTS.lock().clone()
+    }
+
+    fn set_const_defaults(&mut self) {
+        self.num_threads.set(Some(DEFAULT_NUM_THREADS));
+        #[cfg(feature = "retry")]
+        self.set_retry_const_defaults();
     }
 
     pub fn into_sync(self) -> Self {
@@ -136,16 +136,16 @@ mod retry {
         set_max_retries_default(0);
     }
 
-    pub fn reset_config_defaults(config: &mut Config) {
-        config.max_retries.set(Some(DEFAULT_MAX_RETRIES));
-        config.retry_factor.set(Some(
-            Duration::from_secs(DEFAULT_RETRY_FACTOR_SECS).as_nanos() as u64,
-        ));
-    }
-
     impl Config {
         pub fn set_retry_factor_from(&mut self, duration: Duration) -> Option<u64> {
             self.retry_factor.set(Some(duration.as_nanos() as u64))
+        }
+
+        pub(super) fn set_retry_const_defaults(&mut self) {
+            self.max_retries.set(Some(DEFAULT_MAX_RETRIES));
+            self.retry_factor.set(Some(
+                Duration::from_secs(DEFAULT_RETRY_FACTOR_SECS).as_nanos() as u64,
+            ));
         }
     }
 

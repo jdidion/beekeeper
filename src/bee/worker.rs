@@ -126,7 +126,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{ApplyRefError, RefWorker, RefWorkerResult, Worker, WorkerResult};
-    use crate::task::{ApplyError, Context};
+    use crate::bee::{ApplyError, Context};
 
     #[derive(Debug)]
     struct MyWorker;

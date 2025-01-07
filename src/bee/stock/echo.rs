@@ -1,4 +1,4 @@
-use crate::task::{Context, Worker, WorkerResult};
+use crate::bee::{Context, Worker, WorkerResult};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -26,7 +26,7 @@ impl<T: Send + Debug + 'static> Worker for Echo<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::Context;
+    use crate::bee::Context;
 
     #[test]
     fn test_echo() {

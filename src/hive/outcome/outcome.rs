@@ -1,5 +1,5 @@
 use crate::panic::Panic;
-use crate::task::{ApplyError, Worker, WorkerResult};
+use crate::bee::{ApplyError, Worker, WorkerResult};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
