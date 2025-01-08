@@ -176,13 +176,16 @@ mod tests {
         hive1.suspend();
         let husk1 = hive1.into_husk();
         let (tx, rx) = outcome_channel();
-        let (hive2, _) = husk1.into_hive_swarm_unprocessed_to(tx);
+        let (hive2, indices) = husk1.into_hive_swarm_unprocessed_to(tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
         let husk2 = hive2.into_husk();
         assert!(husk2.is_empty());
-        let mut outputs = rx.into_ordered().map(Outcome::unwrap).collect::<Vec<_>>();
+        let mut outputs = rx
+            .take_ordered(indices)
+            .map(Outcome::unwrap)
+            .collect::<Vec<_>>();
         outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }
@@ -194,7 +197,8 @@ mod tests {
             .build_with_default::<ThunkWorker<u8>>();
         hive.map_store((0..10).into_iter().map(|i| Thunk::of(move || i)));
         hive.join();
-        let outputs = hive.into_husk().into_parts().1.unwrap();
+        let mut outputs = hive.into_husk().into_parts().1.unwrap();
+        outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }
 

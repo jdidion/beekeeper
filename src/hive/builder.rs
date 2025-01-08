@@ -99,7 +99,7 @@ impl Builder {
     ///
     /// # fn main() {
     /// let hive = Builder::new()
-    ///     .thread_per_core()
+    ///     .with_thread_per_core()
     ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
@@ -248,13 +248,13 @@ impl Builder {
     /// assert_eq!(husk.queen().num_workers, 8);
     /// # }
     /// ```
-    pub fn build<W: Worker, Q: Queen<Kind = W>>(self, queen: Q) -> Hive<W, Q> {
+    pub fn build<Q: Queen>(self, queen: Q) -> Hive<Q::Kind, Q> {
         Hive::new(self.0, queen)
     }
 
     /// Consumes this `Builder` and returns a new `Hive` using a `Queen` created with
     /// `Q::default()` to create `Worker`s.
-    pub fn build_default<W: Worker, Q: Queen<Kind = W> + Default>(self) -> Hive<W, Q> {
+    pub fn build_default<Q: Queen + Default>(self) -> Hive<Q::Kind, Q> {
         Hive::new(self.0, Q::default())
     }
 

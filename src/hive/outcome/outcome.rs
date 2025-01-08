@@ -1,5 +1,5 @@
-use crate::panic::Panic;
 use crate::bee::{ApplyError, Worker, WorkerResult};
+use crate::panic::Panic;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
@@ -93,14 +93,14 @@ impl<W: Worker> Outcome<W> {
     }
 
     /// Returns the index of the task that produced this outcome.
-    pub fn index(&self) -> usize {
+    pub fn index(&self) -> &usize {
         match self {
             Self::Success { index, .. }
             | Self::Failure { index, .. }
             | Self::Unprocessed { index, .. }
-            | Self::Panic { index, .. } => *index,
+            | Self::Panic { index, .. } => index,
             #[cfg(feature = "retry")]
-            Self::MaxRetriesAttempted { index, .. } => *index,
+            Self::MaxRetriesAttempted { index, .. } => index,
         }
     }
 

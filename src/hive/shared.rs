@@ -147,7 +147,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Adds a new outcome to the retained task outcomes.
     pub fn add_outcome(&self, outcome: Outcome<W>) {
         let mut lock = self.outcomes.lock();
-        lock.insert(outcome.index(), outcome);
+        lock.insert(*outcome.index(), outcome);
     }
 
     /// Removes and returns all retained task outcomes.

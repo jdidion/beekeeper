@@ -188,8 +188,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         T::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = outcome_channel();
-        let num_tasks = self.send_batch(batch, Some(tx)).len();
-        rx.into_ordered().take(num_tasks)
+        let indices = self.send_batch(batch, Some(tx));
+        rx.take_ordered(indices)
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
@@ -243,11 +243,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         inputs: impl IntoIterator<Item = W::Input>,
     ) -> impl Iterator<Item = Outcome<W>> {
         let (tx, rx) = outcome_channel();
-        let num_tasks = inputs
+        let indices: Vec<_> = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
-            .count();
-        rx.into_ordered().take(num_tasks)
+            .collect();
+        rx.take_ordered(indices)
     }
 
     /// Iterates over `inputs`, sends each one to the `Hive` for processing, and returns an
@@ -454,15 +454,17 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// # Examples
     ///
-    /// ```
+    ///
     /// use drudge::bee::stock::{Thunk, ThunkWorker};
     /// use drudge::hive::Builder;
+    /// use std::thread;
+    /// use std::time::Duration;
     ///
     /// # fn main() {
     /// let hive = Builder::new()
     ///     .num_threads(4)
     ///     .build_with_default::<ThunkWorker<()>>();
-    /// hive.map((0..10).map(|_| Thunk.of(|| thread::sleep(Duration::from_secs(5));));
+    /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(5)))));
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be processed.
     /// // There should be 4 active tasks and 6 queued tasks.
     /// hive.suspend();
@@ -475,8 +477,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// hive.resume();
     /// // Wait for remaining tasks to complete.
     /// hive.join();
-    /// }
-    /// ```
+    /// # }
+    ///
     pub fn suspend(&self) {
         self.shared.set_suspended(true);
     }

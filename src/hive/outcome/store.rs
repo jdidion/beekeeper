@@ -1,10 +1,10 @@
-use super::{Outcome, OutcomeIteratorExt};
+use super::Outcome;
 use crate::bee::Worker;
 
 /// Traits with methods that should only be accessed internally by public traits.
 pub mod sealed {
-    use crate::hive::Outcome;
     use crate::bee::Worker;
+    use crate::hive::Outcome;
     use std::{
         collections::HashMap,
         ops::{Deref, DerefMut},
@@ -83,7 +83,7 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
             .values()
             .into_iter()
             .filter(|outcome| outcome.is_unprocessed())
-            .map(Outcome::index)
+            .map(|outcome| *outcome.index())
             .collect()
     }
 
@@ -109,7 +109,7 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
             .values()
             .into_iter()
             .filter(|outcome| outcome.is_success())
-            .map(Outcome::index)
+            .map(|outcome| *outcome.index())
             .collect()
     }
 
@@ -135,7 +135,7 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
             .values()
             .into_iter()
             .filter(|outcome| outcome.is_failure())
-            .map(Outcome::index)
+            .map(|outcome| *outcome.index())
             .collect()
     }
 
@@ -229,7 +229,6 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
         );
         self.outcomes()
             .into_values()
-            .into_ordered()
             .filter(Outcome::is_success)
             .map(Outcome::unwrap)
             .collect()
@@ -256,15 +255,27 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
         }
     }
 
-    /// Consumes this store and returns all the `Outcome::Unprocessed` values in index order.
-    fn into_unprocessed(self) -> Vec<W::Input> {
-        self.outcomes()
+    /// Consumes this store and returns all the `Outcome::Unprocessed`. If `ordered` is `true`, the
+    /// inputs are returned in index order, otherwise they are unordered.
+    fn into_unprocessed(self, ordered: bool) -> Vec<W::Input> {
+        let values = self
+            .outcomes()
             .into_values()
-            .into_ordered()
-            .filter(Outcome::is_unprocessed)
-            .map(Outcome::into_input)
-            .map(Option::unwrap)
-            .collect()
+            .filter(Outcome::is_unprocessed);
+        if ordered {
+            let mut unordered: Vec<_> = values.collect();
+            unordered.sort();
+            unordered
+                .into_iter()
+                .map(Outcome::into_input)
+                .map(Option::unwrap)
+                .collect()
+        } else {
+            values
+                .map(Outcome::into_input)
+                .map(Option::unwrap)
+                .collect()
+        }
     }
 
     /// Returns the stored `Outcome` associated with the given index, if any.
@@ -308,9 +319,9 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
 #[cfg(test)]
 mod tests {
     use super::{OutcomeDerefStore, OutcomeStore};
+    use crate::bee::{Context, Worker, WorkerResult};
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
-    use crate::bee::{Context, Worker, WorkerResult};
 
     #[derive(Debug)]
     pub(super) struct TestWorker;

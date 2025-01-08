@@ -143,15 +143,15 @@ mod test {
     use super::{Builder, Hive, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
-        ApplyError, ApplyRefError, Context, DefaultQueen, RefWorker, RefWorkerResult, Worker,
-        WorkerResult,
+        ApplyError, ApplyRefError, Context, DefaultQueen, Queen, RefWorker, RefWorkerResult,
+        Worker, WorkerResult,
     };
     use crate::channel::{Message, ReceiverExt};
     use crate::hive::outcome::OutcomesDeref;
     use std::{
         fmt::Debug,
         io::{self, BufRead, BufReader, Write},
-        process::{ChildStdin, ChildStdout, Command, Stdio},
+        process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc, Barrier,
@@ -803,7 +803,8 @@ mod test {
             *acc += i;
             *acc
         });
-        let outputs = outputs.unwrap();
+        let mut outputs = outputs.unwrap();
+        outputs.sort();
         assert_eq!(outputs.len(), 10);
         assert_eq!(state, 45);
         assert_eq!(
@@ -1011,14 +1012,12 @@ mod test {
         let mut outputs1 = husk1
             .remove_all()
             .into_iter()
-            .into_ordered()
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs1.sort();
         let mut outputs2 = husk2
             .remove_all()
             .into_iter()
-            .into_ordered()
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs2.sort();
@@ -1214,28 +1213,42 @@ mod test {
 
     #[test]
     fn doctest_lib_2() {
+        // create a hive to process `Thunk`s - no-argument closures with the same return type (`i32`)
+        let hive = Builder::new()
+            .num_threads(4)
+            .thread_name("thunk_hive")
+            .build_with_default::<ThunkWorker<i32>>();
+
+        // return results to your own channel...
+        let (tx, rx) = crate::hive::outcome_channel();
+        let indices = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
+        let outputs: Vec<_> = rx.take_outputs(indices).collect();
+        assert_eq!(285, outputs.into_iter().sum());
+
+        // return results as an iterator...
+        let outputs2: Vec<_> = hive
+            .swarm((0..10).map(|i: i32| Thunk::of(move || i * -i)))
+            .into_outputs()
+            .collect();
+        assert_eq!(-285, outputs2.into_iter().sum());
+    }
+
+    #[test]
+    fn doctest_lib_3() {
         #[derive(Debug)]
-        struct LineDelimitedWorker {
+        struct CatWorker {
             stdin: ChildStdin,
             stdout: BufReader<ChildStdout>,
         }
 
-        impl Default for LineDelimitedWorker {
-            fn default() -> Self {
-                let child = Command::new("cat")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                    .unwrap();
+        impl CatWorker {
+            fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
                 Self {
-                    stdin: child.stdin.unwrap(),
-                    stdout: BufReader::new(child.stdout.unwrap()),
+                    stdin,
+                    stdout: BufReader::new(stdout),
                 }
             }
-        }
 
-        impl LineDelimitedWorker {
             fn write_char(&mut self, c: u8) -> io::Result<String> {
                 self.stdin.write_all(&[c])?;
                 self.stdin.write_all(b"\n")?;
@@ -1247,7 +1260,7 @@ mod test {
             }
         }
 
-        impl Worker for LineDelimitedWorker {
+        impl Worker for CatWorker {
             type Input = u8;
             type Output = String;
             type Error = io::Error;
@@ -1260,21 +1273,92 @@ mod test {
             }
         }
 
-        let n_workers = 4;
-        let n_tasks = 8;
-        let hive = Builder::new()
-            .num_threads(n_workers)
-            .build_with_default::<LineDelimitedWorker>();
+        #[derive(Default)]
+        struct CatQueen {
+            children: Vec<Child>,
+        }
 
-        let inputs: Vec<u8> = (0..n_tasks).map(|i| 97 + i).collect();
+        impl CatQueen {
+            fn wait_for_all(&mut self) -> Vec<io::Result<ExitStatus>> {
+                self.children
+                    .drain(..)
+                    .map(|mut child| child.wait())
+                    .collect()
+            }
+        }
+
+        impl Queen for CatQueen {
+            type Kind = CatWorker;
+
+            fn create(&mut self) -> Self::Kind {
+                let mut child = Command::new("cat")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap();
+                let stdin = child.stdin.take().unwrap();
+                let stdout = child.stdout.take().unwrap();
+                self.children.push(child);
+                CatWorker::new(stdin, stdout)
+            }
+        }
+
+        impl Drop for CatQueen {
+            fn drop(&mut self) {
+                self.wait_for_all()
+                    .into_iter()
+                    .for_each(|result| match result {
+                        Ok(status) if status.success() => (),
+                        Ok(status) => eprintln!("Child process failed: {}", status),
+                        Err(e) => eprintln!("Error waiting for child process: {}", e),
+                    })
+            }
+        }
+
+        // build the Hive
+        let hive = Builder::new().num_threads(4).build_default::<CatQueen>();
+
+        // prepare inputs
+        let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
+
+        // execute tasks and collect outputs
         let output = hive
             .swarm(inputs)
+            .into_outputs()
             .fold(String::new(), |mut a, b| {
-                a.push_str(&b.unwrap());
+                a.push_str(&b);
                 a
             })
             .into_bytes();
+
+        // verify the output - note that `swarm` ensures the outputs are in the same order
+        // as the inputs
         assert_eq!(output, b"abcdefgh");
+
+        // shutdown the hive, use the Queen to wait on child processes, and report errors
+        let (mut queen, _) = hive.into_husk().into_parts();
+        let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
+            queen.wait_for_all().into_iter().partition(Result::is_ok);
+        if !wait_err.is_empty() {
+            panic!(
+                "Error(s) occurred while waiting for child processes: {:?}",
+                wait_err
+            );
+        }
+        let exec_err_codes: Vec<_> = wait_ok
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|status| !status.success())
+            .map(|status| status.code())
+            .flatten()
+            .collect();
+        if !exec_err_codes.is_empty() {
+            panic!(
+                "Child process(es) failed with exit codes: {:?}",
+                exec_err_codes
+            );
+        }
     }
 }
 

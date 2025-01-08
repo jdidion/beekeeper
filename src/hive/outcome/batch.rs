@@ -17,7 +17,7 @@ impl<W: Worker, I: IntoIterator<Item = Outcome<W>>> From<I> for OutcomeBatch<W> 
         OutcomeBatch::new(
             value
                 .into_iter()
-                .map(|outcome| (outcome.index(), outcome))
+                .map(|outcome| (*outcome.index(), outcome))
                 .collect(),
         )
     }
@@ -54,6 +54,6 @@ impl<W: Worker> OutcomeBatch<W> {
     }
 
     pub(crate) fn insert(&mut self, outcome: Outcome<W>) {
-        self.0.insert(outcome.index(), outcome);
+        self.0.insert(*outcome.index(), outcome);
     }
 }

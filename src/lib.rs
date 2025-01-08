@@ -58,8 +58,8 @@
 //! # fn main() {
 //! // parallelize the computation of `double` on a range of numbers over
 //! // 4 threads, and sum the results
-//! const N = 100;
-//! let sum_doubles = drudge::util::map(4, 0..N, double).into_iter().sum();
+//! const N: usize = 100;
+//! let sum_doubles: usize = drudge::util::map(4, 0..N, double).into_iter().sum();
 //! println!("Sum of {} doubles: {}", N, sum_doubles);
 //! # }
 //! ```
@@ -79,15 +79,15 @@
 //!
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
-//! let _ = hive.swarm_send((0..10).map(|i| Thunk::of(move || i * i)), tx);
-//! assert_eq!(140, rx.into_results().into_outputs().take(10).sum());
+//! let _ = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
+//! assert_eq!(285, rx.into_outputs().take(10).sum());
 //!
 //! // return results as an iterator...
 //! let total = hive
-//!     .swarm((0..n_tasks).map(|i| Thunk::of(move || i * -i)))
+//!     .swarm((0..10).map(|i: i32| Thunk::of(move || i * -i)))
 //!     .into_outputs()
 //!     .sum();
-//! assert_eq!(-140, total);
+//! assert_eq!(-285, total);
 //! # }
 //! ```
 //!
@@ -100,8 +100,8 @@
 //! sure they're terminated properly.
 //!
 //! ```
-//! use crate::hive::prelude::*;
-//! use crate::bee::preleude::*;
+//! use drudge::hive::prelude::*;
+//! use drudge::bee::prelude::*;
 //! use std::io::prelude::*;
 //! use std::io::{self, BufReader};
 //! use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -136,8 +136,8 @@
 //!     type Output = String;
 //!     type Error = io::Error;
 //!
-//!     fn apply(&mut self, input: Self::Input) -> WorkerResult<Self> {
-//!         self.write_char(input).map_err(ApplyError::NotRetryable)
+//!     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+//!         self.write_char(input).map_err(|error| ApplyError::Fatal {input: Some(input), error})
 //!     }
 //! }
 //!
@@ -148,7 +148,7 @@
 //!
 //! impl CatQueen {
 //!     fn wait_for_all(&mut self) -> Vec<io::Result<ExitStatus>> {
-//!         self.children.drain(..).map(Child::wait).collect()
+//!         self.children.drain(..).map(|mut child| child.wait()).collect()
 //!     }
 //! }
 //!
@@ -156,7 +156,7 @@
 //!     type Kind = CatWorker;
 //!
 //!     fn create(&mut self) -> Self::Kind {
-//!         let child = Command::new("cat")
+//!         let mut child = Command::new("cat")
 //!             .stdin(Stdio::piped())
 //!             .stdout(Stdio::piped())
 //!             .stderr(Stdio::inherit())
@@ -185,17 +185,17 @@
 //! // build the Hive
 //! let hive = Builder::new()
 //!     .num_threads(4)
-//!     .build_default::<CatWorker>();
+//!     .build_default::<CatQueen>();
 //!
 //! // prepare inputs
-//! let inputs: Vec<u8> = (0..n_tasks).map(|i| 97 + i).collect();
+//! let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
 //!
 //! // execute tasks and collect outputs
 //! let output = hive
 //!     .swarm(inputs)
 //!     .into_outputs()
 //!     .fold(String::new(), |mut a, b| {
-//!         a.push_str(&b.unwrap());
+//!         a.push_str(&b);
 //!         a
 //!     })
 //!     .into_bytes();
@@ -205,15 +205,20 @@
 //! assert_eq!(output, b"abcdefgh");
 //!
 //! // shutdown the hive, use the Queen to wait on child processes, and report errors
-//! let mut husk = hive.into_husk();
-//! let wait_ok, wait_err = husk.queen().wait_for_all().partition(Result::is_ok);
+//! let (mut queen, _) = hive.into_husk().into_parts();
+//! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
+//!     queen.wait_for_all().into_iter().partition(Result::is_ok);
 //! if !wait_err.is_empty() {
-//!     panic!("Error(s) occurred while waiting for child processes: {:?}", wait_err);
+//!     panic!(
+//!         "Error(s) occurred while waiting for child processes: {:?}",
+//!         wait_err
+//!     );
 //! }
 //! let exec_err_codes: Vec<_> = wait_ok
+//!     .into_iter()
 //!     .map(Result::unwrap)
 //!     .filter(|status| !status.success())
-//!     .map(ExitStatus::code)
+//!     .map(|status| status.code())
 //!     .flatten()
 //!     .collect();
 //! if !exec_err_codes.is_empty() {
