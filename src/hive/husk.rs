@@ -59,7 +59,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     fn collect_unprocessed(outcomes: HashMap<usize, Outcome<W>>) -> Vec<W::Input> {
         outcomes
             .into_values()
-            .into_iter()
             .filter_map(|outcome| match outcome {
                 Outcome::Unprocessed { input: value, .. } => Some(value),
                 _ => None,

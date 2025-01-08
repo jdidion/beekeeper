@@ -39,7 +39,7 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
 
     /// Returns counts of the outcomes as a tuple `(unprocessed, successes, failures)`.
     fn count(&self) -> (usize, usize, usize) {
-        self.outcomes_deref().values().into_iter().fold(
+        self.outcomes_deref().values().fold(
             (0usize, 0usize, 0usize),
             |(unprocessed, successes, failures), result| match result {
                 Outcome::Success { .. } => (unprocessed, successes + 1, failures),
@@ -64,7 +64,6 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn has_unprocessed(&self) -> bool {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .any(|outcome| outcome.is_unprocessed())
     }
 
@@ -72,7 +71,6 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn num_unprocessed(&self) -> usize {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_unprocessed())
             .count()
     }
@@ -81,7 +79,6 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn unprocessed_indices(&self) -> Vec<usize> {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_unprocessed())
             .map(|outcome| *outcome.index())
             .collect()
@@ -91,14 +88,12 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn has_successes(&self) -> bool {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .any(|outcome| outcome.is_success())
     }
 
     fn num_successes(&self) -> usize {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_success())
             .count()
     }
@@ -107,7 +102,6 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn success_indices(&self) -> Vec<usize> {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_success())
             .map(|outcome| *outcome.index())
             .collect()
@@ -117,14 +111,12 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn has_failures(&self) -> bool {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .any(|outcome| outcome.is_failure())
     }
 
     fn num_failures(&self) -> usize {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_failure())
             .count()
     }
@@ -133,7 +125,6 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn failure_indices(&self) -> Vec<usize> {
         self.outcomes_deref()
             .values()
-            .into_iter()
             .filter(|outcome| outcome.is_failure())
             .map(|outcome| *outcome.index())
             .collect()
@@ -288,7 +279,6 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
     fn iter_unprocessed(&self) -> impl Iterator<Item = (&usize, &W::Input)> {
         self.outcomes_ref()
             .values()
-            .into_iter()
             .filter_map(|result| match result {
                 Outcome::Unprocessed { input, index } => Some((index, input)),
                 _ => None,
@@ -300,7 +290,6 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
     fn iter_successes(&self) -> impl Iterator<Item = (&usize, &W::Output)> {
         self.outcomes_ref()
             .values()
-            .into_iter()
             .filter_map(|result| match result {
                 Outcome::Success { value, index } => Some((index, value)),
                 _ => None,

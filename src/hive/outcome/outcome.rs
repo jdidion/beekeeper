@@ -162,12 +162,12 @@ impl<W: Worker> Eq for Outcome<W> {}
 
 impl<W: Worker> PartialOrd for Outcome<W> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.index().partial_cmp(&other.index())
+        Some(self.cmp(other))
     }
 }
 
 impl<W: Worker> Ord for Outcome<W> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        self.index().cmp(other.index())
     }
 }

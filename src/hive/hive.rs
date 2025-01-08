@@ -255,6 +255,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         inputs: impl IntoIterator<Item = W::Input>,
     ) -> impl Iterator<Item = Outcome<W>> {
         let (tx, rx) = outcome_channel();
+        // `map` is required (rather than `inspect`) because we need owned items
+        #[allow(clippy::suspicious_map)]
         let num_tasks = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
@@ -540,7 +542,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.shared.no_work_notify_all();
         let mut backoff = None::<Backoff>;
         while Arc::strong_count(&self.shared) > 1 {
-            backoff.get_or_insert_with(|| Backoff::new()).spin();
+            backoff.get_or_insert_with(Backoff::new).spin();
         }
         let shared = match Arc::try_unwrap(self.shared) {
             Ok(data) => data,
@@ -670,13 +672,14 @@ mod no_retry {
             let result = worker.apply(input, &ctx);
             let outcome = Outcome::from_worker_result(result, ctx.index());
             // Try to send the outcome to the receiver if there is one
-            if let Some(tx) = outcome_tx {
+            if let Some(outcome) = if let Some(tx) = outcome_tx {
                 tx.try_send_msg(outcome)
             } else {
                 Some(outcome)
+            } {
+                // If there is no sender, or if the send failed, store the outcome in the hive
+                shared.add_outcome(outcome)
             }
-            // If there is no sender, or if the send failed, store the outcome in the hive
-            .map(|outcome| shared.add_outcome(outcome));
         }
     }
 }
@@ -699,13 +702,14 @@ mod retry {
                 result => {
                     let outcome = Outcome::from_worker_result(result, ctx.index());
                     // Try to send the outcome to the receiver if there is one
-                    if let Some(tx) = outcome_tx {
+                    if let Some(outcome) = if let Some(tx) = outcome_tx {
                         tx.try_send_msg(outcome)
                     } else {
                         Some(outcome)
+                    } {
+                        // If there is no sender, or if the send failed, store the outcome in the hive
+                        shared.add_outcome(outcome)
                     }
-                    // If there is no sender, or if the send failed, store the outcome in the hive
-                    .map(|outcome| shared.add_outcome(outcome));
                 }
             }
         }

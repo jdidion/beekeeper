@@ -162,7 +162,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         let unprocessed_indices: Vec<_> = outcomes
             .keys()
             .cloned()
-            .filter(|index| matches!(outcomes.get(&index), Some(Outcome::Unprocessed { .. })))
+            .filter(|index| matches!(outcomes.get(index), Some(Outcome::Unprocessed { .. })))
             .collect();
         unprocessed_indices
             .into_iter()
@@ -323,7 +323,7 @@ mod retry {
                         .and_then(|multiplier| {
                             retry_factor
                                 .checked_mul(multiplier)
-                                .or_else(|| Some(u64::MAX))
+                                .or(Some(u64::MAX))
                                 .map(Duration::from_nanos)
                         })
                         .unwrap()

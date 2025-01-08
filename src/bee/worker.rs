@@ -23,9 +23,9 @@ pub trait Worker: Debug + Sized + 'static {
     /// The `Context` parameter provides additional context for the task, including:
     /// * index: the index of the task within the `Hive`. This value is used for ordering results.
     /// * attempt: the retry attempt number. The attempt value is `0` the first time the task is
-    /// attempted and increases by `1` for each subsequent retry attempt.
+    ///   attempted and increases by `1` for each subsequent retry attempt.
     /// * cancelled: whether the task has been cancelled and should exit early with an
-    /// `ApplyError::Cancelled` result.
+    ///   `ApplyError::Cancelled` result.
     ///
     /// This method should not panic. If it may panic, then `Panic::try_call` should be used to
     /// catch the panic and turn it into an `ApplyError::Panic` error.

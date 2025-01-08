@@ -1,6 +1,7 @@
 mod builder;
 mod condvar;
 mod config;
+#[allow(clippy::module_inception)]
 mod hive;
 mod husk;
 mod outcome;
@@ -30,8 +31,7 @@ pub use outcome::{Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt, 
 #[cfg(feature = "retry")]
 pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
-pub(self) use outcome::{Outcomes, OutcomesDeref};
-
+use self::outcome::{Outcomes, OutcomesDeref};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
 use condvar::{MutexCondvar, PhasedCondvar};

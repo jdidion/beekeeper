@@ -49,32 +49,21 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let next = match self.indices.front() {
-                Some(index) => index,
-                None => return None,
-            };
-            match self
-                .buf
-                .remove(next)
-                .or_else(|| self.inner.next())
-                .map(|outcome| {
+            if let Some(next) = self.indices.front() {
+                if let Some(outcome) = self.buf.remove(next).or_else(|| self.inner.next()) {
                     let index = outcome.index();
                     if index == next {
-                        Some(outcome)
+                        self.indices.pop_front();
+                        return Some(outcome);
                     } else {
                         if self.indices.contains(index) {
                             self.buf.insert(*index, outcome);
                         }
-                        None
+                        continue;
                     }
-                }) {
-                None => return None,
-                Some(outcome @ Some(_)) => {
-                    self.indices.pop_front();
-                    return outcome;
                 }
-                _ => (),
             }
+            return None;
         }
     }
 }
@@ -105,7 +94,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
         let indices: HashSet<usize> = indices.into_iter().collect();
         let n = indices.len();
         self.into_iter()
-            .filter_map(move |outcome| indices.contains(&outcome.index()).then_some(outcome))
+            .filter_map(move |outcome| indices.contains(outcome.index()).then_some(outcome))
             .map(Outcome::into)
             .take(n)
     }
@@ -135,7 +124,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
         let indices: HashSet<usize> = indices.into_iter().collect();
         let n = indices.len();
         self.into_iter()
-            .filter_map(move |outcome| indices.contains(&outcome.index()).then_some(outcome))
+            .filter_map(move |outcome| indices.contains(outcome.index()).then_some(outcome))
             .map(Outcome::unwrap)
             .take(n)
     }

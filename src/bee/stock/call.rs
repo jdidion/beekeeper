@@ -17,7 +17,7 @@ struct Callable<I, O, E, F> {
 impl<I, O, E, F> Callable<I, O, E, F> {
     fn of(f: F) -> Self {
         Self {
-            f: f,
+            f,
             i: PhantomData,
             o: PhantomData,
             e: PhantomData,
@@ -58,7 +58,7 @@ where
 
     #[inline]
     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
-        Ok((&mut self.0.f)(input))
+        Ok((self.0.f)(input))
     }
 }
 
@@ -111,7 +111,7 @@ where
 
     #[inline]
     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
-        (&mut self.0.f)(input).map_err(|error| ApplyError::Fatal { error, input: None })
+        (self.0.f)(input).map_err(|error| ApplyError::Fatal { error, input: None })
     }
 }
 
@@ -168,7 +168,7 @@ where
 
     #[inline]
     fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
-        (&mut self.0.f)(input).map_err(|error| ApplyRefError::NotRetryable(error))
+        (self.0.f)(input).map_err(|error| ApplyRefError::NotRetryable(error))
     }
 }
 
@@ -220,7 +220,7 @@ where
 
     #[inline]
     fn apply(&mut self, input: Self::Input, ctx: &Context) -> WorkerResult<Self> {
-        (&mut self.0.f)(input, ctx)
+        (self.0.f)(input, ctx)
     }
 }
 

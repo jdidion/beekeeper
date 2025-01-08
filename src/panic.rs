@@ -16,8 +16,7 @@ impl<T: Send + Debug + Eq> Panic<T> {
     /// Attempts to call the provided function `f` and catches any panic. Returns either the return
     /// value of the function or a `Panic` created from the panic payload and the provided `detail`.
     pub fn try_call<O, F: FnOnce() -> O>(detail: Option<T>, f: F) -> Result<O, Self> {
-        std::panic::catch_unwind(AssertUnwindSafe(|| f()))
-            .map_err(|payload| Self { payload, detail })
+        std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(|payload| Self { payload, detail })
     }
 
     pub(crate) fn try_call_boxed<O, F: BoxedFnOnce<Output = O> + ?Sized>(
@@ -46,7 +45,7 @@ impl<T: Send + Debug + Eq> Panic<T> {
 
 impl<T: Send + Debug + Eq> PartialEq for Panic<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.payload.type_id() == other.payload.type_id() && self.detail == other.detail
+        (*self.payload).type_id() == (*other.payload).type_id() && self.detail == other.detail
     }
 }
 

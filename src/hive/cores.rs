@@ -177,7 +177,7 @@ impl FromIterator<usize> for Cores {
 
 impl<I: IntoIterator<Item = usize>> From<I> for Cores {
     fn from(value: I) -> Self {
-        Self(Vec::from_iter(value.into_iter()))
+        Self(Vec::from_iter(value))
     }
 }
 
