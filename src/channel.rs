@@ -14,6 +14,12 @@ pub enum Message<T> {
     ChannelEmpty,
 }
 
+pub trait SenderExt<T> {
+    /// Attempts to send a message to the channel. Returns `None` if the send was successful, or
+    /// `Some(t)` if the send was not successful due to the channel being disconnected.
+    fn try_send_msg(&self, msg: T) -> Option<T>;
+}
+
 /// Trait implemented for all channel `Receiver` types that standardizes non-blocking `recv()`.
 pub trait ReceiverExt<T> {
     /// Attempts to receive a message from the channel. Returns `Message::Received` if a message
@@ -28,18 +34,22 @@ pub trait ReceiverIter<T> {
     fn iter(self) -> impl Iterator<Item = T>;
 }
 
-#[cfg(not(any(
-    feature = "crossbeam",
-    feature = "flume",
-    feature = "kanal",
-    feature = "loole"
-)))]
+#[cfg(not(any(feature = "crossbeam", feature = "flume", feature = "loole")))]
 pub mod prelude {
-    pub use std::sync::mpsc::{channel, Receiver, Sender};
+    pub use std::sync::mpsc::{channel, Receiver, SendError, Sender};
 
-    use super::{Message, ReceiverExt};
+    use super::{Message, ReceiverExt, SenderExt};
     use std::sync::mpsc::TryRecvError;
 
+    impl<T> SenderExt<T> for Sender<T> {
+        fn try_send_msg(&self, t: T) -> Option<T> {
+            match self.send(t) {
+                Ok(_) => None,
+                Err(SendError(t)) => Some(t),
+            }
+        }
+    }
+
     impl<T> ReceiverExt<T> for Receiver<T> {
         fn try_recv_msg(&self) -> super::Message<T> {
             match self.try_recv() {
@@ -51,16 +61,22 @@ pub mod prelude {
     }
 }
 
-#[cfg(all(
-    feature = "crossbeam",
-    not(any(feature = "flume", feature = "kanal", feature = "loole"))
-))]
+#[cfg(all(feature = "crossbeam", not(any(feature = "flume", feature = "loole"))))]
 pub mod prelude {
-    pub use crossbeam_channel::{unbounded as channel, Receiver, Sender};
+    pub use crossbeam_channel::{unbounded as channel, Receiver, SendError, Sender};
 
-    use super::{Message, ReceiverExt};
+    use super::{Message, ReceiverExt, SenderExt};
     use crossbeam_channel::TryRecvError;
 
+    impl<T> SenderExt<T> for Sender<T> {
+        fn try_send_msg(&self, t: T) -> Option<T> {
+            match self.send(t) {
+                Ok(_) => None,
+                Err(SendError(t)) => Some(t),
+            }
+        }
+    }
+
     impl<T> ReceiverExt<T> for Receiver<T> {
         fn try_recv_msg(&self) -> super::Message<T> {
             match self.try_recv() {
@@ -72,16 +88,22 @@ pub mod prelude {
     }
 }
 
-#[cfg(all(
-    feature = "flume",
-    not(any(feature = "crossbeam", feature = "kanal", feature = "loole"))
-))]
+#[cfg(all(feature = "flume", not(any(feature = "crossbeam", feature = "loole"))))]
 pub mod prelude {
-    pub use flume::{unbounded as channel, Receiver, Sender};
+    pub use flume::{unbounded as channel, Receiver, SendError, Sender};
 
-    use super::{Message, ReceiverExt};
+    use super::{Message, ReceiverExt, SenderExt};
     use flume::TryRecvError;
 
+    impl<T> SenderExt<T> for Sender<T> {
+        fn try_send_msg(&self, t: T) -> Option<T> {
+            match self.send(t) {
+                Ok(_) => None,
+                Err(SendError(t)) => Some(t),
+            }
+        }
+    }
+
     impl<T> ReceiverExt<T> for Receiver<T> {
         fn try_recv_msg(&self) -> super::Message<T> {
             match self.try_recv() {
@@ -93,41 +115,21 @@ pub mod prelude {
     }
 }
 
-#[cfg(all(
-    feature = "kanal",
-    not(any(feature = "crossbeam", feature = "flume", feature = "loole"))
-))]
+#[cfg(all(feature = "loole", not(any(feature = "crossbeam", feature = "flume"))))]
 pub mod prelude {
-    pub use kanal::{unbounded as channel, Receiver, Sender};
+    pub use loole::{unbounded as channel, Receiver, SendError, Sender};
 
-    use super::{Message, ReceiverExt, ReceiverIter};
+    use super::{Message, ReceiverExt, SenderExt};
+    use loole::TryRecvError;
 
-    impl<T> ReceiverExt<T> for Receiver<T> {
-        fn try_recv_msg(&self) -> Message<T> {
-            match self.try_recv() {
-                Ok(Some(t)) => Message::Received(t),
-                Ok(None) => Message::ChannelEmpty,
-                Err(_) => Message::ChannelDisconnected,
+    impl<T> SenderExt<T> for Sender<T> {
+        fn try_send_msg(&self, t: T) -> Option<T> {
+            match self.send(t) {
+                Ok(_) => None,
+                Err(SendError(t)) => Some(t),
             }
         }
     }
-
-    impl<T> ReceiverIter<T> for Receiver<T> {
-        fn iter(self) -> impl Iterator<Item = T> {
-            self
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "loole",
-    not(any(feature = "crossbeam", feature = "flume", feature = "kanal"))
-))]
-pub mod prelude {
-    pub use loole::{unbounded as channel, Receiver, Sender};
-
-    use super::{Message, ReceiverExt};
-    use loole::TryRecvError;
 
     impl<T> ReceiverExt<T> for Receiver<T> {
         fn try_recv_msg(&self) -> super::Message<T> {

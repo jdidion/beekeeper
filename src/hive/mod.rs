@@ -64,7 +64,7 @@ use retry_prelude::*;
 /// [`Builder`].
 ///
 /// A `Hive` has a [`Queen`] that creates a [`Worker`] for each thread in the pool. The `Worker` has
-/// a [`try_apply`] method that is called to execute a task, which consists of an input value, a
+/// a [`apply`] method that is called to execute a task, which consists of an input value, a
 /// `Context`, and an optional output channel. If the `Worker` processes the task successfully, the
 /// output is sent to the output channel if one is provided, otherwise it is retained in the `Hive`
 /// for later retrieval. If the `Worker` encounters an error, then it will retry the task if the
@@ -79,11 +79,7 @@ use retry_prelude::*;
 /// dropping the `Hive`, the `into_husk()` method can be called to retrieve all of the `Hive` data
 /// necessary to build a new `Hive`, as well as any stored outcomes (those that were not sent to an
 /// output channel).
-///
-/// [`Builder`]: hive/struct.Builder.html
-/// [`Worker`]: task/trait.Worker.html
-/// [`Queen`]: task/trait.Queen.html
-/// [`try_apply`]: task/trait.Worker.html#method.try_apply
+
 #[derive(Debug)]
 pub struct Hive<W: Worker, Q: Queen<Kind = W>> {
     task_tx: TaskSender<W>,
@@ -464,7 +460,7 @@ mod test {
             .build_with_default::<ThunkWorker<usize>>();
 
         let actual_stack_size = hive
-            .try_apply(Thunk::of(|| {
+            .apply(Thunk::of(|| {
                 //println!("This thread has a 4 MB stack size!");
                 stacker::remaining_stack().unwrap()
             }))

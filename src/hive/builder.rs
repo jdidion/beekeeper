@@ -262,6 +262,7 @@ impl Builder {
     /// `worker`.
     ///
     /// # Examples
+    ///
     /// ```
     /// # use drudge::hive::{Builder, OutcomeIteratorExt};
     /// # use drudge::bee::{Context, Worker, WorkerResult};
@@ -315,6 +316,7 @@ impl Builder {
     /// `W::default()`.
     ///
     /// # Examples
+    /// 
     /// ```
     /// # use drudge::hive::{Builder, OutcomeIteratorExt};
     /// # use drudge::bee::{Context, Worker,  WorkerResult};

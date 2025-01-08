@@ -14,7 +14,7 @@
 // Each group of functions has multiple variants.
 // * The functions that end with `_send` all take a channel sender as a second argument and will deliver results to that channel as they become available.
 // * The functions that end with `_store` are all non-blocking functions that return the indices associated with the submitted tasks and will store the task results in the hive. The results can be retrieved from the hive later by index, e.g. using `remove_success`. Note that, since these functions are non-blocking, it is necessary to call `hive.join` or otherwise prevent the `Hive` from being `drop`ped until the tasks are completed.
-// * For executing single tasks, there is `try_apply`, which submits the tasks and blocks waiting for the result.
+// * For executing single tasks, there is `apply`, which submits the tasks and blocks waiting for the result.
 // * For executing batches of tasks, there are `map`/`swarm`/`scan`, which return an iterator yields results in the same order they were submitted. There are `_unordered` versions of the same functions that yield results as they become available.
 
 // Other functions of interest:
@@ -49,20 +49,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
                 // Will spawn a new thread on panic until it is cancelled
                 let sentinel = Sentinel::new(index, Arc::clone(&shared));
                 let mut worker = shared.create_worker();
-                let mut active = true;
-                while active {
-                    // Shutdown this thread if the pool has become smaller
-                    active = shared
-                        // Get the next task - increments the counter
-                        .next_task()
-                        // Execute the task until it succeeds or we reach maximum retries - this
-                        // should be the only place where a panic might occur
-                        .map(|task| Self::execute(task, &mut worker, &shared))
-                        // Finish the task - decrements the counter and notifies other threads
-                        .inspect(|_| shared.finish_task(false))
-                        // Shutdown this thread if the receiver hung up
-                        .unwrap_or(false);
+                // Get the next task - increments the counter
+                while let Some(task) = shared.next_task() {
+                    // Execute the task until it succeeds or we reach maximum retries - this
+                    // should be the only place where a panic might occur
+                    Self::execute(task, &mut worker, &shared);
+                    // Finish the task - decrements the counter and notifies other threads
+                    shared.finish_task(false);
                 }
+                // Cancel the sentinel if the receiver hung up, thus avoiding the thread
+                // being restarted when it is dropped
                 sentinel.cancel();
             })
             .unwrap();
@@ -129,7 +125,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// Creates a channel to send the input and receive the outcome. Panics if the channel hangs
     /// up before the outcome is received.
-    pub fn try_apply(&self, input: W::Input) -> Outcome<W> {
+    pub fn apply(&self, input: W::Input) -> Outcome<W> {
         let (tx, rx) = outcome_channel();
         self.send_one(input, Some(tx));
         rx.recv().expect("channel hung up unexpectedly")
@@ -454,7 +450,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// # Examples
     ///
-    ///
+    /// ```
     /// use drudge::bee::stock::{Thunk, ThunkWorker};
     /// use drudge::hive::Builder;
     /// use std::thread;
@@ -464,8 +460,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// let hive = Builder::new()
     ///     .num_threads(4)
     ///     .build_with_default::<ThunkWorker<()>>();
-    /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(5)))));
-    /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be processed.
+    /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
+    /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be started.
     /// // There should be 4 active tasks and 6 queued tasks.
     /// hive.suspend();
     /// assert_eq!(hive.num_tasks_active(), 4);
@@ -477,7 +473,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// hive.resume();
     /// // Wait for remaining tasks to complete.
     /// hive.join();
+    /// assert_eq!(hive.num_tasks_active(), 0);
+    /// assert_eq!(hive.num_tasks_queued(), 0);
     /// # }
+    /// ```
     ///
     pub fn suspend(&self) {
         self.shared.set_suspended(true);
@@ -661,21 +660,23 @@ mod affinity {
 #[cfg(not(feature = "retry"))]
 mod no_retry {
     use crate::bee::{Queen, Worker};
+    use crate::channel::SenderExt;
     use crate::hive::{Hive, Outcome, Shared, Task};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) -> bool {
+        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
             let outcome = Outcome::from_worker_result(result, ctx.index());
-            // Send the outcome to the receiver or store it in the hive
+            // Try to send the outcome to the receiver if there is one
             if let Some(tx) = outcome_tx {
-                tx.send(outcome).is_ok()
+                tx.try_send_msg(outcome)
             } else {
-                shared.add_outcome(outcome);
-                true
+                Some(outcome)
             }
+            // If there is no sender, or if the send failed, store the outcome in the hive
+            .map(|outcome| shared.add_outcome(outcome));
         }
     }
 }
@@ -683,27 +684,28 @@ mod no_retry {
 #[cfg(feature = "retry")]
 mod retry {
     use crate::bee::{ApplyError, Queen, Worker};
+    use crate::channel::SenderExt;
     use crate::hive::{Hive, Outcome, Shared, Task};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) -> bool {
+        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) {
             let (input, mut ctx, outcome_tx) = task.into_parts();
             match worker.apply(input, &ctx) {
                 Err(ApplyError::Retryable { input, .. }) if shared.can_retry(&ctx) => {
                     ctx.inc_attempt();
                     shared.queue_retry(input, ctx, outcome_tx);
-                    true
                 }
                 result => {
                     let outcome = Outcome::from_worker_result(result, ctx.index());
-                    // Send the outcome to the receiver or store it in the hive
+                    // Try to send the outcome to the receiver if there is one
                     if let Some(tx) = outcome_tx {
-                        tx.send(outcome).is_ok()
+                        tx.try_send_msg(outcome)
                     } else {
-                        shared.add_outcome(outcome);
-                        true
+                        Some(outcome)
                     }
+                    // If there is no sender, or if the send failed, store the outcome in the hive
+                    .map(|outcome| shared.add_outcome(outcome));
                 }
             }
         }
@@ -734,4 +736,38 @@ mod retry {
     //         }
     //     }
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bee::stock::{Thunk, ThunkWorker};
+    use crate::hive::{Builder, OutcomeIteratorExt};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_suspend() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with_default::<ThunkWorker<()>>();
+        let outcome_iter =
+            hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
+        // Allow first set of tasks to be started.
+        thread::sleep(Duration::from_secs(1));
+        // There should be 4 active tasks and 6 queued tasks.
+        hive.suspend();
+        assert_eq!(hive.num_tasks_active(), 4);
+        assert_eq!(hive.num_tasks_queued(), 6);
+        // Wait for active tasks to complete.
+        hive.join();
+        assert_eq!(hive.num_tasks_active(), 0);
+        assert_eq!(hive.num_tasks_queued(), 6);
+        hive.resume();
+        // Wait for remaining tasks to complete.
+        hive.join();
+        assert_eq!(hive.num_tasks_active(), 0);
+        assert_eq!(hive.num_tasks_queued(), 0);
+        let outputs: Vec<_> = outcome_iter.into_outputs().collect();
+        assert_eq!(outputs.len(), 10);
+    }
 }

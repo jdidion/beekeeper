@@ -1,9 +1,8 @@
-#[cfg(feature = "retry")]
-pub use retry::try_map_retryable;
-
+//! Utility functions for simple use cases. In all cases, the number of threads is specified as a
+//! parameter, and the function takes care of creating the `Hive`, submitting tasks, collecting
+//! results, and shutting down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
 use crate::hive::{Builder, Outcome, OutcomeBatch};
-
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -106,6 +105,9 @@ mod tests {
         assert!(matches!(result.ok_or_unwrap_errors(true), Err(_)));
     }
 }
+
+#[cfg(feature = "retry")]
+pub use retry::try_map_retryable;
 
 #[cfg(feature = "retry")]
 mod retry {

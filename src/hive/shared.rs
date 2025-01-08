@@ -114,7 +114,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.num_tasks_active.get() > 0 || (!self.is_suspended() && self.num_tasks_queued.get() > 0)
     }
 
-    /// Notify all observers joining this hive if there is no more work to do.
+    /// Notify all observers joining this hive when there is no more work to do.
     pub fn no_work_notify_all(&self) {
         if !self.has_work() {
             self.empty_condvar.notify_all();
@@ -173,9 +173,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Blocks the current thread until all active tasks have been processed. Also waits until all
     /// queued tasks have been processed unless the suspended flag has been set.
     pub fn wait_on_done(&self) {
-        if self.has_work() {
-            self.empty_condvar.wait_while(|| self.has_work());
-        }
+        self.empty_condvar.wait_while(|| self.has_work());
     }
 }
 
@@ -341,7 +339,7 @@ mod retry {
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
-        /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
+        /// are no tasks queued for retry.
         pub fn next_task(&self) -> Option<Task<W>> {
             loop {
                 self.suspended_condvar.wait_while(|| self.is_suspended());
