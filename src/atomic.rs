@@ -61,17 +61,13 @@ macro_rules! atomic {
                 orderings: Orderings,
             }
 
-            #[allow(dead_code)]
             impl [<Atomic $type:camel>] {
+                #[allow(dead_code)]
                 pub fn new(value: $type, orderings: Orderings) -> Self {
                     Self {
                         inner: value.into(),
                         orderings,
                     }
-                }
-
-                pub fn with_default_value(orderings: Orderings) -> Self {
-                    Self::new($type::default(), orderings)
                 }
             }
 
