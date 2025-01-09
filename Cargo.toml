@@ -9,16 +9,17 @@ repository = "https://github.com/jdidion/beekeeper"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-core_affinity = { version = "0.8.1", optional = true }
 crossbeam-utils = "0.8.20"
 num_cpus = "1.16.0"
 parking_lot = "0.12.3"
+paste = "1.0.15"
 thiserror = "1.0.63"
+# required with the `affinity` feature
+core_affinity = { version = "0.8.1", optional = true }
 # alternate channel implementations that can be enabled with features
 crossbeam-channel = { version = "0.5.13", optional = true }
 flume = { version = "0.11.1", optional = true }
 loole = { version = "0.4.0", optional = true }
-paste = "1.0.15"
 
 [dev-dependencies]
 serial_test = "3.2.0"
@@ -28,7 +29,7 @@ stacker = "0.1.17"
 [features]
 default = ["affinity", "retry"]       # TODO: remove
 affinity = ["dep:core_affinity"]
+retry = []
 crossbeam = ["dep:crossbeam-channel"]
 flume = ["dep:flume"]
 loole = ["dep:loole"]
-retry = []
