@@ -61,18 +61,19 @@ macro_rules! atomic {
                 orderings: Orderings,
             }
 
-            // impl [<Atomic $type:camel>] {
-            //     pub fn new(value: $type, orderings: Orderings) -> Self {
-            //         Self {
-            //             inner: value.into(),
-            //             orderings,
-            //         }
-            //     }
+            #[allow(dead_code)]
+            impl [<Atomic $type:camel>] {
+                pub fn new(value: $type, orderings: Orderings) -> Self {
+                    Self {
+                        inner: value.into(),
+                        orderings,
+                    }
+                }
 
-            //     pub fn with_default_value(orderings: Orderings) -> Self {
-            //         Self::new($type::default(), Orderings::default())
-            //     }
-            // }
+                pub fn with_default_value(orderings: Orderings) -> Self {
+                    Self::new($type::default(), orderings)
+                }
+            }
 
             impl Atomic<$type> for [<Atomic $type:camel>] {
                 fn get(&self) -> $type {
