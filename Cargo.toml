@@ -1,8 +1,12 @@
 [package]
 name = "beekeeper"
+description = "A full-featured worker pool library for parallelizing tasks"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
+authors = ["John Didion <github@didion.net>"]
+repository = "https://github.com/jdidion/beekeeper"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 core_affinity = { version = "0.8.1", optional = true }
