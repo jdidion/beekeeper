@@ -570,7 +570,13 @@ mod test {
         }
         drop(tx);
 
-        assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
+        let msg = rx.try_recv_msg();
+        match msg {
+            Message::Received(_) => println!("received"),
+            Message::ChannelEmpty => println!("channel empty"),
+            Message::ChannelDisconnected => println!("channel disconnected"),
+        };
+        assert!(matches!(msg, Message::ChannelEmpty));
         error(format!("{:?}\n{:?}\n", hive0, hive1));
         hive0.join();
         error(format!("pool0.join() complete =-= {:?}", hive1));
