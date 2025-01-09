@@ -8,7 +8,7 @@
 use paste::paste;
 use std::fmt::Debug;
 use std::ops::Add;
-use std::sync::atomic::Ordering;
+pub use std::sync::atomic::Ordering;
 
 /// Trait for wrappers of [`atomic`](std::sync::atomic) types that provides a common API.
 pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> + Sync {
@@ -17,11 +17,6 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
 
     /// Sets the value of this `Atomic` using `Release` ordering and returns the previous value.
     fn set(&self, value: T) -> T;
-
-    /// If the current value of this `Atomic` is `current`, sets it to `new` using `AcqRel`
-    /// ordering and returns the previous value. Otherwise, returns the current value using
-    /// `Acquire` ordering.
-    fn set_when(&self, current: T, new: T) -> T;
 
     /// Loads the current value of this `Atomic` using `AcqRel` ordering and calls `f`. If `f`
     /// returns `Some`, this atomic is updated with the new value using `Release` ordering and the
@@ -32,56 +27,96 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
     fn into_inner(self) -> T;
 }
 
+#[derive(Clone, Debug)]
+pub struct Orderings {
+    pub load: Ordering,
+    pub swap: Ordering,
+    pub fetch_update_set: Ordering,
+    pub fetch_update_fetch: Ordering,
+    pub fetch_add: Ordering,
+    pub fetch_sub: Ordering,
+}
+
+impl Default for Orderings {
+    fn default() -> Self {
+        Orderings {
+            load: Ordering::Acquire,
+            swap: Ordering::Release,
+            fetch_update_set: Ordering::AcqRel,
+            fetch_update_fetch: Ordering::Acquire,
+            fetch_add: Ordering::AcqRel,
+            fetch_sub: Ordering::AcqRel,
+        }
+    }
+}
+
 /// Generates a wrapper for primitive type `T` that implement the `Atomic<T>`, `Clone`, `Debug`,
 /// and `From<T>` traits.
 macro_rules! atomic {
     ($type:ident) => {
         paste! {
             #[derive(Default)]
-            pub struct [<Atomic $type:camel>](std::sync::atomic::[<Atomic $type:camel>]);
+            pub struct [<Atomic $type:camel>] {
+                inner: std::sync::atomic::[<Atomic $type:camel>],
+                orderings: Orderings,
+            }
+
+            // impl [<Atomic $type:camel>] {
+            //     pub fn new(value: $type, orderings: Orderings) -> Self {
+            //         Self {
+            //             inner: value.into(),
+            //             orderings,
+            //         }
+            //     }
+
+            //     pub fn with_default_value(orderings: Orderings) -> Self {
+            //         Self::new($type::default(), Orderings::default())
+            //     }
+            // }
 
             impl Atomic<$type> for [<Atomic $type:camel>] {
                 fn get(&self) -> $type {
-                    self.0.load(Ordering::Acquire)
+                    self.inner.load(self.orderings.load)
                 }
 
                 fn set(&self, value: $type) -> $type {
-                    self.0.swap(value, Ordering::Release)
-                }
-
-                fn set_when(&self, current: $type, new: $type) -> $type {
-                    match self.0.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire) {
-                        Ok(prev) | Err(prev) => prev,
-                    }
+                    self.inner.swap(value, self.orderings.swap)
                 }
 
                 fn set_with<F: FnMut($type) -> Option<$type>>(&self, f: F) -> $type {
-                    match self.0.fetch_update(Ordering::AcqRel, Ordering::Acquire, f) {
+                    match self.inner.fetch_update(
+                        self.orderings.fetch_update_set,
+                        self.orderings.fetch_update_fetch,
+                        f
+                    ) {
                         Ok(prev) | Err(prev) => prev,
                     }
                 }
 
                 fn into_inner(self) -> $type {
-                    self.0.into_inner()
+                    self.inner.into_inner()
                 }
 
             }
 
             impl Clone for [<Atomic $type:camel>] {
                 fn clone(&self) -> Self {
-                    Self(self.get().into())
+                    Self { inner: self.get().into(), orderings: self.orderings.clone() }
                 }
             }
 
             impl Debug for [<Atomic $type:camel>] {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    self.0.fmt(f)
+                    self.inner.fmt(f)
                 }
             }
 
             impl From<$type> for [<Atomic $type:camel>] {
                 fn from(value: $type) -> Self {
-                    [<Atomic $type:camel>](std::sync::atomic::[<Atomic $type:camel>]::new(value))
+                    [<Atomic $type:camel>] {
+                        inner: std::sync::atomic::[<Atomic $type:camel>]::new(value),
+                        orderings: Orderings::default(),
+                    }
                 }
             }
         }
@@ -107,11 +142,11 @@ macro_rules! atomic_number {
 
             impl AtomicNumber<$type> for [<Atomic $type:camel>] {
                 fn add(&self, value: $type) -> $type {
-                    self.0.fetch_add(value, Ordering::AcqRel)
+                    self.inner.fetch_add(value, self.orderings.fetch_add)
                 }
 
                 fn sub(&self, value: $type) -> $type {
-                    self.0.fetch_sub(value, Ordering::AcqRel)
+                    self.inner.fetch_sub(value, self.orderings.fetch_sub)
                 }
             }
         }
@@ -138,16 +173,6 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Atomic<T> for AtomicA
         let old_val = val.clone();
         *val = value;
         old_val
-    }
-
-    fn set_when(&self, current: T, new: T) -> T {
-        let mut val = self.0.write();
-        if *val == current {
-            *val = new;
-            current
-        } else {
-            val.clone()
-        }
     }
 
     fn set_with<F: FnMut(T) -> Option<T>>(&self, mut f: F) -> T {
@@ -396,11 +421,7 @@ mod tests {
                 fn [<test_ $type:snake>]() {
                     let a = $type::from(42);
                     assert_eq!(a.get(), 42);
-                    assert_eq!(a.set(43), 42);
-                    assert_eq!(a.get(), 43);
-                    assert_eq!(a.set_when(43, 44), 43);
-                    assert_eq!(a.get(), 44);
-                    assert_eq!(a.set_when(43, 45), 44);
+                    assert_eq!(a.set(44), 42);
                     assert_eq!(a.get(), 44);
                     assert_eq!(a.set_with(|val| Some(val + 1)), 44);
                     assert_eq!(a.get(), 45);
@@ -430,10 +451,6 @@ mod tests {
         assert_eq!(a.get(), "WORLD");
         assert_eq!(a.set_with(|_| None), "WORLD");
         assert_eq!(a.get(), "WORLD");
-        assert_eq!(a.set_when("WORLD".into(), "world".into()), "WORLD");
-        assert_eq!(a.get(), "world");
-        assert_eq!(a.set_when("hello".into(), "HELLO".into()), "world");
-        assert_eq!(a.get(), "world");
         let b = a.clone();
         assert_eq!(b.into_inner(), "world");
     }

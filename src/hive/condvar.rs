@@ -1,5 +1,5 @@
-use crate::atomic::{Atomic, AtomicUsize};
 use parking_lot::{Condvar, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Default)]
 pub struct MutexCondvar {
@@ -46,15 +46,18 @@ impl PhasedCondvar {
         F: Fn() -> bool,
     {
         if condition() {
-            let generation = self.generation.get();
+            let generation = self.generation.load(Ordering::SeqCst);
             let mut lock = self.mutex.lock();
-            while generation == self.generation.get() && condition() {
+            while generation == self.generation.load(Ordering::Relaxed) && condition() {
                 self.condvar.wait(&mut lock);
             }
             // increase generation for the first thread to come out of the loop
-            let _ = self
-                .generation
-                .set_when(generation, generation.wrapping_add(1));
+            let _ = self.generation.compare_exchange(
+                generation,
+                generation.wrapping_add(1),
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            );
         }
     }
 

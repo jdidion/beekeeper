@@ -1122,8 +1122,8 @@ mod test {
     /// must get out even if the thread is used for other tasks while the first group is finishing
     /// their join.
     ///
-    /// In this example this means the waiting threads will exit the join in groups of four because
-    /// the waiter pool has four processes.
+    /// In this example, this means the waiting threads will exit the join in groups of four
+    /// because the waiter pool has four processes.
     fn test_join_wavesurfer() {
         let n_cycles = 4;
         let n_processes = 4;
