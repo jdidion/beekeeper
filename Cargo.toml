@@ -33,3 +33,6 @@ retry = []
 crossbeam = ["dep:crossbeam-channel"]
 flume = ["dep:flume"]
 loole = ["dep:loole"]
+
+[package.metadata.cargo-all-features]
+allowlist = ["affinity", "retry"]

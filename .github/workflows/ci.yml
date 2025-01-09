@@ -17,6 +17,11 @@ jobs:
           - stable
           - beta
           - nightly
+        channel:
+          - "default"
+          - "crossbeam"
+          - "flume"
+          - "loole"
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -25,5 +30,15 @@ jobs:
           components: rustfmt, clippy
       - run: cargo clippy --all-targets -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
       - run: cargo fmt -- --check
-      - run: cargo build --all-targets --verbose
-      - run: cargo test --verbose
+      - uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: cargo-all-features
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build-all-features
+          args: -F ${{ matrix.channel }} --all-targets
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test-all-features
+          args: -F ${{ matrix.channel }}
