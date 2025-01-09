@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(a.set_with(|_| None), "WORLD");
         assert_eq!(a.get(), "WORLD");
         let b = a.clone();
-        assert_eq!(b.into_inner(), "world");
+        assert_eq!(b.into_inner(), "WORLD");
     }
 
     #[test]
