@@ -22,7 +22,7 @@
 //!       [`Clone`](std::clone::Clone)
 //!     * Call the [`create()`](crate::bee::queen::Queen#create) method on a worker factory that
 //!       implements the [`Queen`](crate::bee::queen::Queen) trait.
-//! * Both `Worker`s and `Queen`s may be stateful - i.e., `Worker::apply()` and `Queen::create()`
+//! * Both `Worker`s and `Queen`s may be stateful, i.e., `Worker::apply()` and `Queen::create()`
 //!   both take `&mut self`.
 //! * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
 //!   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
@@ -33,12 +33,12 @@
 //!   and `try_map` functions enable simple parallel processing of a single batch of tasks.
 //! * Several useful `Worker` implementations are provided in the [stock](crate::bee::stock) module.
 //!   Most notable are those in the [`call`](crate::bee::stock::call) submodule, which provide
-//!   different ways of wrapping `callable`s - i.e., closures and function pointers.
+//!   different ways of wrapping `callable`s, i.e., closures and function pointers.
 //! * The following optional features are provided via feature flags:
 //!     * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
 //!       context-switching.
 //!     * `retry`: Tasks that fail due to transient errors (e.g., temporarily unavailable resources)
-//!       may be retried a set number of times, with an optional exponentially increasing delay
+//!       may be retried a set number of times, with an optional, exponentially increasing delay
 //!       between retries.
 //!     * Several alternative `channel` implementations are supported:
 //!         * [`crossbeam`](https://docs.rs/crossbeam/latest/crossbeam/)
@@ -51,7 +51,7 @@
 //! 1. A `Worker` implementation. Your options are:
 //!     * Use an existing implementation from the [stock](crate::bee::stock) module (see Example 2 below)
 //!     * Implement your own (See Example 3 below)
-//!         * `use` the necessary traits (e.g. `use beekeeper::bee::prelude::*`)
+//!         * `use` the necessary traits (e.g., `use beekeeper::bee::prelude::*`)
 //!         * Define a `struct` for your worker
 //!         * Implement the `Worker` trait on your struct and define the `apply` method with the
 //!           logic of your task
@@ -64,9 +64,9 @@
 //!     * Create a `Hive` manually using [`Builder`](crate::hive::builder::Builder) (see Examples 2
 //!       and 3 below)
 //!         * [`Builder::new()`](crate::hive::builder::Builder::new) creates an empty `Builder`
-//!         * [`Builder::default()`](crate::hive::builder::Builder::default) creates a `Hive` with
-//!           the global default settings (which may be changed using the functions in the
-//!           [`hive`](crate::hive) crate, e.g., `beekeeper::hive::set_num_threads_default(4)`).
+//!         * [`Builder::default()`](crate::hive::builder::Builder::default) creates a `Builder`
+//!           with the global default settings (which may be changed using the functions in the
+//!           [`hive`](crate::hive) module, e.g., `beekeeper::hive::set_num_threads_default(4)`).
 //!         * Use one of the `build_*` methods to build the `Hive`:
 //!             * If you have a `Worker` that implements `Default`, use
 //!               [`build_with_default::<MyWorker>()`](crate::hive::builder::Builder::build_with_default)
@@ -93,16 +93,16 @@
 //! `Outcome`s) are handled:
 //! * The unsuffixed methods return an `Iterator` over the `Outcome`s in the same order as the inputs
 //!   (or, in the case of `apply`, a single `Outcome`)
-//! * The methods with the `_unordered` prefix instead return an unordered iterator, which may be
+//! * The methods with the `_unordered` suffix instead return an unordered iterator, which may be
 //!   more performant than the ordered iterator
-//! * The methods with the `_send` prefix accept a channel `Sender` and send the `Outcome`s to that
+//! * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
 //!   channel as they are completed
-//! * The methods with the `_store` prefix store the `Outcome`s in the `Hive`; these may be
-//!   retrieved later using the [`take_stored()`](crate::hive::Hive#take_stored) method, using one
-//!   of the `remove*` methods (which requires
+//! * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
+//!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive#take_stored) method, using
+//!   one of the `remove*` methods (which requires
 //!   [`OutcomeDerefStore`](crate::hive::outcome::store::OutcomeDerefStore) to be in scope), or by
 //!   using one of the methods on `Husk` after shutting down the `Hive` using
-//!   [`into_husk()`](crate::hive::Hive#into_husk).
+//!   [`Hive::into_husk()`](crate::hive::Hive#into_husk).
 //!
 //! When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 //! all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
@@ -112,31 +112,32 @@
 //! methods return the indices of the submitted tasks, which can be used to retrieve them later
 //! (e.g., using [`Hive::remove()`](crate::hive::Hive#remove)).
 //!
-//! After submitting tasks, you may use the [`join()`](crate::hive::Hive#join) method to wait for
-//! all tasks to complete. Using `join` is strongly recommended when using one of the `_store`
+//! After submitting tasks, you may use the [`Hive::join()`](crate::hive::Hive#join) method to wait
+//! for all tasks to complete. Using `join` is strongly recommended when using one of the `_store`
 //! methods, otherwise you'll need to continually poll the `Hive` to check for completed tasks.
 //!
 //! When you are finished with a `Hive`, you may simply drop it (either explicitly, or by letting
 //! it go out of scope) - the worker threads will be terminated automatically. If you used the
 //! `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 //! has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-//! parameters, you can use the [`into_husk()`](crate::hive::Hive#into_husk) method to extract the
-//! relevant data from the `Hive` into a [`Husk`](crate::hive::husk::Husk) object.
+//! parameters, you can use the [`Hive::into_husk()`](crate::hive::Hive#into_husk) method to extract
+//! the relevant data from the `Hive` into a [`Husk`](crate::hive::husk::Husk) object.
 //!
 //! ## Examples
 //!
 //! ### 1. Parallelize an existing function
 //!
 //! ```
-//! fn double(i: usize) -> usize {
+//! pub fn double(i: usize) -> usize {
 //!   i * 2
 //! }
 //!
 //! # fn main() {
-//! // parallelize the computation of `double` on a range of numbers over
-//! // 4 threads, and sum the results
+//! // parallelize the computation of `double` on a range of numbers
+//! // over 4 threads, and sum the results
 //! const N: usize = 100;
-//! let sum_doubles: usize = beekeeper::util::map(4, 0..N, double).into_iter().sum();
+//! let sum_doubles: usize =
+//!     beekeeper::util::map(4, 0..N, double).into_iter().sum();
 //! println!("Sum of {} doubles: {}", N, sum_doubles);
 //! # }
 //! ```
@@ -148,8 +149,8 @@
 //! use beekeeper::hive::prelude::*;
 //!
 //! # fn main() {
-//! // create a hive to process `Thunk`s - no-argument closures with the same
-//! // return type (`i32`)
+//! // create a hive to process `Thunk`s - no-argument closures with the
+//! // same return type (`i32`)
 //! let hive = Builder::new()
 //!     .num_threads(4)
 //!     .thread_name("thunk_hive")
@@ -157,7 +158,10 @@
 //!
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
-//! let _ = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
+//! let _ = hive.swarm_send(
+//!     (0..10).map(|i: i32| Thunk::of(move || i * i)),
+//!     tx
+//! );
 //! assert_eq!(285, rx.into_outputs().take(10).sum());
 //!
 //! // return results as an iterator...
@@ -177,8 +181,8 @@
 //! of the [`Child`](::std::process::Child) processes and make sure they're terminated properly.
 //!
 //! ```
-//! use beekeeper::hive::prelude::*;
 //! use beekeeper::bee::prelude::*;
+//! use beekeeper::hive::prelude::*;
 //! use std::io::prelude::*;
 //! use std::io::{self, BufReader};
 //! use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -213,10 +217,14 @@
 //!     type Output = String;
 //!     type Error = io::Error;
 //!
-//!     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
-//!         self
-//!             .write_char(input)
-//!             .map_err(|error| ApplyError::Fatal {input: Some(input), error})
+//!     fn apply(
+//!         &mut self,
+//!         input: Self::Input,
+//!         _: &Context
+//!     ) -> WorkerResult<Self> {
+//!         self.write_char(input).map_err(|error| {
+//!             ApplyError::Fatal { input: Some(input), error }
+//!         })
 //!     }
 //! }
 //!
@@ -227,7 +235,10 @@
 //!
 //! impl CatQueen {
 //!     fn wait_for_all(&mut self) -> Vec<io::Result<ExitStatus>> {
-//!         self.children.drain(..).map(|mut child| child.wait()).collect()
+//!         self.children
+//!             .drain(..)
+//!             .map(|mut child| child.wait())
+//!             .collect()
 //!     }
 //! }
 //!
@@ -253,8 +264,12 @@
 //!         self.wait_for_all().into_iter().for_each(|result| {
 //!             match result {
 //!                 Ok(status) if status.success() => (),
-//!                 Ok(status) => eprintln!("Child process failed: {}", status),
-//!                 Err(e) => eprintln!("Error waiting for child process: {}", e),
+//!                 Ok(status) => {
+//!                     eprintln!("Child process failed: {}", status);
+//!                 }
+//!                 Err(e) => {
+//!                     eprintln!("Error waiting for child process: {}", e);
+//!                 }
 //!             }
 //!         })
 //!     }
@@ -279,11 +294,12 @@
 //!     })
 //!     .into_bytes();
 //!
-//! // verify the output - note that `swarm` ensures the outputs are in the same
-//! // order as the inputs
+//! // verify the output - note that `swarm` ensures the outputs are in
+//! // the same order as the inputs
 //! assert_eq!(output, b"abcdefgh");
 //!
-//! // shutdown the hive, use the Queen to wait on child processes, and report errors
+//! // shutdown the hive, use the Queen to wait on child processes, and
+//! // report errors
 //! let (mut queen, _outcomes) = hive.into_husk().into_parts();
 //! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
 //!     queen.wait_for_all().into_iter().partition(Result::is_ok);
@@ -300,7 +316,10 @@
 //!     .flatten()
 //!     .collect();
 //! if !exec_err_codes.is_empty() {
-//!     panic!("Child process(es) failed with exit codes: {:?}", exec_err_codes);
+//!     panic!(
+//!         "Child process(es) failed with exit codes: {:?}",
+//!         exec_err_codes
+//!     );
 //! }
 //! # }
 //! ```
