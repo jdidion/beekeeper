@@ -16,7 +16,7 @@ pub trait Queen: Send + Sync + 'static {
 /// want a `Queen` for a specific `Worker` type that is not `Send/Sync`:
 ///
 /// ```
-/// # use drudge::bee::{Context, Queen, Worker, WorkerResult};
+/// # use beekeeper::bee::{Context, Queen, Worker, WorkerResult};
 /// # use std::rc::Rc;
 ///
 /// #[derive(Default, Debug)]

@@ -18,7 +18,7 @@ use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 ///
 /// Calling `Builder::new()` creates an unconfigured `Builder`, while calling `Builder::default()`
 /// creates a `Builder` with `num_threads`, `max_retries`, and `retry_factor` set to the global
-/// default values, which can be changed using the `drudge::hive::set_*_default` functions.
+/// default values, which can be changed using the `beekeeper::hive::set_*_default` functions.
 ///
 /// [`Hive`]: hive/struct.Hive.html
 /// [`ApplyError::Retryable`]: task/enum.ApplyError.html#variant.Retryable
@@ -29,9 +29,9 @@ use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 /// a 8 MB stack size:
 ///
 /// ```
-/// type MyWorker = drudge::bee::stock::ThunkWorker<()>;
+/// type MyWorker = beekeeper::bee::stock::ThunkWorker<()>;
 ///
-/// let hive = drudge::hive::Builder::new()
+/// let hive = beekeeper::hive::Builder::new()
 ///     .num_threads(8)
 ///     .thread_stack_size(8_000_000)
 ///     .build_with_default::<MyWorker>();
@@ -56,8 +56,8 @@ impl Builder {
     /// No more than eight threads will be alive simultaneously for this hive:
     ///
     /// ```
-    /// use drudge::bee::stock::{Thunk, ThunkWorker};
-    /// use drudge::hive::{Builder, Hive};
+    /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+    /// use beekeeper::hive::{Builder, Hive};
     ///
     /// # fn main() {
     /// let hive = Builder::new()
@@ -94,8 +94,8 @@ impl Builder {
     /// All available threads will be alive simultaneously for this pool:
     ///
     /// ```
-    /// use drudge::bee::stock::{Thunk, ThunkWorker};
-    /// use drudge::hive::{Builder, Hive};
+    /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+    /// use beekeeper::hive::{Builder, Hive};
     ///
     /// # fn main() {
     /// let hive = Builder::new()
@@ -124,8 +124,8 @@ impl Builder {
     /// Each thread spawned by this hive will have the name "foo":
     ///
     /// ```
-    /// use drudge::bee::stock::{Thunk, ThunkWorker};
-    /// use drudge::hive::{Builder, Hive};
+    /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+    /// use beekeeper::hive::{Builder, Hive};
     /// use std::thread;
     ///
     /// # fn main() {
@@ -158,8 +158,8 @@ impl Builder {
     /// Each thread spawned by this hive will have a 4 MB stack:
     ///
     /// ```
-    /// use drudge::bee::stock::{Thunk, ThunkWorker};
-    /// use drudge::hive::{Builder, Hive};
+    /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+    /// use beekeeper::hive::{Builder, Hive};
     ///
     /// # fn main() {
     /// let hive = Builder::default()
@@ -185,8 +185,8 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use drudge::hive::{Builder, Hive};
-    /// # use drudge::bee::{Context, Queen, Worker, WorkerResult};
+    /// # use beekeeper::hive::{Builder, Hive};
+    /// # use beekeeper::bee::{Context, Queen, Worker, WorkerResult};
     ///
     /// #[derive(Debug)]
     /// struct CounterWorker {
@@ -264,8 +264,8 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use drudge::hive::{Builder, OutcomeIteratorExt};
-    /// # use drudge::bee::{Context, Worker, WorkerResult};
+    /// # use beekeeper::hive::{Builder, OutcomeIteratorExt};
+    /// # use beekeeper::bee::{Context, Worker, WorkerResult};
     ///
     /// #[derive(Debug, Clone)]
     /// struct MathWorker(isize);
@@ -316,10 +316,10 @@ impl Builder {
     /// `W::default()`.
     ///
     /// # Examples
-    /// 
+    ///
     /// ```
-    /// # use drudge::hive::{Builder, OutcomeIteratorExt};
-    /// # use drudge::bee::{Context, Worker,  WorkerResult};
+    /// # use beekeeper::hive::{Builder, OutcomeIteratorExt};
+    /// # use beekeeper::bee::{Context, Worker,  WorkerResult};
     /// # use std::num::NonZeroIsize;
     ///
     /// #[derive(Debug, Default)]
@@ -399,8 +399,8 @@ mod affinity {
         /// Each thread spawned by this hive will be pinned to a core:
         ///
         /// ```
-        /// use drudge::bee::stock::{Thunk, ThunkWorker};
-        /// use drudge::hive::{Builder, Hive};
+        /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+        /// use beekeeper::hive::{Builder, Hive};
         ///
         /// # fn main() {
         /// let hive = Builder::new()
@@ -461,9 +461,9 @@ mod retry {
         /// # Examples
         ///
         /// ```
-        /// use drudge::bee::{ApplyError, Context};
-        /// use drudge::bee::stock::RetryCaller;
-        /// use drudge::hive::{Builder, Hive};
+        /// use beekeeper::bee::{ApplyError, Context};
+        /// use beekeeper::bee::stock::RetryCaller;
+        /// use beekeeper::hive::{Builder, Hive};
         /// use std::time;
         ///
         /// fn sometimes_fail(
@@ -505,9 +505,9 @@ mod retry {
         /// # Examples
         ///
         /// ```
-        /// use drudge::bee::{ApplyError, Context};
-        /// use drudge::bee::stock::RetryCaller;
-        /// use drudge::hive::{Builder, Hive};
+        /// use beekeeper::bee::{ApplyError, Context};
+        /// use beekeeper::bee::stock::RetryCaller;
+        /// use beekeeper::hive::{Builder, Hive};
         /// use std::time;
         ///
         /// fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {

@@ -20,7 +20,7 @@
 // Other functions of interest:
 // - `hive.join()` _blocking_ waits for all tasks to complete.
 
-// Several example workers are provided in `drudge::utils`:
+// Several example workers are provided in `beekeeper::utils`:
 // - A stateless `ThunkWorker<O, E>`, which executes on inputs of `Thunk<T: Result<O, E>>` - effectively argumentless functions that are `Sized + Send`. These thunks are creates by wrapping functions (`FnOnce() -> Result<T, E>`) with `Thunk::of`.
 //   - There is also `ThunkWorker<T>` for `Thunk<T>`s
 // - A `Func<I, O, E>`, which wraps a function pointer `fn(I) -> Result<O, E>`.
@@ -453,8 +453,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// # Examples
     ///
     /// ```
-    /// use drudge::bee::stock::{Thunk, ThunkWorker};
-    /// use drudge::hive::Builder;
+    /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
+    /// use beekeeper::hive::Builder;
     /// use std::thread;
     /// use std::time::Duration;
     ///

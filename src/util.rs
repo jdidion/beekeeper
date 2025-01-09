@@ -15,7 +15,7 @@ use std::fmt::Debug;
 ///
 /// ```
 /// # fn main() {
-/// let outputs: Vec<usize> = drudge::util::map(4, 2..9usize, |i| i + 1);
+/// let outputs: Vec<usize> = beekeeper::util::map(4, 2..9usize, |i| i + 1);
 /// assert_eq!(outputs.into_iter().sum::<usize>(), 42);
 /// # }
 /// ```
@@ -41,9 +41,9 @@ where
 /// # Examples
 ///
 /// ```
-/// # use drudge::hive::OutcomeDerefStore;
+/// # use beekeeper::hive::OutcomeDerefStore;
 /// # fn main() {
-/// let result = drudge::util::try_map(4, 0..10, |i| {
+/// let result = beekeeper::util::try_map(4, 0..10, |i| {
 ///     if i == 5 {
 ///         Err("No fives allowed!")
 ///     } else {
@@ -126,12 +126,12 @@ mod retry {
     /// # Examples
     ///
     /// ```
-    /// use drudge::bee::ApplyError;
-    /// use drudge::bee::stock::RetryCaller;
-    /// use drudge::hive::OutcomeDerefStore;
+    /// use beekeeper::bee::ApplyError;
+    /// use beekeeper::bee::stock::RetryCaller;
+    /// use beekeeper::hive::OutcomeDerefStore;
     ///
     /// # fn main() {
-    /// let result = drudge::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
+    /// let result = beekeeper::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
     ///     Err(ApplyError::Fatal { input: Some(i), error: "No fives allowed!".into() })
     /// } else if i == 7 {
     ///     Err(ApplyError::Retryable { input: i, error: "Re-roll a 7".into() })

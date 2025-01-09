@@ -51,7 +51,7 @@
 //! 1. A `Worker` implementation. Your options are:
 //!     * Use an existing implementation from the [stock](crate::bee::stock) module (see Example 2 below)
 //!     * Implement your own (See Example 3 below)
-//!         * `use` the necessary traits (e.g. `use drudge::bee::prelude::*`)
+//!         * `use` the necessary traits (e.g. `use beekeeper::bee::prelude::*`)
 //!         * Define a `struct` for your worker
 //!         * Implement the `Worker` trait on your struct and define the `apply` method with the
 //!           logic of your task
@@ -66,7 +66,7 @@
 //!         * [`Builder::new()`](crate::hive::builder::Builder::new) creates an empty `Builder`
 //!         * [`Builder::default()`](crate::hive::builder::Builder::default) creates a `Hive` with
 //!           the global default settings (which may be changed using the functions in the
-//!           [`hive`](crate::hive) crate, e.g., `drudge::hive::set_num_threads_default(4)`).
+//!           [`hive`](crate::hive) crate, e.g., `beekeeper::hive::set_num_threads_default(4)`).
 //!         * Use one of the `build_*` methods to build the `Hive`:
 //!             * If you have a `Worker` that implements `Default`, use
 //!               [`build_with_default::<MyWorker>()`](crate::hive::builder::Builder::build_with_default)
@@ -136,7 +136,7 @@
 //! // parallelize the computation of `double` on a range of numbers over
 //! // 4 threads, and sum the results
 //! const N: usize = 100;
-//! let sum_doubles: usize = drudge::util::map(4, 0..N, double).into_iter().sum();
+//! let sum_doubles: usize = beekeeper::util::map(4, 0..N, double).into_iter().sum();
 //! println!("Sum of {} doubles: {}", N, sum_doubles);
 //! # }
 //! ```
@@ -144,8 +144,8 @@
 //! ### 2. Parallelize arbitrary tasks with the same output type
 //!
 //! ```
-//! use drudge::bee::stock::{Thunk, ThunkWorker};
-//! use drudge::hive::prelude::*;
+//! use beekeeper::bee::stock::{Thunk, ThunkWorker};
+//! use beekeeper::hive::prelude::*;
 //!
 //! # fn main() {
 //! // create a hive to process `Thunk`s - no-argument closures with the same
@@ -177,8 +177,8 @@
 //! of the [`Child`](::std::process::Child) processes and make sure they're terminated properly.
 //!
 //! ```
-//! use drudge::hive::prelude::*;
-//! use drudge::bee::prelude::*;
+//! use beekeeper::hive::prelude::*;
+//! use beekeeper::bee::prelude::*;
 //! use std::io::prelude::*;
 //! use std::io::{self, BufReader};
 //! use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};

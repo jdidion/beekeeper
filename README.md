@@ -1,10 +1,10 @@
 <img src="assets/logo.png" alt="logo" width="200"/>
 
-[![CI](https://github.com/jdidion/drudge/actions/workflows/ci.yaml/badge.svg)](https://github.com/jdidion/drudge/actions/workflows/ci.yaml)
-[![crates.io](https://img.shields.io/crates/v/drudge.svg)](https://crates.io/crates/drudge)
-[![docs.rs](https://docs.rs/drudge/badge.svg)](https://docs.rs/drudge)
+[![CI](https://github.com/jdidion/beekeeper/actions/workflows/ci.yaml/badge.svg)](https://github.com/jdidion/beekeeper/actions/workflows/ci.yaml)
+[![crates.io](https://img.shields.io/crates/v/beekeeper.svg)](https://crates.io/crates/beekeeper)
+[![docs.rs](https://docs.rs/beekeeper/badge.svg)](https://docs.rs/beekeeper)
 
-# Drudge
+# Beekeeper
 
 <!-- cargo-rdme start -->
 
@@ -14,14 +14,14 @@ is sometimes called a "worker pool").
 
 ### Overview
 
-* Operations are defined by implementing the [`Worker`](https://docs.rs/drudge/latest/drudge/bee/worker/trait.Worker.html) trait.
-* A [`Builder`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html) is used to configure and create a worker pool
-  called a [`Hive`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html).
+* Operations are defined by implementing the [`Worker`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html) trait.
+* A [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html) is used to configure and create a worker pool
+  called a [`Hive`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html).
 * The `Hive` creates a `Worker` instance for each thread in the pool.
 * Each thread in the pool continually:
     * Recieves a task from an input [`channel`](https://doc.rust-lang.org/stable/std/sync/mpsc/fn.channel.html),
-    * Calls its `Worker`'s [`apply`](https://docs.rs/drudge/latest/drudge/bee/worker/trait.Worker.html#apply) method on the input, and
-    * Produces an [`Outcome`](https://docs.rs/drudge/latest/drudge/hive/outcome/outcome/enum.Outcome.html).
+    * Calls its `Worker`'s [`apply`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html#apply) method on the input, and
+    * Produces an [`Outcome`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/outcome/enum.Outcome.html).
 * Depending on which of `Hive`'s methods are called to submit a task (or batch of tasks), the
   `Outcome`(s) may be returned as an `Iterator`, sent to an output `channel`, or stored in the
   `Hive` for later retrieval.
@@ -30,19 +30,19 @@ is sometimes called a "worker pool").
       [`Default`](std::default::Default)
     * Clone an instance of a `Worker` that implements
       [`Clone`](std::clone::Clone)
-    * Call the [`create()`](https://docs.rs/drudge/latest/drudge/bee/queen/trait.Queen.html#create) method on a worker factory that
-      implements the [`Queen`](https://docs.rs/drudge/latest/drudge/bee/queen/trait.Queen.html) trait.
+    * Call the [`create()`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html#create) method on a worker factory that
+      implements the [`Queen`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html) trait.
 * Both `Worker`s and `Queen`s may be stateful - i.e., `Worker::apply()` and `Queen::create()`
   both take `&mut self`.
 * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
-* A `Hive` may be [`suspend`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#suspend)ed and
-  [`resume`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#resume)d at any time. When a `Hive` is suspended, worker threads
+* A `Hive` may be [`suspend`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#suspend)ed and
+  [`resume`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#resume)d at any time. When a `Hive` is suspended, worker threads
   do no work and tasks accumulate in the input `channel`.
-* Several utility functions are provided in the [util](https://docs.rs/drudge/latest/drudge/util/) module. Notably, the `map`
+* Several utility functions are provided in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module. Notably, the `map`
   and `try_map` functions enable simple parallel processing of a single batch of tasks.
-* Several useful `Worker` implementations are provided in the [stock](https://docs.rs/drudge/latest/drudge/bee/stock/) module.
-  Most notable are those in the [`call`](https://docs.rs/drudge/latest/drudge/bee/stock/call/) submodule, which provide
+* Several useful `Worker` implementations are provided in the [stock](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/) module.
+  Most notable are those in the [`call`](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/call/) submodule, which provide
   different ways of wrapping `callable`s - i.e., closures and function pointers.
 * The following optional features are provided via feature flags:
     * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
@@ -59,9 +59,9 @@ is sometimes called a "worker pool").
 
 To parallelize a task, you'll need two things:
 1. A `Worker` implementation. Your options are:
-    * Use an existing implementation from the [stock](https://docs.rs/drudge/latest/drudge/bee/stock/) module (see Example 2 below)
+    * Use an existing implementation from the [stock](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/) module (see Example 2 below)
     * Implement your own (See Example 3 below)
-        * `use` the necessary traits (e.g. `use drudge::bee::prelude::*`)
+        * `use` the necessary traits (e.g. `use beekeeper::bee::prelude::*`)
         * Define a `struct` for your worker
         * Implement the `Worker` trait on your struct and define the `apply` method with the
           logic of your task
@@ -70,24 +70,24 @@ To parallelize a task, you'll need two things:
             * Implement `Clone` for your worker
             * Create a custom worker fatory that implements the `Queen` trait
 2. A `Hive` to execute your tasks. Your options are:
-    * Use one of the convenience methods in the [util](https://docs.rs/drudge/latest/drudge/util/) module (see Example 1 below)
-    * Create a `Hive` manually using [`Builder`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html) (see Examples 2
+    * Use one of the convenience methods in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module (see Example 1 below)
+    * Create a `Hive` manually using [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html) (see Examples 2
       and 3 below)
-        * [`Builder::new()`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.new) creates an empty `Builder`
-        * [`Builder::default()`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.default) creates a `Hive` with
+        * [`Builder::new()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.new) creates an empty `Builder`
+        * [`Builder::default()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.default) creates a `Hive` with
           the global default settings (which may be changed using the functions in the
-          [`hive`](https://docs.rs/drudge/latest/drudge/hive/) crate, e.g., `drudge::hive::set_num_threads_default(4)`).
+          [`hive`](https://docs.rs/beekeeper/latest/beekeeper/hive/) crate, e.g., `beekeeper::hive::set_num_threads_default(4)`).
         * Use one of the `build_*` methods to build the `Hive`:
             * If you have a `Worker` that implements `Default`, use
-              [`build_with_default::<MyWorker>()`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.build_with_default)
+              [`build_with_default::<MyWorker>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_with_default)
             * If you have a `Worker` that implements `Clone`, use
-              [`build_with(MyWorker::new())`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.build_with)
+              [`build_with(MyWorker::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_with)
             * If you have a custom `Queen`, use
-              [`build_default::<MyQueen>()`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.build_default) if it implements
-              `Default`, otherwise use [`build(MyQueen::new())`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.build)
-        * Note that [`Builder::num_threads()`](https://docs.rs/drudge/latest/drudge/hive/builder/struct.Builder.html#method.num_threads) must be set
+              [`build_default::<MyQueen>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_default) if it implements
+              `Default`, otherwise use [`build(MyQueen::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build)
+        * Note that [`Builder::num_threads()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.num_threads) must be set
           to a non-zero value, otherwise the built `Hive` will not start any worker threads
-          until you call the [`Hive::grow()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#grow) method.
+          until you call the [`Hive::grow()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#grow) method.
 
 Once you've created a `Hive`, use its methods to submit tasks for processing. There are
 four groups of methods available:
@@ -108,11 +108,11 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_send` prefix accept a channel `Sender` and send the `Outcome`s to that
   channel as they are completed
 * The methods with the `_store` prefix store the `Outcome`s in the `Hive`; these may be
-  retrieved later using the [`take_stored()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#take_stored) method, using one
+  retrieved later using the [`take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#take_stored) method, using one
   of the `remove*` methods (which requires
-  [`OutcomeDerefStore`](https://docs.rs/drudge/latest/drudge/hive/outcome/store/trait.OutcomeDerefStore.html) to be in scope), or by
+  [`OutcomeDerefStore`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/store/trait.OutcomeDerefStore.html) to be in scope), or by
   using one of the methods on `Husk` after shutting down the `Hive` using
-  [`into_husk()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#into_husk).
+  [`into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#into_husk).
 
 When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
@@ -120,9 +120,9 @@ will block indefinitely.
 
 Within a `Hive`, each submitted task is assinged a unique index. The `_send` and `_store`
 methods return the indices of the submitted tasks, which can be used to retrieve them later
-(e.g., using [`Hive::remove()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#remove)).
+(e.g., using [`Hive::remove()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#remove)).
 
-After submitting tasks, you may use the [`join()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#join) method to wait for
+After submitting tasks, you may use the [`join()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#join) method to wait for
 all tasks to complete. Using `join` is strongly recommended when using one of the `_store`
 methods, otherwise you'll need to continually poll the `Hive` to check for completed tasks.
 
@@ -130,8 +130,8 @@ When you are finished with a `Hive`, you may simply drop it (either explicitly, 
 it go out of scope) - the worker threads will be terminated automatically. If you used the
 `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-parameters, you can use the [`into_husk()`](https://docs.rs/drudge/latest/drudge/hive/struct.Hive.html#into_husk) method to extract the
-relevant data from the `Hive` into a [`Husk`](https://docs.rs/drudge/latest/drudge/hive/husk/struct.Husk.html) object.
+parameters, you can use the [`into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#into_husk) method to extract the
+relevant data from the `Hive` into a [`Husk`](https://docs.rs/beekeeper/latest/beekeeper/hive/husk/struct.Husk.html) object.
 
 ### Examples
 
@@ -145,15 +145,15 @@ fn double(i: usize) -> usize {
 // parallelize the computation of `double` on a range of numbers over
 // 4 threads, and sum the results
 const N: usize = 100;
-let sum_doubles: usize = drudge::util::map(4, 0..N, double).into_iter().sum();
+let sum_doubles: usize = beekeeper::util::map(4, 0..N, double).into_iter().sum();
 println!("Sum of {} doubles: {}", N, sum_doubles);
 ```
 
 #### 2. Parallelize arbitrary tasks with the same output type
 
 ```rust
-use drudge::bee::stock::{Thunk, ThunkWorker};
-use drudge::hive::prelude::*;
+use beekeeper::bee::stock::{Thunk, ThunkWorker};
+use beekeeper::hive::prelude::*;
 
 // create a hive to process `Thunk`s - no-argument closures with the same
 // return type (`i32`)
@@ -183,8 +183,8 @@ implementing the `Worker` trait for this struct. We'll also use a custom `Queen`
 of the [`Child`](https://doc.rust-lang.org/stable/std/process/struct.Child.html) processes and make sure they're terminated properly.
 
 ```rust
-use drudge::hive::prelude::*;
-use drudge::bee::prelude::*;
+use beekeeper::hive::prelude::*;
+use beekeeper::bee::prelude::*;
 use std::io::prelude::*;
 use std::io::{self, BufReader};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
