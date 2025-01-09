@@ -12,21 +12,23 @@ pub use std::sync::atomic::Ordering;
 
 /// Trait for wrappers of [`atomic`](std::sync::atomic) types that provides a common API.
 pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> + Sync {
-    /// Returns the current value of this `Atomic` using `Acquire` ordering.
+    /// Returns the current value of this `Atomic`.
     fn get(&self) -> T;
 
-    /// Sets the value of this `Atomic` using `Release` ordering and returns the previous value.
+    /// Sets the value of this `Atomic` and returns the previous value.
     fn set(&self, value: T) -> T;
 
-    /// Loads the current value of this `Atomic` using `AcqRel` ordering and calls `f`. If `f`
-    /// returns `Some`, this atomic is updated with the new value using `Release` ordering and the
-    /// previous value is returned. Otherwise the current value is returned.
+    /// Loads the current value of this `Atomic` and calls `f`. If `f` returns `Some`, this atomic
+    /// is updated with the new value and the previous value is returned. Otherwise the current
+    /// value is returned.
     fn set_with<F: FnMut(T) -> Option<T>>(&self, f: F) -> T;
 
     /// Consumes this `Atomic` and returns the inner value.
     fn into_inner(self) -> T;
 }
 
+/// Encapsulates the `Ordering` variants used for the atomic operations supported by `Atomic` and
+/// `AtomicNumber` implementations for primitive (numeric, boolean) types.
 #[derive(Clone, Debug)]
 pub struct Orderings {
     pub load: Ordering,
