@@ -125,7 +125,7 @@ mod tests {
         let hive = Builder::new()
             .num_threads(0)
             .build_with_default::<ThunkWorker<u8>>();
-        let mut indices = hive.map_store((0..10).into_iter().map(|i| Thunk::of(move || i)));
+        let mut indices = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
         let mut husk = hive.into_husk();
@@ -150,7 +150,7 @@ mod tests {
         let hive1 = Builder::new()
             .num_threads(0)
             .build_with_default::<ThunkWorker<u8>>();
-        let _ = hive1.map_store((0..10).into_iter().map(|i| Thunk::of(move || i)));
+        let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.into_husk();
@@ -170,7 +170,7 @@ mod tests {
         let hive1 = Builder::new()
             .num_threads(0)
             .build_with_default::<ThunkWorker<u8>>();
-        let _ = hive1.map_store((0..10).into_iter().map(|i| Thunk::of(move || i)));
+        let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.into_husk();
@@ -194,7 +194,7 @@ mod tests {
         let hive = Builder::new()
             .num_threads(4)
             .build_with_default::<ThunkWorker<u8>>();
-        hive.map_store((0..10).into_iter().map(|i| Thunk::of(move || i)));
+        hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
         let mut outputs = hive.into_husk().into_parts().1.unwrap();
         outputs.sort();
@@ -208,9 +208,7 @@ mod tests {
             .num_threads(4)
             .build_with_default::<PunkWorker<u8>>();
         hive.map_store(
-            (0..10)
-                .into_iter()
-                .map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
+            (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );
         hive.join();
         let (_, result) = hive.into_husk().into_parts();

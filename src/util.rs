@@ -102,7 +102,7 @@ mod tests {
             Outcome::Failure { .. }
         ));
         assert_eq!(99, result.num_successes());
-        assert!(matches!(result.ok_or_unwrap_errors(true), Err(_)));
+        assert!(result.ok_or_unwrap_errors(true).is_err());
     }
 }
 

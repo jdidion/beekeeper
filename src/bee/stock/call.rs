@@ -258,6 +258,7 @@ mod tests {
         assert!(matches!(worker.apply(5, &Context::empty()), Ok(6)))
     }
 
+    #[allow(clippy::type_complexity)]
     fn try_caller() -> RetryCaller<
         (bool, u8),
         u8,
@@ -296,6 +297,7 @@ mod tests {
         ));
     }
 
+    #[allow(clippy::type_complexity)]
     fn once_caller() -> OnceCaller<
         (bool, u8),
         u8,
@@ -331,6 +333,7 @@ mod tests {
         ));
     }
 
+    #[allow(clippy::type_complexity)]
     fn ref_caller() -> RefCaller<
         (bool, u8),
         u8,

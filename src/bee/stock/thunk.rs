@@ -1,6 +1,6 @@
+use crate::bee::{ApplyError, Context, Worker, WorkerResult};
 use crate::boxed::BoxedFnOnce;
 use crate::panic::Panic;
-use crate::bee::{ApplyError, Context, Worker, WorkerResult};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -15,7 +15,7 @@ impl<T> Default for ThunkWorker<T> {
 }
 
 impl<T: Send + Debug + 'static> Worker for ThunkWorker<T> {
-    type Input = Thunk<'static, T>;
+    type Input = Thunk<T>;
     type Output = T;
     type Error = ();
 
@@ -36,7 +36,7 @@ impl<T, E> Default for FunkWorker<T, E> {
 }
 
 impl<T: Send + Debug + 'static, E: Send + Debug + 'static> Worker for FunkWorker<T, E> {
-    type Input = Thunk<'static, Result<T, E>>;
+    type Input = Thunk<Result<T, E>>;
     type Output = T;
     type Error = E;
 
@@ -59,7 +59,7 @@ impl<T> Default for PunkWorker<T> {
 }
 
 impl<T: Send + Debug + 'static> Worker for PunkWorker<T> {
-    type Input = Thunk<'static, T>;
+    type Input = Thunk<T>;
     type Output = T;
     type Error = ();
 
@@ -72,21 +72,21 @@ impl<T: Send + Debug + 'static> Worker for PunkWorker<T> {
 }
 
 /// A wrapper around a closure that can be executed exactly once by a worker in a `Hive`.
-pub struct Thunk<'a, T>(Box<dyn BoxedFnOnce<Output = T> + Send + 'a>);
+pub struct Thunk<T>(Box<dyn BoxedFnOnce<Output = T> + Send>);
 
-impl<'a, T> Thunk<'a, T> {
+impl<T> Thunk<T> {
     pub fn of<F: FnOnce() -> T + Send + 'static>(f: F) -> Self {
         Self(Box::new(f))
     }
 }
 
-impl<'a, T, E> Thunk<'a, Result<T, E>> {
+impl<T, E> Thunk<Result<T, E>> {
     pub fn fallible<F: FnOnce() -> Result<T, E> + Send + 'static>(f: F) -> Self {
         Self(Box::new(f))
     }
 }
 
-impl<'a, T> Debug for Thunk<'a, T> {
+impl<T> Debug for Thunk<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Thunk")
     }

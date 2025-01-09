@@ -163,7 +163,7 @@ mod test {
 
     /// Convenience function that returns a `Hive` configured with the global defaults, and the
     /// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
-    pub fn thunk_hive<'a, T: Send + Sync + Debug + 'static>(
+    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(
         num_threads: usize,
     ) -> Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>> {
         Builder::default()
@@ -607,7 +607,9 @@ mod test {
         let p_t = hive.clone();
         thread::spawn(move || {
             (0..23)
-                .map(|_| p_t.apply_store(Thunk::of(sleepy_function)))
+                .inspect(|_| {
+                    p_t.apply_store(Thunk::of(sleepy_function));
+                })
                 .count();
         });
 
@@ -620,7 +622,7 @@ mod test {
             .num_threads(2)
             .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
-            .map((0..10u8).into_iter().map(|i| {
+            .map((0..10u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((10 - i as u64) * 100));
                     i
@@ -637,7 +639,7 @@ mod test {
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
-            .map_unordered((0..8u8).into_iter().map(|i| {
+            .map_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                     i
@@ -655,7 +657,7 @@ mod test {
             .build_with_default::<ThunkWorker<u8>>();
         let (tx, rx) = super::outcome_channel();
         let mut indices = hive.map_send(
-            (0..8u8).into_iter().map(|i| {
+            (0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                     i
@@ -681,7 +683,7 @@ mod test {
         let mut hive = Builder::new()
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>();
-        let mut indices = hive.map_store((0..8u8).into_iter().map(|i| {
+        let mut indices = hive.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
@@ -708,7 +710,7 @@ mod test {
             .num_threads(2)
             .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
-            .swarm((0..10u8).into_iter().map(|i| {
+            .swarm((0..10u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((10 - i as u64) * 100));
                     i
@@ -725,7 +727,7 @@ mod test {
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
-            .swarm_unordered((0..8u8).into_iter().map(|i| {
+            .swarm_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                     i
@@ -743,7 +745,7 @@ mod test {
             .build_with_default::<ThunkWorker<u8>>();
         let (tx, rx) = super::outcome_channel();
         let mut indices = hive.swarm_send(
-            (0..8u8).into_iter().map(|i| {
+            (0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                     i
@@ -769,7 +771,7 @@ mod test {
         let mut hive = Builder::new()
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>();
-        let mut indices = hive.swarm_store((0..8u8).into_iter().map(|i| {
+        let mut indices = hive.swarm_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
@@ -984,7 +986,7 @@ mod test {
         let hive1 = Builder::new()
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>();
-        let indices = hive1.map_store((0..8u8).into_iter().map(|i| Thunk::of(move || i)));
+        let indices = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
         let mut husk1 = hive1.into_husk();
         for i in indices.iter() {
@@ -996,7 +998,7 @@ mod test {
         let hive2 = builder
             .num_threads(4)
             .build_with_default::<ThunkWorker<u8>>();
-        hive2.map_store((0..8u8).into_iter().map(|i| {
+        hive2.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
@@ -1020,7 +1022,7 @@ mod test {
         assert_eq!(outputs1, outputs2);
 
         let hive3 = husk1.into_hive();
-        hive3.map_store((0..8u8).into_iter().map(|i| {
+        hive3.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
@@ -1346,8 +1348,7 @@ mod test {
             .into_iter()
             .map(Result::unwrap)
             .filter(|status| !status.success())
-            .map(|status| status.code())
-            .flatten()
+            .filter_map(|status| status.code())
             .collect();
         if !exec_err_codes.is_empty() {
             panic!(

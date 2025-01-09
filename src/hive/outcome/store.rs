@@ -410,7 +410,7 @@ mod tests {
 
         assert!(store.has_unprocessed());
         assert!(store.get(1).unwrap().is_unprocessed());
-        for index in vec![0, 2, 3] {
+        for index in [0, 2, 3] {
             assert!(!store.get(index).unwrap().is_unprocessed());
         }
         assert_eq!(store.unprocessed_indices(), vec![1]);
@@ -419,7 +419,7 @@ mod tests {
         for index in 2..=3 {
             assert!(store.get(index).unwrap().is_failure())
         }
-        for index in vec![0, 1] {
+        for index in [0, 1] {
             assert!(!store.get(index).unwrap().is_failure());
         }
         let mut failure_indices = store.failure_indices();
