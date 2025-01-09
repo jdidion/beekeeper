@@ -572,9 +572,9 @@ mod test {
 
         let msg = rx.try_recv_msg();
         match msg {
-            Message::Received(_) => println!("received"),
-            Message::ChannelEmpty => println!("channel empty"),
-            Message::ChannelDisconnected => println!("channel disconnected"),
+            Message::Received(_) => dbg!("received"),
+            Message::ChannelEmpty => dbg!("channel empty"),
+            Message::ChannelDisconnected => dbg!("channel disconnected"),
         };
         assert!(matches!(msg, Message::ChannelEmpty));
         error(format!("{:?}\n{:?}\n", hive0, hive1));
@@ -1203,12 +1203,14 @@ mod test {
                 &*(0..*n).fold("".to_owned(), |s, _| s + "*")
             );
         }
-        assert!(data.iter().all(|&(cycle, stop, i)| if i < n_processes {
-            cycle == stop
-        } else {
-            cycle < stop
-        }));
-
+        for (cycle, stop, i) in data.iter() {
+            dbg!("Cycle: {}, Stop: {}, Index: {}", cycle, stop, i);
+            if *i < n_processes {
+                assert_eq!(cycle, stop);
+            } else {
+                assert!(cycle < stop);
+            }
+        }
         clock_thread.join().unwrap();
     }
 
