@@ -1,5 +1,5 @@
 use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
-use crate::atomic::{Atomic, AtomicNumber, AtomicUsize, Ordering, Orderings};
+use crate::atomic::{Atomic, AtomicNumber, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -9,14 +9,14 @@ use std::time::Duration;
 use std::{fmt, iter, mem};
 
 // TODO: it's not clear if SeqCst ordering is actually necessary - need to do some fuzz testing.
-const SEQCST_ORDERING: Orderings = Orderings {
-    load: Ordering::SeqCst,
-    swap: Ordering::SeqCst,
-    fetch_update_set: Ordering::SeqCst,
-    fetch_update_fetch: Ordering::SeqCst,
-    fetch_add: Ordering::SeqCst,
-    fetch_sub: Ordering::SeqCst,
-};
+// const SEQCST_ORDERING: Orderings = Orderings {
+//     load: Ordering::SeqCst,
+//     swap: Ordering::SeqCst,
+//     fetch_update_set: Ordering::SeqCst,
+//     fetch_update_fetch: Ordering::SeqCst,
+//     fetch_add: Ordering::SeqCst,
+//     fetch_sub: Ordering::SeqCst,
+// };
 
 impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
@@ -24,8 +24,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
-            num_tasks_queued: AtomicUsize::new(0, SEQCST_ORDERING),
-            num_tasks_active: AtomicUsize::new(0, SEQCST_ORDERING),
+            num_tasks_queued: AtomicUsize::default(), //AtomicUsize::new(0, SEQCST_ORDERING),
+            num_tasks_active: AtomicUsize::default(), //AtomicUsize::new(0, SEQCST_ORDERING),
             next_task_index: Default::default(),
             num_panics: Default::default(),
             suspended: Default::default(),
