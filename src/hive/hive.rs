@@ -556,7 +556,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Clone for Hive<W, Q> {
     fn clone(&self) -> Self {
         Self {
             task_tx: self.task_tx.clone(),
-            shared: self.shared.clone(),
+            shared: Arc::clone(&self.shared),
         }
     }
 }

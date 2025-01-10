@@ -1132,13 +1132,13 @@ mod test {
     /// because the waiter pool has four processes.
     fn test_join_wavesurfer() {
         let n_cycles = 4;
-        let n_processes = 4;
+        let n_workers = 4;
         let (tx, rx) = super::outcome_channel();
         let builder = Builder::new()
-            .num_threads(n_processes)
+            .num_threads(n_workers)
             .thread_name("join wavesurfer");
-        let p_waiter = builder.clone().build_with_default::<ThunkWorker<()>>();
-        let p_clock = builder.build_with_default::<ThunkWorker<()>>();
+        let waiter_hive = builder.clone().build_with_default::<ThunkWorker<()>>();
+        let clock_hive = builder.build_with_default::<ThunkWorker<()>>();
 
         let barrier = Arc::new(Barrier::new(3));
         let wave_clock = Arc::new(AtomicUsize::new(0));
@@ -1156,7 +1156,7 @@ mod test {
 
         {
             let barrier = barrier.clone();
-            p_clock.apply_store(Thunk::of(move || {
+            clock_hive.apply_store(Thunk::of(move || {
                 barrier.wait();
                 // this sleep is for stabilisation on weaker platforms
                 thread::sleep(Duration::from_millis(100));
@@ -1164,24 +1164,23 @@ mod test {
         }
 
         // prepare three waves of tasks
-        for i in 0..3 * n_processes {
-            let p_clock = p_clock.clone();
+        for worker in 0..3 * n_workers {
             let tx = tx.clone();
+            let clock_hive = clock_hive.clone();
             let wave_clock = wave_clock.clone();
-            p_waiter.apply_store(Thunk::of(move || {
-                let now = wave_clock.load(Ordering::SeqCst);
-                p_clock.join();
-                // submit tasks for the second wave
-                p_clock.apply_store(Thunk::of(|| thread::sleep(ONE_SEC)));
-                let clock = wave_clock.load(Ordering::SeqCst);
-                tx.send((now, clock, i)).unwrap();
+            waiter_hive.apply_store(Thunk::of(move || {
+                let wave_before = wave_clock.load(Ordering::SeqCst);
+                clock_hive.join();
+                // submit tasks for the next wave
+                clock_hive.apply_store(Thunk::of(|| thread::sleep(ONE_SEC)));
+                let wave_after = wave_clock.load(Ordering::SeqCst);
+                tx.send((wave_before, wave_after, worker)).unwrap();
             }));
         }
         println!("all scheduled at {}", wave_clock.load(Ordering::SeqCst));
         barrier.wait();
 
-        p_clock.join();
-        //p_waiter.join();
+        clock_hive.join();
 
         drop(tx);
         let mut hist = vec![0; n_cycles];
@@ -1203,12 +1202,17 @@ mod test {
                 &*(0..*n).fold("".to_owned(), |s, _| s + "*")
             );
         }
-        for (cycle, stop, i) in data.iter() {
-            dbg!("Cycle: {}, Stop: {}, Index: {}", cycle, stop, i);
-            if *i < n_processes {
-                assert_eq!(cycle, stop);
+        for (wave_before, wave_after, worker) in data.iter() {
+            dbg!(
+                "Before: {}, After: {}, Worker: {}",
+                wave_before,
+                wave_after,
+                worker
+            );
+            if *worker < n_workers {
+                assert_eq!(wave_before, wave_after);
             } else {
-                assert!(cycle < stop);
+                assert!(wave_before < wave_after);
             }
         }
         clock_thread.join().unwrap();
