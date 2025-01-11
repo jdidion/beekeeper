@@ -1226,9 +1226,7 @@ mod test {
         for (wave_before, wave_after, worker) in data.iter() {
             println!(
                 "Before: {}, After: {}, Worker: {}",
-                wave_before,
-                wave_after,
-                worker
+                wave_before, wave_after, worker
             );
             if *worker < n_workers {
                 assert_eq!(wave_before, wave_after);
