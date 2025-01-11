@@ -1147,9 +1147,15 @@ mod test {
             let wave_clock = wave_clock.clone();
             thread::spawn(move || {
                 barrier.wait();
+                println!("clock thread past barrier");
                 for wave_num in 0..n_cycles {
-                    wave_clock.store(wave_num, Ordering::SeqCst);
+                    let prev_wave = wave_clock.swap(wave_num, Ordering::SeqCst);
+                    println!(
+                        "Prev wave: {}, new wave: {}; sleeping for 1sec",
+                        prev_wave, wave_num
+                    );
                     thread::sleep(ONE_SEC);
+                    println!("clock thread wake");
                 }
             })
         };
@@ -1158,8 +1164,10 @@ mod test {
             let barrier = barrier.clone();
             clock_hive.apply_store(Thunk::of(move || {
                 barrier.wait();
+                println!("clock hive past barrier; sleeping for 100ms");
                 // this sleep is for stabilisation on weaker platforms
                 thread::sleep(Duration::from_millis(100));
+                println!("clock hive wake");
             }));
         }
 
@@ -1168,32 +1176,44 @@ mod test {
             let tx = tx.clone();
             let clock_hive = clock_hive.clone();
             let wave_clock = wave_clock.clone();
+            println!("calling waiter_hive.apply_store for worker {}", worker);
             waiter_hive.apply_store(Thunk::of(move || {
                 let wave_before = wave_clock.load(Ordering::SeqCst);
+                println!("Worker: {}, wave before: {}; joining", worker, wave_before);
                 clock_hive.join();
+                println!(
+                    "Worker: {} past join, submitting task to clock_hive",
+                    worker
+                );
                 // submit tasks for the next wave
                 clock_hive.apply_store(Thunk::of(|| thread::sleep(ONE_SEC)));
                 let wave_after = wave_clock.load(Ordering::SeqCst);
+                println!(
+                    "Worker: {} past task submission, wave after: {}",
+                    worker, wave_after
+                );
                 tx.send((wave_before, wave_after, worker)).unwrap();
             }));
         }
         println!("all scheduled at {}", wave_clock.load(Ordering::SeqCst));
         barrier.wait();
 
+        println!("Main thread past barrier; joining clock_hive");
         clock_hive.join();
 
         drop(tx);
         let mut hist = vec![0; n_cycles];
         let mut data = vec![];
-        for (now, after, i) in rx.iter() {
-            let mut dur = after - now;
+        for (before, after, worker) in rx.iter() {
+            let mut dur = after - before;
             if dur >= n_cycles - 1 {
                 dur = n_cycles - 1;
             }
             hist[dur] += 1;
-
-            data.push((now, after, i));
+            data.push((before, after, worker));
         }
+
+        println!("Histogram of wave duration:");
         for (i, n) in hist.iter().enumerate() {
             println!(
                 "\t{}: {} {}",
@@ -1202,8 +1222,9 @@ mod test {
                 &*(0..*n).fold("".to_owned(), |s, _| s + "*")
             );
         }
+
         for (wave_before, wave_after, worker) in data.iter() {
-            dbg!(
+            println!(
                 "Before: {}, After: {}, Worker: {}",
                 wave_before,
                 wave_after,
