@@ -17,11 +17,6 @@ jobs:
           - stable
           - beta
           - nightly
-        #channel:
-        #  - default
-        #  - crossbeam
-        #  - flume
-        #  - loole
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -38,8 +33,41 @@ jobs:
         with:
           command: build-all-features
           args: --all-targets
-          #args: -F ${{ matrix.channel }} --all-targets
       - uses: actions-rs/cargo@v1
         with:
           command: test-all-features
-          #args: -F ${{ matrix.channel }}
+
+  build_and_test_channels:
+    name: Rust project - latest
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+          - beta
+          - nightly
+        channel:
+          - default
+          - crossbeam
+          - flume
+          - loole
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+      - run: cargo clippy --all-targets -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
+      - run: cargo fmt -- --check
+      - uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: cargo-all-features
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build-all-features
+          args: -F ${{ matrix.channel }} --all-targets
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: -F ${{ matrix.channel }}
