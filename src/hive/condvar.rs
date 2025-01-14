@@ -47,7 +47,7 @@ impl PhasedCondvar {
         F: Fn() -> bool,
     {
         if condition() {
-            println!("condition true");
+            //println!("condition true");
             let phase = self.phase.load(Ordering::SeqCst);
             let mut lock = self.mutex.lock();
             while phase == self.phase.load(Ordering::Relaxed) && condition() {
