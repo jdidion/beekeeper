@@ -125,8 +125,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     next_task_index: AtomicUsize,
     num_panics: AtomicUsize,
     suspended: Arc<AtomicBool>,
-    suspended_condvar: Gate,
-    join_condvar: PhasedGate,
+    suspended_gate: Gate,
+    join_gate: PhasedGate,
     outcomes: Mutex<HashMap<usize, Outcome<W>>>,
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,

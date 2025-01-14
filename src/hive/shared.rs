@@ -29,8 +29,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             next_task_index: Default::default(),
             num_panics: Default::default(),
             suspended: Default::default(),
-            suspended_condvar: Default::default(),
-            join_condvar: Default::default(),
+            suspended_gate: Default::default(),
+            join_gate: Default::default(),
             outcomes: Default::default(),
             #[cfg(feature = "retry")]
             retry_queue: Default::default(),
@@ -125,10 +125,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.num_tasks_active.get() > 0 || (!self.is_suspended() && self.num_tasks_queued.get() > 0)
     }
 
+    /// Blocks the current thread until all active tasks have been processed. Also waits until all
+    /// queued tasks have been processed unless the suspended flag has been set.
+    pub fn wait_on_done(&self) {
+        self.join_gate.wait_while(|| self.has_work());
+    }
+
     /// Notify all observers joining this hive when there is no more work to do.
     pub fn no_work_notify_all(&self) {
         if !self.has_work() {
-            self.join_condvar.notify_all();
+            self.join_gate.notify_all();
         }
     }
 
@@ -139,7 +145,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             false
         } else {
             if !suspended {
-                self.suspended_condvar.notify_all();
+                self.suspended_gate.notify_all();
             }
             true
         }
@@ -179,12 +185,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             .into_iter()
             .map(|index| outcomes.remove(&index).unwrap())
             .collect()
-    }
-
-    /// Blocks the current thread until all active tasks have been processed. Also waits until all
-    /// queued tasks have been processed unless the suspended flag has been set.
-    pub fn wait_on_done(&self) {
-        self.join_condvar.wait_while(|| self.has_work());
     }
 }
 
@@ -259,7 +259,7 @@ mod no_retry {
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
         pub fn next_task(&self) -> Option<Task<W>> {
             loop {
-                self.suspended_condvar.wait_while(|| self.is_suspended());
+                self.suspended_gate.wait_while(|| self.is_suspended());
 
                 match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
                     Ok(task) => break Some(task),
