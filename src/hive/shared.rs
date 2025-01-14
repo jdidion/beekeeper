@@ -355,7 +355,7 @@ mod retry {
         /// are no tasks queued for retry.
         pub fn next_task(&self) -> Option<Task<W>> {
             loop {
-                self.suspended_condvar.wait_while(|| self.is_suspended());
+                self.suspended_gate.wait_while(|| self.is_suspended());
 
                 let has_retry = {
                     let next_retry = self.next_retry.read();
