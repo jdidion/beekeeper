@@ -268,8 +268,10 @@ mod no_retry {
                 }
             }
             .inspect(|_| {
-                self.num_tasks_queued.sub(1);
+                // These need to happen in this order to prevent the number of active + queued
+                // tasks to artifically fall to zero.
                 self.num_tasks_active.add(1);
+                self.num_tasks_queued.sub(1);
             })
         }
 
@@ -373,8 +375,10 @@ mod retry {
                 }
             }
             .inspect(|_| {
-                self.num_tasks_queued.sub(1);
+                // These need to happen in this order to prevent the number of active + queued
+                // tasks to artifically fall to zero.
                 self.num_tasks_active.add(1);
+                self.num_tasks_queued.sub(1);
             })
         }
 
