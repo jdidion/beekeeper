@@ -9,7 +9,7 @@ env:
 
 jobs:
   build_and_test:
-    name: Rust project - latest
+    name: Build and test all combinations of affinity, retry features
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -38,7 +38,7 @@ jobs:
           command: test-all-features
 
   build_and_test_channels:
-    name: Rust project - latest
+    name: Build and test with each different channel crate
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -69,7 +69,7 @@ jobs:
           args: -F ${{ matrix.channel }}
 
   build_and_test_loole:
-    name: Rust project - latest
+    name: Build and test all combination of features with loole
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -95,7 +95,7 @@ jobs:
           args: -F loole
 
   build_and_test_flume:
-    name: Rust project - latest
+    name: Build and test all combination of features with flume
     runs-on: ubuntu-latest
     strategy:
       matrix:

@@ -126,7 +126,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     num_panics: AtomicUsize,
     suspended: Arc<AtomicBool>,
     suspended_condvar: MutexCondvar,
-    empty_condvar: PhasedCondvar,
+    join_condvar: PhasedCondvar,
     outcomes: Mutex<HashMap<usize, Outcome<W>>>,
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
@@ -1123,15 +1123,17 @@ mod test {
     }
 
     #[test]
-    /// The scenario is joining threads should not be stuck once their wave of joins has completed.
-    /// So once one thread joining on a pool has succeded other threads joining on the same pool
-    /// must get out even if the thread is used for other tasks while the first group is finishing
-    /// their join.
+    /// When a thread joins on a pool, it blocks until all tasks have completed. If a second thread
+    /// adds tasks to the pool and then joins before all the tasks have completed, both threads
+    /// will wait for all tasks to complete. However, as soon as all tasks have completed, all
+    /// joining threads are notified, and the first one to wake will exit the join and increment
+    /// the phase of the condvar. Subsequent notified threads will then see that the phase has been
+    /// changed and will wake, even if new tasks have been added in the meantime.
     ///
     /// In this example, this means the waiting threads will exit the join in groups of four
     /// because the waiter pool has four processes.
     fn test_join_wavesurfer() {
-        let n_cycles = 4;
+        let n_waves = 4;
         let n_workers = 4;
         let (tx, rx) = super::outcome_channel();
         let builder = Builder::new()
@@ -1141,15 +1143,15 @@ mod test {
         let clock_hive = builder.build_with_default::<ThunkWorker<()>>();
 
         let barrier = Arc::new(Barrier::new(3));
-        let wave_clock = Arc::new(AtomicUsize::new(0));
+        let wave_counter = Arc::new(AtomicUsize::new(0));
         let clock_thread = {
             let barrier = barrier.clone();
-            let wave_clock = wave_clock.clone();
+            let wave_counter = wave_counter.clone();
             thread::spawn(move || {
                 barrier.wait();
                 println!("clock thread past barrier");
-                for wave_num in 0..n_cycles {
-                    let prev_wave = wave_clock.swap(wave_num, Ordering::SeqCst);
+                for wave_num in 0..n_waves {
+                    let prev_wave = wave_counter.swap(wave_num, Ordering::SeqCst);
                     println!(
                         "Prev wave: {}, new wave: {}; sleeping for 1sec",
                         prev_wave, wave_num
@@ -1171,14 +1173,14 @@ mod test {
             }));
         }
 
-        // prepare three waves of tasks
-        for worker in 0..3 * n_workers {
+        // prepare three waves of tasks (0..=11)
+        for worker in 0..(3 * n_workers) {
             let tx = tx.clone();
             let clock_hive = clock_hive.clone();
-            let wave_clock = wave_clock.clone();
+            let wave_counter = wave_counter.clone();
             println!("calling waiter_hive.apply_store for worker {}", worker);
             waiter_hive.apply_store(Thunk::of(move || {
-                let wave_before = wave_clock.load(Ordering::SeqCst);
+                let wave_before = wave_counter.load(Ordering::SeqCst);
                 println!("Worker: {}, wave before: {}; joining", worker, wave_before);
                 clock_hive.join();
                 println!(
@@ -1187,7 +1189,7 @@ mod test {
                 );
                 // submit tasks for the next wave
                 clock_hive.apply_store(Thunk::of(|| thread::sleep(ONE_SEC)));
-                let wave_after = wave_clock.load(Ordering::SeqCst);
+                let wave_after = wave_counter.load(Ordering::SeqCst);
                 println!(
                     "Worker: {} past task submission, wave after: {}",
                     worker, wave_after
@@ -1195,19 +1197,19 @@ mod test {
                 tx.send((wave_before, wave_after, worker)).unwrap();
             }));
         }
-        println!("all scheduled at {}", wave_clock.load(Ordering::SeqCst));
+        println!("all scheduled at {}", wave_counter.load(Ordering::SeqCst));
         barrier.wait();
 
         println!("Main thread past barrier; joining clock_hive");
         clock_hive.join();
 
         drop(tx);
-        let mut hist = vec![0; n_cycles];
+        let mut hist = vec![0; n_waves];
         let mut data = vec![];
         for (before, after, worker) in rx.iter() {
             let mut dur = after - before;
-            if dur >= n_cycles - 1 {
-                dur = n_cycles - 1;
+            if dur >= n_waves - 1 {
+                dur = n_waves - 1;
             }
             hist[dur] += 1;
             data.push((before, after, worker));

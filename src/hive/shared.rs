@@ -30,7 +30,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             num_panics: Default::default(),
             suspended: Default::default(),
             suspended_condvar: Default::default(),
-            empty_condvar: Default::default(),
+            join_condvar: Default::default(),
             outcomes: Default::default(),
             #[cfg(feature = "retry")]
             retry_queue: Default::default(),
@@ -120,6 +120,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
     /// Returns `true` if there are either active tasks or if there are queued tasks and the
     /// cancelled flag hasn't been set.
+    #[inline]
     pub fn has_work(&self) -> bool {
         self.num_tasks_active.get() > 0 || (!self.is_suspended() && self.num_tasks_queued.get() > 0)
     }
@@ -127,7 +128,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Notify all observers joining this hive when there is no more work to do.
     pub fn no_work_notify_all(&self) {
         if !self.has_work() {
-            self.empty_condvar.notify_all();
+            self.join_condvar.notify_all();
         }
     }
 
@@ -183,7 +184,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Blocks the current thread until all active tasks have been processed. Also waits until all
     /// queued tasks have been processed unless the suspended flag has been set.
     pub fn wait_on_done(&self) {
-        self.empty_condvar.wait_while(|| self.has_work());
+        self.join_condvar.wait_while(|| self.has_work());
     }
 }
 

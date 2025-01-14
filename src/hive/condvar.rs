@@ -35,29 +35,38 @@ impl MutexCondvar {
 pub struct PhasedCondvar {
     mutex: Mutex<()>,
     condvar: Condvar,
-    generation: AtomicUsize,
+    phase: AtomicUsize,
 }
 
 impl PhasedCondvar {
     /// Waits on the condition variable while the condition evaluates to true. The condition is
     /// checked first to avoid aquiring the mutex lock unnecessarily.
+    #[inline]
     pub fn wait_while<F>(&self, condition: F)
     where
         F: Fn() -> bool,
     {
         if condition() {
-            let generation = self.generation.load(Ordering::SeqCst);
+            println!("condition true");
+            let phase = self.phase.load(Ordering::SeqCst);
             let mut lock = self.mutex.lock();
-            while generation == self.generation.load(Ordering::Relaxed) && condition() {
+            while phase == self.phase.load(Ordering::Relaxed) && condition() {
                 self.condvar.wait(&mut lock);
             }
+            println!(
+                "past wait, phase: {}, condition: {}",
+                self.phase.load(Ordering::Relaxed),
+                condition()
+            );
             // increase generation for the first thread to come out of the loop
-            let _ = self.generation.compare_exchange(
-                generation,
-                generation.wrapping_add(1),
+            let _ = self.phase.compare_exchange(
+                phase,
+                phase.wrapping_add(1),
                 Ordering::SeqCst,
                 Ordering::Relaxed,
             );
+        } else {
+            println!("condition false");
         }
     }
 
