@@ -1182,6 +1182,8 @@ mod test {
             waiter_hive.apply_store(Thunk::of(move || {
                 let wave_before = wave_counter.load(Ordering::SeqCst);
                 println!("Worker: {}, wave before: {}; joining", worker, wave_before);
+                // BUG: it seems that some workers are getting past this join before they should -
+                // i.e., before the first task submitted to clock_hive has completed
                 clock_hive.join();
                 println!(
                     "Worker: {} past join, submitting task to clock_hive",

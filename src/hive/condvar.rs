@@ -53,12 +53,12 @@ impl PhasedCondvar {
             while phase == self.phase.load(Ordering::Relaxed) && condition() {
                 self.condvar.wait(&mut lock);
             }
-            println!(
-                "past wait, phase: {}, condition: {}",
-                self.phase.load(Ordering::Relaxed),
-                condition()
-            );
-            // increase generation for the first thread to come out of the loop
+            // println!(
+            //     "past wait, phase: {}, condition: {}",
+            //     self.phase.load(Ordering::Relaxed),
+            //     condition()
+            // );
+            // increase phase for the first thread to come out of the loop
             let _ = self.phase.compare_exchange(
                 phase,
                 phase.wrapping_add(1),
