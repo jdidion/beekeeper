@@ -1,6 +1,6 @@
 mod builder;
-mod condvar;
 mod config;
+mod gate;
 #[allow(clippy::module_inception)]
 mod hive;
 mod husk;
@@ -34,7 +34,7 @@ pub use config::{set_max_retries_default, set_retries_default_disabled, set_retr
 use self::outcome::{Outcomes, OutcomesDeref};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
-use condvar::{MutexCondvar, PhasedCondvar};
+use gate::{Gate, PhasedGate};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -125,8 +125,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     next_task_index: AtomicUsize,
     num_panics: AtomicUsize,
     suspended: Arc<AtomicBool>,
-    suspended_condvar: MutexCondvar,
-    join_condvar: PhasedCondvar,
+    suspended_condvar: Gate,
+    join_condvar: PhasedGate,
     outcomes: Mutex<HashMap<usize, Outcome<W>>>,
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,

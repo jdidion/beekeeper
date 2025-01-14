@@ -8,15 +8,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Build and test all combinations of affinity, retry features
+  check:
+    name: Check lints and formatting
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -25,20 +19,9 @@ jobs:
           components: rustfmt, clippy
       - run: cargo clippy --all-targets -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
       - run: cargo fmt -- --check
-      - uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: cargo-all-features
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build-all-features
-          args: --all-targets
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test-all-features
 
-  build_and_test_channels:
-    name: Build and test with each different channel crate
+  build_and_test:
+    name: Build and test all combinations features
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -65,57 +48,5 @@ jobs:
           args: -F ${{ matrix.channel }} --all-targets
       - uses: actions-rs/cargo@v1
         with:
-          command: test
+          command: test-all-features
           args: -F ${{ matrix.channel }}
-
-  build_and_test_loole:
-    name: Build and test all combination of features with loole
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: cargo-all-features
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build-all-features
-          args: -F loole --all-targets
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test-all-features
-          args: -F loole
-
-  build_and_test_flume:
-    name: Build and test all combination of features with flume
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: cargo-all-features
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build-all-features
-          args: -F flume --all-targets
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test-all-features
-          args: -F flume
