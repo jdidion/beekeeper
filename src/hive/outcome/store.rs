@@ -11,8 +11,10 @@ pub mod sealed {
     };
 
     pub trait Outcomes<W: Worker> {
+        /// Returns an owned map of task index to `Outcome`.
         fn outcomes(self) -> HashMap<usize, Outcome<W>>;
 
+        /// Returns a read-only reference to a map of task index to `Outcome`.
         fn outcomes_ref(&self) -> &HashMap<usize, Outcome<W>>;
     }
 
@@ -26,8 +28,10 @@ pub mod sealed {
 }
 
 /// Trait implemented by structs that store `Outcome`s (`Hive`, `Husk`, and `OutcomeBatch`). The
-/// methods provided by this trait only require dereferencing the underlying map.
-pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
+/// first group of methods provided by this trait only require dereferencing the underlying map,
+/// while the second group of methods require the ability to borrow or take ownership of the
+/// underlying map (and thus, are not in scope for `Hive`).
+pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     fn len(&self) -> usize {
         self.outcomes_deref().len()
     }
@@ -202,18 +206,23 @@ pub trait OutcomeDerefStore<W: Worker>: sealed::OutcomesDeref<W> {
             .map(|index| self.remove_failure(index).unwrap())
             .collect()
     }
-}
 
-/// A trait implemented by structs that store *and* have ownership of `Outcome`s (`Husk` and
-/// `OutcomeBatch`).
-pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + Sized {
+    // The following methods are available for structs that store *and* have ownership of
+    // `Outcome`s (`Husk` and `OutcomeBatch`).
+
     /// Consumes this store and returns an iterator over the outcomes in index order.
-    fn into_iter(self) -> impl Iterator<Item = Outcome<W>> {
+    fn into_iter(self) -> impl Iterator<Item = Outcome<W>>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         self.outcomes().into_values()
     }
 
     /// Returns the successes as a `Vec` if there are no errors, otherwise panics.
-    fn unwrap(self) -> Vec<W::Output> {
+    fn unwrap(self) -> Vec<W::Output>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         assert!(
             !(self.has_failures() || self.has_unprocessed()),
             "non-success outcomes found"
@@ -229,7 +238,10 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
     /// `Err(Vec<W::Error>)`. If there are any `Outcome::Panic` variants, resumes unwinding the
     /// first panic. If `drop_unprocessed` is `true`, unprocessed inputs are discarded, otherwise
     /// they cause this method to panic.
-    fn ok_or_unwrap_errors(self, drop_unprocessed: bool) -> Result<Vec<W::Output>, Vec<W::Error>> {
+    fn ok_or_unwrap_errors(self, drop_unprocessed: bool) -> Result<Vec<W::Output>, Vec<W::Error>>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         assert!(
             drop_unprocessed || !self.has_unprocessed(),
             "unprocessed inputs"
@@ -248,7 +260,10 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
 
     /// Consumes this store and returns all the `Outcome::Unprocessed`. If `ordered` is `true`, the
     /// inputs are returned in index order, otherwise they are unordered.
-    fn into_unprocessed(self, ordered: bool) -> Vec<W::Input> {
+    fn into_unprocessed(self, ordered: bool) -> Vec<W::Input>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         let values = self
             .outcomes()
             .into_values()
@@ -270,13 +285,19 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
     }
 
     /// Returns the stored `Outcome` associated with the given index, if any.
-    fn get(&self, index: usize) -> Option<&Outcome<W>> {
+    fn get(&self, index: usize) -> Option<&Outcome<W>>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         self.outcomes_ref().get(&index)
     }
 
     /// Returns an iterator over all the stored `Outcome::Unprocessed` outcomes. These are tasks
     /// that were queued but not yet processed when the `Hive` was dropped.
-    fn iter_unprocessed(&self) -> impl Iterator<Item = (&usize, &W::Input)> {
+    fn iter_unprocessed(&self) -> impl Iterator<Item = (&usize, &W::Input)>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         self.outcomes_ref()
             .values()
             .filter_map(|result| match result {
@@ -287,7 +308,10 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
 
     /// Returns an iterator over all the stored `Outcome::Success` outcomes. These are tasks
     /// that were successfully processed but not sent to any output channel.
-    fn iter_successes(&self) -> impl Iterator<Item = (&usize, &W::Output)> {
+    fn iter_successes(&self) -> impl Iterator<Item = (&usize, &W::Output)>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         self.outcomes_ref()
             .values()
             .filter_map(|result| match result {
@@ -298,7 +322,10 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
 
     /// Returns an iterator over all the stored `Outcome::Success` outcomes. These are tasks
     /// that were successfully processed but not sent to any output channel.
-    fn iter_failures(&self) -> impl Iterator<Item = &Outcome<W>> {
+    fn iter_failures(&self) -> impl Iterator<Item = &Outcome<W>>
+    where
+        Self: sealed::Outcomes<W> + Sized,
+    {
         self.outcomes_ref()
             .values()
             .filter(|outcome| outcome.is_failure())
@@ -307,7 +334,7 @@ pub trait OutcomeStore<W: Worker>: sealed::Outcomes<W> + OutcomeDerefStore<W> + 
 
 #[cfg(test)]
 mod tests {
-    use super::{OutcomeDerefStore, OutcomeStore};
+    use super::OutcomeStore;
     use crate::bee::{Context, Worker, WorkerResult};
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
@@ -472,7 +499,7 @@ mod tests {
 #[cfg(all(test, feature = "retry"))]
 mod retry_tests {
     use super::tests::TestWorker;
-    use super::{OutcomeDerefStore, OutcomeStore};
+    use super::OutcomeStore;
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
 

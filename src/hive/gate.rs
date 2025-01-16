@@ -11,12 +11,9 @@ pub struct Gate {
 
 impl Gate {
     /// Waits on the condition variable while the condition evaluates to true. The condition is
-    /// checked first to avoid aquiring the mutex lock unnecessarily.
+    /// checked first to avoid acquiring the mutex lock unnecessarily.
     #[inline]
-    pub fn wait_while<F>(&self, condition: F)
-    where
-        F: Fn() -> bool,
-    {
+    pub fn wait_while<F: Fn() -> bool>(&self, condition: F) {
         if condition() {
             let mut lock = self.mutex.lock();
             while condition() {
@@ -44,14 +41,10 @@ pub struct PhasedGate {
 
 impl PhasedGate {
     /// Waits on the condition variable while the condition evaluates to true *and* the phase
-    /// phase hasn't changed. The first thread to finish waiting during a given phase increments
-    /// the phase number. The condition is checked first to avoid aquiring the mutex lock
-    /// unnecessarily.
+    /// hasn't changed. The first thread to finish waiting during a given phase increments the
+    /// phase number. The condition is checked first to avoid aquiring the mutex lock unnecessarily.
     #[inline]
-    pub fn wait_while<F>(&self, condition: F)
-    where
-        F: Fn() -> bool,
-    {
+    pub fn wait_while<F: Fn() -> bool>(&self, condition: F) {
         if condition() {
             let phase = self.phase.load(Ordering::SeqCst);
             let mut lock = self.mutex.lock();

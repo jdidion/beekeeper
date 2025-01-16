@@ -1,6 +1,6 @@
 use super::{
-    Builder, Config, Hive, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeSender, OutcomeStore,
-    Outcomes, OutcomesDeref, SpawnError,
+    Builder, Config, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore, Outcomes,
+    OutcomesDeref, SpawnError,
 };
 use crate::bee::{Queen, Worker};
 use std::collections::HashMap;
@@ -112,16 +112,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Outcomes<W> for Husk<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> OutcomeDerefStore<W> for Husk<W, Q> {}
-
 impl<W: Worker, Q: Queen<Kind = W>> OutcomeStore<W> for Husk<W, Q> {}
 
 #[cfg(test)]
 mod tests {
     use crate::bee::stock::{PunkWorker, Thunk, ThunkWorker};
-    use crate::hive::{
-        outcome_channel, Builder, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore,
-    };
+    use crate::hive::{outcome_channel, Builder, Outcome, OutcomeIteratorExt, OutcomeStore};
 
     #[test]
     fn test_unprocessed() {
@@ -133,7 +129,7 @@ mod tests {
         let mut indices = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
-        let mut husk = hive.into_husk().unwrap();
+        let mut husk = hive.try_into_husk().unwrap();
         assert!(husk.has_unprocessed());
         for i in indices.iter() {
             assert!(husk.get(*i).unwrap().is_unprocessed());
@@ -159,12 +155,12 @@ mod tests {
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.into_husk().unwrap();
+        let husk1 = hive1.try_into_husk().unwrap();
         let (hive2, _) = husk1.into_hive_swarm_unprocessed_store();
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
-        let husk2 = hive2.into_husk().unwrap();
+        let husk2 = hive2.try_into_husk().unwrap();
         assert!(!husk2.has_unprocessed());
         assert!(husk2.has_successes());
         assert_eq!(husk2.iter_successes().count(), 10);
@@ -180,13 +176,13 @@ mod tests {
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.into_husk().unwrap();
+        let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
         let (hive2, indices) = husk1.into_hive_swarm_unprocessed_to(tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
-        let husk2 = hive2.into_husk().unwrap();
+        let husk2 = hive2.try_into_husk().unwrap();
         assert!(husk2.is_empty());
         let mut outputs = rx
             .take_ordered(indices)
@@ -205,7 +201,7 @@ mod tests {
             .unwrap();
         hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
-        let mut outputs = hive.into_husk().unwrap().into_parts().1.unwrap();
+        let mut outputs = hive.try_into_husk().unwrap().into_parts().1.unwrap();
         outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }
@@ -221,7 +217,7 @@ mod tests {
             (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );
         hive.join();
-        let (_, result) = hive.into_husk().unwrap().into_parts();
+        let (_, result) = hive.try_into_husk().unwrap().into_parts();
         let _ = result.ok_or_unwrap_errors(true);
     }
 }

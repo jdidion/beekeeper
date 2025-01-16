@@ -28,8 +28,8 @@
 // - `Identity<T>`, which simply returns the input value.
 
 use super::{
-    outcome_channel, Config, Hive, HiveInner, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
-    OutcomeIteratorExt, OutcomeSender, OutcomesDeref, Shared, TaskSender,
+    outcome_channel, Config, Hive, HiveInner, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
+    OutcomeSender, OutcomeStore, OutcomesDeref, Shared, TaskSender,
 };
 use crate::atomic::Atomic;
 use crate::bee::{Queen, Worker};
@@ -499,6 +499,20 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.shared().num_panics.get()
     }
 
+    /// Returns `true` if this `Hive` has been poisoned - i.e., its internal state has been
+    /// corrupted such that it is no longer able to process tasks.
+    ///
+    /// Note that, when a `Hive` is poisoned, it is still possible to call methods that extract
+    /// its stored `Outcome`s (e.g., `take_stored()`) or consume it (e.g., `try_try_into_husk()`).
+    pub fn is_poisoned(&self) -> bool {
+        self.shared().is_poisoned()
+    }
+
+    /// Returns `true` if the cancelled flag is set.
+    pub fn is_suspended(&self) -> bool {
+        self.shared().is_suspended()
+    }
+
     /// Sets the suspended flag, which notifies worker threads that they a) MAY terminate their
     /// current task early (returning an `Unprocessed` outcome), and b) MUST not accept new tasks,
     /// and instead block until the suspended flag is cleared.
@@ -574,11 +588,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             .unwrap_or_default()
     }
 
-    /// Returns `true` if the cancelled flag is set.
-    pub fn is_suspended(&self) -> bool {
-        self.shared().is_suspended()
-    }
-
     /// Returns any stored `Outcome`s.
     pub fn take_stored(&self) -> HashMap<usize, Outcome<W>> {
         self.shared().take_outcomes()
@@ -589,14 +598,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.shared().wait_on_done();
     }
 
-    /// Consumes this `Hive` and returns a `Husk` containing the remnants of this `Hive`, including
-    /// any stored task outcomes, and all the data necessary to create a new `Hive`.
-    ///
-    /// This method first joins on the `Hive` to wait for all tasks to finish.
+    /// Consumes this `Hive` and attempts to return a `Husk` containing the remnants of this `Hive`,
+    /// including any stored task outcomes, and all the data necessary to create a new `Hive`.
     ///
     /// If this `Hive` has been cloned, and those clones have not been dropped, this method will
-    /// return `None` since it cannot take exclusive ownership of the shared data.
-    pub fn into_husk(mut self) -> Option<Husk<W, Q>> {
+    /// return `None` since it cannot take exclusive ownership of the internal shared data.
+    ///
+    /// This method first joins on the `Hive` to wait for all tasks to finish.
+    pub fn try_into_husk(mut self) -> Option<Husk<W, Q>> {
         if self.shared().num_referrers() > 1 {
             return None;
         }
@@ -606,7 +615,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         inner.shared.wait_on_done();
         // drop the task sender so receivers will drop automatically
         drop(inner.task_tx);
-        // wait for threads to drop
+        // wait for worker threads to drop
         let mut backoff = None::<Backoff>;
         while Arc::strong_count(&inner.shared) > 1 {
             backoff.get_or_insert_with(Backoff::new).spin();
@@ -614,11 +623,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         // take the shared data out of the Arc
         let shared = Arc::into_inner(inner.shared).expect("Arc::try_unwrap failed");
         // convert the shared data into a Husk
-        Some(shared.into_husk())
+        Some(shared.try_into_husk())
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> Clone for Hive<W, Q> {
+    /// Creates a shallow copy of this `Hive` containing references to its same internal state,
+    /// i.e., all clones of a `Hive` submit tasks to the same shared worker thread pool.
     fn clone(&self) -> Self {
         let inner = self.0.as_ref().unwrap();
         self.shared().referrer_is_cloning();
@@ -660,7 +671,7 @@ impl<W: Worker, Q: Queen<Kind = W>> OutcomesDeref<W> for Hive<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> OutcomeDerefStore<W> for Hive<W, Q> {}
+impl<W: Worker, Q: Queen<Kind = W>> OutcomeStore<W> for Hive<W, Q> {}
 
 impl<W: Worker, Q: Queen<Kind = W>> Drop for Hive<W, Q> {
     fn drop(&mut self) {
@@ -668,7 +679,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Hive<W, Q> {
         if let Some(inner) = self.0.as_ref() {
             // reduce the referrer count
             let _ = inner.shared.referrer_is_dropping();
-            // if this Hive is the only one with a (strong) pointer to the shared data, poison it
+            // if this Hive is the only one with a pointer to the shared data, poison it
             // to prevent any worker threads that still have access to the shared data from
             // re-spawning.
             if inner.shared.num_referrers() == 0 {

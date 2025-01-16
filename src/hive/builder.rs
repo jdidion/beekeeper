@@ -249,7 +249,7 @@ impl Builder {
     /// for i in 0..100 {
     ///     hive.apply_store(i);
     /// }
-    /// let husk = hive.into_husk().unwrap();
+    /// let husk = hive.try_into_husk().unwrap();
     /// assert_eq!(husk.queen().num_workers, 8);
     /// # }
     /// ```

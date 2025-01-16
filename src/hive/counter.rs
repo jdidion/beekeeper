@@ -24,12 +24,12 @@ pub enum CounterError {
 
 /// A counter that can keep track of two related values (`L` and `R`) using a single atomic number.
 /// The two values may be different sizes, but their total size in bits must equal the size of the
-/// data type (`N`) used to store the value.
+/// data type (for now fixed to `64`) used to store the value.
 ///
 /// Three operations are supported:
 /// * increment the left counter (`L`)
-/// * decrement the right counter (`R``)
-/// * transfer an amount `N <= L` from `L` to `R` (i.e., a simultaneous decrement of `L` and
+/// * decrement the right counter (`R`)
+/// * transfer an amount `N` from `L` to `R` (i.e., a simultaneous decrement of `L` and
 ///   increment of `R` by the same amount)
 pub struct DualCounter<const L: usize>(AtomicU64);
 
@@ -59,14 +59,13 @@ impl<const L: usize> DualCounter<L> {
 
     /// Increments the left counter by `n` and returns the previous value.
     ///
-    /// Reutrns an error if `n` is greater than the maximum value (2^L - 1) or if the left counter
+    /// Returns an error if `n` is greater than the maximum value (2^L - 1) or if the left counter
     /// overflows when incremented by `n`.
     pub fn increment_left(&self, n: u64) -> Result<u64, CounterError> {
         if n > Self::L_MAX {
             return Err(CounterError::LeftOverflow);
         }
         let prev_val = self.0.add(n) & Self::L_MAX;
-        //dbg!("increment left by {}, prev: {}", n, prev_val);
         match prev_val.checked_add(n) {
             Some(new_val) if new_val <= Self::L_MAX => Ok(prev_val),
             Some(_) => Err(CounterError::LeftOverflow),
@@ -84,7 +83,6 @@ impl<const L: usize> DualCounter<L> {
         }
         let n_shifted = n.checked_shl(Self::L_BITS).unwrap();
         let prev_val = self.0.sub(n_shifted) >> Self::L_BITS;
-        //dbg!("decrement right by {}, prev: {}", n, prev_val);
         if prev_val >= n {
             Ok(prev_val)
         } else {
@@ -111,10 +109,6 @@ impl<const L: usize> DualCounter<L> {
             Err(CounterError::LeftUnderflow)
         } else {
             match prev_right.checked_add(n) {
-                // dbg!(
-                //     "transfer from left to right: {}, prev_left: {}, prev_right: {}",
-                //     n, prev_left, prev_right
-                // );
                 Some(new_val) if new_val <= Self::R_MAX => Ok((prev_left, prev_right)),
                 Some(_) => Err(CounterError::RightOverflow),
                 None => unreachable!("counter overflow"),

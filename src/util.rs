@@ -43,7 +43,7 @@ where
 /// # Examples
 ///
 /// ```
-/// # use beekeeper::hive::OutcomeDerefStore;
+/// # use beekeeper::hive::OutcomeStore;
 /// # fn main() {
 /// let result = beekeeper::util::try_map(4, 0..10, |i| {
 ///     if i == 5 {
@@ -78,7 +78,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::hive::{Outcome, OutcomeDerefStore, OutcomeStore};
+    use crate::hive::{Outcome, OutcomeStore};
 
     #[test]
     fn test_map() {
@@ -132,7 +132,7 @@ mod retry {
     /// ```
     /// use beekeeper::bee::ApplyError;
     /// use beekeeper::bee::stock::RetryCaller;
-    /// use beekeeper::hive::OutcomeDerefStore;
+    /// use beekeeper::hive::OutcomeStore;
     ///
     /// # fn main() {
     /// let result = beekeeper::util::try_map_retryable::<usize, usize, String, _, _>(4, 3, 0..10, |i, _| if i == 5 {
@@ -171,7 +171,7 @@ mod retry {
     #[cfg(test)]
     mod tests {
         use crate::bee::ApplyError;
-        use crate::hive::{Outcome, OutcomeDerefStore, OutcomeStore};
+        use crate::hive::{Outcome, OutcomeStore};
 
         #[test]
         fn test_try_map_retryable() {

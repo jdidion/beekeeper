@@ -167,7 +167,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
     /// Returns `true` if the hive has been poisoned. A poisoned have may accept new tasks but will
     /// never process them. Unprocessed tasks can be retrieved by calling `take_outcomes` or
-    /// `into_husk`.
+    /// `try_into_husk`.
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.get()
@@ -332,7 +332,7 @@ mod no_retry {
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
         /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
         /// tasks are converted into `Outcome::Unprocessed` outcomes.
-        pub fn into_husk(self) -> Husk<W, Q> {
+        pub fn try_into_husk(self) -> Husk<W, Q> {
             let task_rx = self.task_rx.into_inner();
             let mut outcomes = self.outcomes.into_inner();
             super::drain_task_receiver_into(task_rx, &mut outcomes);
@@ -445,7 +445,7 @@ mod retry {
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
         /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
         /// tasks are converted into `Outcome::Unprocessed` outcomes.
-        pub fn into_husk(self) -> Husk<W, Q> {
+        pub fn try_into_husk(self) -> Husk<W, Q> {
             let task_rx = self.task_rx.into_inner();
             let retry_queue = self.retry_queue.into_inner();
             let mut outcomes = self.outcomes.into_inner();

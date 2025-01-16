@@ -1,4 +1,4 @@
-use super::{Outcome, OutcomeDerefStore, OutcomeStore, Outcomes, OutcomesDeref};
+use super::{Outcome, OutcomeStore, Outcomes, OutcomesDeref};
 use crate::bee::Worker;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -44,8 +44,6 @@ impl<W: Worker> OutcomesDeref<W> for OutcomeBatch<W> {
 }
 
 impl<W: Worker> OutcomeStore<W> for OutcomeBatch<W> {}
-
-impl<W: Worker> OutcomeDerefStore<W> for OutcomeBatch<W> {}
 
 #[cfg(test)]
 impl<W: Worker> OutcomeBatch<W> {

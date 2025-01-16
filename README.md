@@ -110,9 +110,9 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
   retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#take_stored) method, using
   one of the `remove*` methods (which requires
-  [`OutcomeDerefStore`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/store/trait.OutcomeDerefStore.html) to be in scope), or by
+  [`OutcomeStore`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/store/trait.OutcomeStore.html) to be in scope), or by
   using one of the methods on `Husk` after shutting down the `Hive` using
-  [`Hive::into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#into_husk).
+  [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#try_into_husk).
 
 When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
@@ -130,7 +130,7 @@ When you are finished with a `Hive`, you may simply drop it (either explicitly, 
 it go out of scope) - the worker threads will be terminated automatically. If you used the
 `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-parameters, you can use the [`Hive::into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#into_husk) method to extract
+parameters, you can use the [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#try_into_husk) method to extract
 the relevant data from the `Hive` into a [`Husk`](https://docs.rs/beekeeper/latest/beekeeper/hive/husk/struct.Husk.html) object.
 
 ### Examples
@@ -305,7 +305,7 @@ assert_eq!(output, b"abcdefgh");
 
 // shutdown the hive, use the Queen to wait on child processes, and
 // report errors
-let (mut queen, _outcomes) = hive.into_husk().into_parts();
+let (mut queen, _outcomes) = hive.try_into_husk().into_parts();
 let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
     queen.wait_for_all().into_iter().partition(Result::is_ok);
 if !wait_err.is_empty() {

@@ -100,9 +100,9 @@
 //! * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
 //!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive#take_stored) method, using
 //!   one of the `remove*` methods (which requires
-//!   [`OutcomeDerefStore`](crate::hive::outcome::store::OutcomeDerefStore) to be in scope), or by
+//!   [`OutcomeStore`](crate::hive::outcome::store::OutcomeStore) to be in scope), or by
 //!   using one of the methods on `Husk` after shutting down the `Hive` using
-//!   [`Hive::into_husk()`](crate::hive::Hive#into_husk).
+//!   [`Hive::try_into_husk()`](crate::hive::Hive#try_into_husk).
 //!
 //! When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 //! all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
@@ -120,7 +120,7 @@
 //! it go out of scope) - the worker threads will be terminated automatically. If you used the
 //! `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 //! has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-//! parameters, you can use the [`Hive::into_husk()`](crate::hive::Hive#into_husk) method to extract
+//! parameters, you can use the [`Hive::try_into_husk()`](crate::hive::Hive#try_into_husk) method to extract
 //! the relevant data from the `Hive` into a [`Husk`](crate::hive::husk::Husk) object.
 //!
 //! ## Examples
@@ -304,7 +304,7 @@
 //!
 //! // shutdown the hive, use the Queen to wait on child processes, and
 //! // report errors
-//! let (mut queen, _outcomes) = hive.into_husk().unwrap().into_parts();
+//! let (mut queen, _outcomes) = hive.try_into_husk().unwrap().into_parts();
 //! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
 //!     queen.wait_for_all().into_iter().partition(Result::is_ok);
 //! if !wait_err.is_empty() {

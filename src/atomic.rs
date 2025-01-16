@@ -63,8 +63,8 @@ macro_rules! atomic {
                 orderings: Orderings,
             }
 
+            #[allow(dead_code)]
             impl [<Atomic $type:camel>] {
-                #[allow(dead_code)]
                 pub fn new(value: $type) -> Self {
                     Self {
                         inner: value.into(),
@@ -72,7 +72,6 @@ macro_rules! atomic {
                     }
                 }
 
-                #[allow(dead_code)]
                 pub fn with_orderings(value: $type, orderings: Orderings) -> Self {
                     Self {
                         inner: value.into(),
@@ -322,13 +321,7 @@ where
             Self::Sync(Some(atomic)) => Ok(atomic.add(rhs)),
         }
     }
-}
 
-impl<P, A> AtomicOption<P, A>
-where
-    P: PrimInt + Debug + Default,
-    A: AtomicInt<P>,
-{
     /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
     /// current value and `rhs` and returns the previous value. Otherwise returns a `MutError`.
     pub fn set_max(&self, rhs: P) -> Result<P, MutError> {
@@ -377,8 +370,8 @@ mod affinity {
         A: Atomic<P>,
     {
         /// Sets the value to the result of applying `f` to the current value using interior
-        /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous value
-        /// is returned, otherwise the value is not updated and an error is returned.
+        /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous
+        /// value is returned, otherwise the value is not updated and an error is returned.
         pub fn try_update_with<F: FnMut(P) -> Option<P>>(&self, f: F) -> Result<P, MutError> {
             match self {
                 Self::Unsync(_) => Err(MutError::Unsync),

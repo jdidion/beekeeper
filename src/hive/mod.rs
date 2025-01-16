@@ -6,6 +6,7 @@ mod gate;
 mod hive;
 mod husk;
 mod outcome;
+// TODO: scoped hive is still a WIP
 //mod scoped;
 mod shared;
 mod task;
@@ -17,8 +18,8 @@ mod delay;
 
 pub mod prelude {
     pub use super::{
-        outcome_channel, Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
-        OutcomeIteratorExt, OutcomeStore, SpawnError,
+        outcome_channel, Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
+        OutcomeStore, SpawnError,
     };
 }
 
@@ -28,7 +29,7 @@ pub use builder::Builder;
 pub use config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
 pub use hive::SpawnError;
 pub use husk::Husk;
-pub use outcome::{Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
+pub use outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
 #[cfg(feature = "retry")]
 pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
@@ -79,7 +80,7 @@ use retry_prelude::*;
 /// will spawn a new worker thread with a new `Worker`.
 ///
 /// When a `Hive` is dropped, all the worker threads are terminated automatically. Prior to
-/// dropping the `Hive`, the `into_husk()` method can be called to retrieve all of the `Hive` data
+/// dropping the `Hive`, the `try_into_husk()` method can be called to retrieve all of the `Hive` data
 /// necessary to build a new `Hive`, as well as any stored outcomes (those that were not sent to an
 /// output channel).
 
@@ -155,7 +156,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
 
 #[cfg(test)]
 mod test {
-    use super::{Builder, Hive, Outcome, OutcomeDerefStore, OutcomeIteratorExt, OutcomeStore};
+    use super::{Builder, Hive, Outcome, OutcomeIteratorExt, OutcomeStore};
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
         ApplyError, ApplyRefError, Context, DefaultQueen, Queen, RefWorker, RefWorkerResult,
@@ -241,7 +242,7 @@ mod test {
         }
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().1, total_threads as u64);
-        let husk = hive.into_husk().unwrap();
+        let husk = hive.try_into_husk().unwrap();
         assert_eq!(husk.iter_successes().count(), total_threads);
     }
 
@@ -350,7 +351,7 @@ mod test {
         hive.join();
         // Ensure that none of the threads have panicked
         assert_eq!(hive.num_panics(), TEST_TASKS);
-        let husk = hive.into_husk().unwrap();
+        let husk = hive.try_into_husk().unwrap();
         assert_eq!(husk.num_panics(), TEST_TASKS);
     }
 
@@ -1038,7 +1039,7 @@ mod test {
             .unwrap();
         let indices = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
-        let mut husk1 = hive1.into_husk().unwrap();
+        let mut husk1 = hive1.try_into_husk().unwrap();
         for i in indices.iter() {
             assert!(husk1.outcomes_deref().get(i).unwrap().is_success());
             assert!(matches!(husk1.get(*i), Some(Outcome::Success { .. })));
@@ -1056,7 +1057,7 @@ mod test {
             })
         }));
         hive2.join();
-        let mut husk2 = hive2.into_husk().unwrap();
+        let mut husk2 = hive2.try_into_husk().unwrap();
 
         let mut outputs1 = husk1
             .remove_all()
@@ -1080,7 +1081,7 @@ mod test {
             })
         }));
         hive3.join();
-        let husk3 = hive3.into_husk().unwrap();
+        let husk3 = hive3.try_into_husk().unwrap();
         let (_, outcomes3) = husk3.into_parts();
         let mut outputs3 = outcomes3
             .into_iter()
@@ -1399,7 +1400,7 @@ mod test {
         assert_eq!(output, b"abcdefgh");
 
         // shutdown the hive, use the Queen to wait on child processes, and report errors
-        let (mut queen, _) = hive.into_husk().unwrap().into_parts();
+        let (mut queen, _) = hive.try_into_husk().unwrap().into_parts();
         let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
             queen.wait_for_all().into_iter().partition(Result::is_ok);
         if !wait_err.is_empty() {
