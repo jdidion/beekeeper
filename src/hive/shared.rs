@@ -1,5 +1,6 @@
+use super::counter::{self, DualCounter};
 use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
-use crate::atomic::{Atomic, AtomicNumber, AtomicUsize};
+use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -8,28 +9,19 @@ use std::thread::Builder;
 use std::time::Duration;
 use std::{fmt, iter, mem};
 
-// TODO: it's not clear if SeqCst ordering is actually necessary - need to do some fuzz testing.
-// const SEQCST_ORDERING: Orderings = Orderings {
-//     load: Ordering::SeqCst,
-//     swap: Ordering::SeqCst,
-//     fetch_update_set: Ordering::SeqCst,
-//     fetch_update_fetch: Ordering::SeqCst,
-//     fetch_add: Ordering::SeqCst,
-//     fetch_sub: Ordering::SeqCst,
-// };
-
 impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
         Shared {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
-            num_tasks_queued: AtomicUsize::default(), //AtomicUsize::new(0, SEQCST_ORDERING),
-            num_tasks_active: AtomicUsize::default(), //AtomicUsize::new(0, SEQCST_ORDERING),
+            num_tasks: DualCounter::default(),
             next_task_index: Default::default(),
             num_panics: Default::default(),
+            num_referrers: AtomicUsize::new(1),
+            poisoned: Default::default(),
             suspended: Default::default(),
-            suspended_gate: Default::default(),
+            resume_gate: Default::default(),
             join_gate: Default::default(),
             outcomes: Default::default(),
             #[cfg(feature = "retry")]
@@ -70,7 +62,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
     /// `outcome_tx` and the next index.
     pub fn prepare_task(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Task<W> {
-        self.num_tasks_queued.add(1);
+        self.num_tasks
+            .increment_left(1)
+            .expect("overflowed queued task counter");
         let index = self.next_task_index.add(1);
         let ctx = Context::new(index, self.suspended.clone());
         Task::new(input, ctx, outcome_tx)
@@ -84,7 +78,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         inputs: T,
         outcome_tx: Option<OutcomeSender<W>>,
     ) -> impl Iterator<Item = Task<W>> + 'a {
-        self.num_tasks_queued.add(min_size);
+        self.num_tasks
+            .increment_left(min_size as u64)
+            .expect("overflowed queued task counter");
         let index_start = self.next_task_index.add(min_size);
         let index_end = index_start + min_size;
         inputs
@@ -111,18 +107,29 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
     pub fn finish_task(&self, panicking: bool) {
-        self.num_tasks_active.sub(1);
+        self.num_tasks
+            .decrement_right(1)
+            .expect("active task counter was smaller than expected");
         if panicking {
             self.num_panics.add(1);
         }
         self.no_work_notify_all();
     }
 
-    /// Returns `true` if there are either active tasks or if there are queued tasks and the
-    /// cancelled flag hasn't been set.
+    /// Returns a tuple with the number of (queued, active) tasks.
+    #[inline]
+    pub fn num_tasks(&self) -> (u64, u64) {
+        self.num_tasks.get()
+    }
+
+    /// Returns `true` if the hive has not been poisoned and there are either active tasks or there
+    /// are queued tasks and the cancelled flag hasn't been set.
     #[inline]
     pub fn has_work(&self) -> bool {
-        self.num_tasks_active.get() > 0 || (!self.is_suspended() && self.num_tasks_queued.get() > 0)
+        !self.is_poisoned() && {
+            let (queued, active) = self.num_tasks();
+            active > 0 || (!self.is_suspended() && queued > 0)
+        }
     }
 
     /// Blocks the current thread until all active tasks have been processed. Also waits until all
@@ -138,6 +145,34 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         }
     }
 
+    /// Returns the number of `Hive`s holding a reference to this shared data.
+    pub fn num_referrers(&self) -> usize {
+        self.num_referrers.get()
+    }
+
+    /// Increments the number of referrers and returns the previous value.
+    pub fn referrer_is_cloning(&self) -> usize {
+        self.num_referrers.add(1)
+    }
+
+    /// Decrements the number of referrers and returns the previous value.
+    pub fn referrer_is_dropping(&self) -> usize {
+        self.num_referrers.sub(1)
+    }
+
+    /// Sets the `poisoned `
+    pub fn poison(&self) {
+        self.poisoned.set(true);
+    }
+
+    /// Returns `true` if the hive has been poisoned. A poisoned have may accept new tasks but will
+    /// never process them. Unprocessed tasks can be retrieved by calling `take_outcomes` or
+    /// `into_husk`.
+    #[inline]
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.get()
+    }
+
     /// Sets the `cancelled` flag. Worker threads may terminate early. No new worker threads will
     /// be spawned. Returns `true` if the value was changed.
     pub fn set_suspended(&self, suspended: bool) -> bool {
@@ -145,13 +180,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             false
         } else {
             if !suspended {
-                self.suspended_gate.notify_all();
+                self.resume_gate.notify_all();
             }
             true
         }
     }
 
-    /// Returns `true` if the `cancelled` flag has been set.
+    /// Returns `true` if the `suspended` flag has been set.
+    #[inline]
     pub fn is_suspended(&self) -> bool {
         self.suspended.get()
     }
@@ -190,11 +226,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
 impl<W: Worker, Q: Queen<Kind = W>> fmt::Debug for Shared<W, Q> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let (queued, active) = self.num_tasks();
         f.debug_struct("Shared")
             .field("name", &self.config.thread_name)
             .field("num_threads", &self.config.num_threads)
-            .field("num_tasks_queued", &self.num_tasks_queued)
-            .field("num_tasks_active", &self.num_tasks_active)
+            .field("num_tasks_queued", &queued)
+            .field("num_tasks_active", &active)
             .finish()
     }
 }
@@ -245,9 +282,20 @@ fn drain_task_receiver_into<W: Worker>(
     iter::from_fn(|| rx.try_recv().ok()).for_each(|task| insert_unprocessed_into(task, outcomes));
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum NextTaskError {
+    #[error("Task receiver disconnected")]
+    Disconnected,
+    #[error("The hive has been poisoned")]
+    Poisoned,
+    #[error("Task counter has invalid state")]
+    InvalidCounter(counter::CounterError),
+}
+
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use crate::atomic::{Atomic, AtomicNumber};
+    use super::NextTaskError;
+    use crate::atomic::Atomic;
     use crate::bee::{Queen, Worker};
     use crate::hive::{Husk, Shared, Task};
     use std::sync::mpsc::RecvTimeoutError;
@@ -257,21 +305,27 @@ mod no_retry {
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
-        pub fn next_task(&self) -> Option<Task<W>> {
+        pub fn next_task(&self) -> Result<Task<W>, NextTaskError> {
             loop {
-                self.suspended_gate.wait_while(|| self.is_suspended());
+                self.resume_gate.wait_while(|| self.is_suspended());
+
+                if self.is_poisoned() {
+                    return Err(NextTaskError::Poisoned);
+                }
 
                 match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
-                    Ok(task) => break Some(task),
-                    Err(RecvTimeoutError::Disconnected) => break None,
+                    Ok(task) => break Ok(task),
+                    Err(RecvTimeoutError::Disconnected) => break Err(NextTaskError::Disconnected),
                     Err(RecvTimeoutError::Timeout) => continue,
                 }
             }
-            .inspect(|_| {
-                // These need to happen in this order to prevent the number of active + queued
-                // tasks to artifically fall to zero.
-                self.num_tasks_active.add(1);
-                self.num_tasks_queued.sub(1);
+            .and_then(|task| match self.num_tasks.transfer(1) {
+                Ok(_) => Ok(task),
+                Err(e) => {
+                    // poison the hive so it can't be used anymore
+                    self.poison();
+                    Err(NextTaskError::InvalidCounter(e))
+                }
             })
         }
 
@@ -294,7 +348,8 @@ mod no_retry {
 
 #[cfg(feature = "retry")]
 mod retry {
-    use crate::atomic::{Atomic, AtomicNumber};
+    use super::NextTaskError;
+    use crate::atomic::Atomic;
     use crate::bee::{Context, Queen, Worker};
     use crate::hive::{Husk, OutcomeSender, Shared, Task};
     use std::sync::mpsc::RecvTimeoutError;
@@ -344,7 +399,9 @@ mod retry {
                 .unwrap_or_default();
             let task = Task::new(input, ctx, outcome_tx);
             let mut queue = self.retry_queue.lock();
-            self.num_tasks_queued.add(1);
+            self.num_tasks
+                .increment_left(1)
+                .expect("overflowed queued task counter");
             let available_at = queue.push(task, delay);
             self.update_next_retry(Some(available_at));
         }
@@ -353,9 +410,13 @@ mod retry {
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued for retry.
-        pub fn next_task(&self) -> Option<Task<W>> {
+        pub fn next_task(&self) -> Result<Task<W>, NextTaskError> {
             loop {
-                self.suspended_gate.wait_while(|| self.is_suspended());
+                self.resume_gate.wait_while(|| self.is_suspended());
+
+                if self.is_poisoned() {
+                    return Err(NextTaskError::Poisoned);
+                }
 
                 let has_retry = {
                     let next_retry = self.next_retry.read();
@@ -365,20 +426,19 @@ mod retry {
                     let mut queue = self.retry_queue.lock();
                     if let Some(task) = queue.try_pop() {
                         self.update_next_retry(queue.next_available());
-                        break Some(task);
+                        break Ok(task);
                     }
                 }
+
                 match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
-                    Ok(task) => break Some(task),
-                    Err(RecvTimeoutError::Disconnected) => break None,
+                    Ok(task) => break Ok(task),
+                    Err(RecvTimeoutError::Disconnected) => break Err(NextTaskError::Disconnected),
                     Err(RecvTimeoutError::Timeout) => continue,
                 }
             }
-            .inspect(|_| {
-                // These need to happen in this order to prevent the number of active + queued
-                // tasks to artifically fall to zero.
-                self.num_tasks_active.add(1);
-                self.num_tasks_queued.sub(1);
+            .and_then(|task| match self.num_tasks.transfer(1) {
+                Ok(_) => Ok(task),
+                Err(e) => Err(NextTaskError::InvalidCounter(e)),
             })
         }
 

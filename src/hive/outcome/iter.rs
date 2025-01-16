@@ -45,7 +45,7 @@ impl<W: Worker> OutcomeIterator<W> {
 }
 
 impl<W: Worker> Iterator for OutcomeIterator<W> {
-    type Item = Outcome<W>;
+    type Item = Result<Outcome<W>, usize>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -54,13 +54,15 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
                     let index = outcome.index();
                     if index == next {
                         self.indices.pop_front();
-                        return Some(outcome);
+                        return Some(Ok(outcome));
                     } else {
                         if self.indices.contains(index) {
                             self.buf.insert(*index, outcome);
                         }
                         continue;
                     }
+                } else {
+                    return Some(Err(*next));
                 }
             }
             return None;
@@ -70,7 +72,9 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
 
 pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized {
     /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
-    fn take_ordered(self, indices: Vec<usize>) -> impl Iterator<Item = Outcome<W>>
+    /// Each item in the iterator is either an `Ok(Outcome)` or an `Err(index)` of a task that was
+    /// not processed (e.g., because the hive was dropped or poisoned).
+    fn take_ordered(self, indices: Vec<usize>) -> impl Iterator<Item = Result<Outcome<W>, usize>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
@@ -78,6 +82,8 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     }
 
     /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
+    ///
+    /// This method panics if any of the outcomes represent unprocessed or panicked tasks.
     fn into_results(self) -> impl Iterator<Item = TaskResult<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
@@ -87,6 +93,8 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 
     /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
     /// `TaskResult`s.
+    ///
+    /// This method panics if any of the outcomes represent unprocessed or panicked tasks.
     fn take_results(self, indices: Vec<usize>) -> impl Iterator<Item = TaskResult<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
@@ -100,14 +108,21 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     }
 
     /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
+    ///
+    /// This method panics if any of the outcomes represent unprocessed or panicked tasks.
     fn take_ordered_results(self, indices: Vec<usize>) -> impl Iterator<Item = TaskResult<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(Outcome::into)
+        OutcomeIterator::new(self, indices).map(|result| match result {
+            Ok(outcome) => outcome.into(),
+            Err(index) => panic!("Task was not processed: {}", index),
+        })
     }
 
     /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
+    ///
+    /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
     fn into_outputs(self) -> impl Iterator<Item = W::Output>
     where
         <Self as IntoIterator>::IntoIter: 'static,
@@ -117,6 +132,8 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 
     /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
     /// output values.
+    ///
+    /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
     fn take_outputs(self, indices: Vec<usize>) -> impl Iterator<Item = W::Output>
     where
         <Self as IntoIterator>::IntoIter: 'static,
@@ -130,11 +147,16 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     }
 
     /// Consumes this iterator and returns an ordered iterator over a maximum of `n` output values.
+    ///
+    /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
     fn take_ordered_outputs(self, indices: Vec<usize>) -> impl Iterator<Item = W::Output>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(Outcome::unwrap)
+        OutcomeIterator::new(self, indices).map(|result| match result {
+            Ok(outcome) => outcome.unwrap(),
+            Err(index) => panic!("Task was not processed: {}", index),
+        })
     }
 }
 

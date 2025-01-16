@@ -28,20 +28,34 @@
 // - `Identity<T>`, which simply returns the input value.
 
 use super::{
-    outcome_channel, Config, Hive, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
-    OutcomeIteratorExt, OutcomeSender, OutcomesDeref, Shared,
+    outcome_channel, Config, Hive, HiveInner, Husk, Outcome, OutcomeBatch, OutcomeDerefStore,
+    OutcomeIteratorExt, OutcomeSender, OutcomesDeref, Shared, TaskSender,
 };
 use crate::atomic::Atomic;
 use crate::bee::{Queen, Worker};
 use crossbeam_utils::Backoff;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::{mpsc, Arc};
-use std::thread;
+use std::thread::{self, JoinHandle};
+
+#[derive(thiserror::Error, Debug)]
+pub enum SpawnError {
+    #[error("Failed to spawn thread: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("The hive has been poisoned")]
+    Poisoned,
+}
 
 impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Spawns a new worker thread.
-    fn spawn(index: usize, shared: Arc<Shared<W, Q>>) {
+    fn spawn(index: usize, shared: Arc<Shared<W, Q>>) -> Result<JoinHandle<()>, SpawnError> {
+        // do not start any new threads if the hive is poisoned
+        if shared.is_poisoned() {
+            return Err(SpawnError::Poisoned);
+        }
+
         shared
             .thread_builder()
             .spawn(move || {
@@ -50,34 +64,55 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
                 let sentinel = Sentinel::new(index, Arc::clone(&shared));
                 let mut worker = shared.create_worker();
                 // Get the next task - increments the counter
-                while let Some(task) = shared.next_task() {
+                while let Ok(task) = shared.next_task() {
                     // Execute the task until it succeeds or we reach maximum retries - this
                     // should be the only place where a panic might occur
                     Self::execute(task, &mut worker, &shared);
                     // Finish the task - decrements the counter and notifies other threads
+                    //dbg!("Finish task in worker thread: {}", index);
                     shared.finish_task(false);
                 }
                 // Cancel the sentinel if the receiver hung up, thus avoiding the thread
                 // being restarted when it is dropped
                 sentinel.cancel();
             })
-            .unwrap();
+            .map_err(SpawnError::Spawn)
     }
 
-    pub(super) fn new(config: Config, queen: Q) -> Self {
+    pub(super) fn new(config: Config, queen: Q) -> Result<Self, SpawnError> {
         let num_threads = config.num_threads.get().unwrap_or(0);
         let (task_tx, task_rx) = mpsc::channel();
         let shared = Arc::new(Shared::new(config.into_sync(), queen, task_rx));
-        let hive = Self { task_tx, shared };
-        hive.brood(0..num_threads);
-        hive
+        let hive = Self(Some(HiveInner { task_tx, shared }));
+        let (_ok, err): (Vec<_>, Vec<_>) = hive
+            .try_brood(0..num_threads)
+            .into_iter()
+            .partition(Result::is_ok);
+        // TODO: do something with join handles?
+        if err.is_empty() {
+            Ok(hive)
+        } else {
+            Err(err.into_iter().next().unwrap().err().unwrap())
+        }
+    }
+
+    #[inline]
+    fn task_tx(&self) -> &TaskSender<W> {
+        &self.0.as_ref().unwrap().task_tx
+    }
+
+    #[inline]
+    fn shared(&self) -> &Arc<Shared<W, Q>> {
+        &self.0.as_ref().unwrap().shared
     }
 
     /// Increases the number of worker threads by `num_threads`.
-    pub fn grow(&self, num_threads: usize) {
+    pub fn grow(&self, num_threads: usize) -> usize {
         if num_threads > 0 {
-            let start = self.shared.add_threads(num_threads);
-            self.brood(start..start + num_threads);
+            let start = self.shared().add_threads(num_threads);
+            self.brood(start..start + num_threads)
+        } else {
+            0
         }
     }
 
@@ -85,36 +120,47 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// of new threads spun up (which may be `0`).
     pub fn use_all_cores(&self) -> usize {
         let num_threads = num_cpus::get();
-        let cur_threads = self.shared.ensure_threads(num_threads);
+        let cur_threads = self.shared().ensure_threads(num_threads);
         if num_threads > cur_threads {
-            self.brood(cur_threads..num_threads);
-            num_threads - cur_threads
+            self.brood(cur_threads..num_threads)
         } else {
             0
         }
     }
 
-    /// Spawns a worker thread for each thread index in the specified range. Each worker thread
-    /// gets access to this `Hive`'s shared data.
-    fn brood(&self, thread_indices: Range<usize>) {
-        for thread_index in thread_indices {
-            Self::spawn(thread_index, Arc::clone(&self.shared));
-        }
+    /// Trys to spawn a worker thread for each thread index in the specified range. Returns the
+    /// number of threads that were successfully spawned.
+    fn brood(&self, thread_indices: Range<usize>) -> usize {
+        // TODO: do something with errors?
+        let (ok, _err): (Vec<_>, Vec<_>) = self
+            .try_brood(thread_indices)
+            .into_iter()
+            .partition(Result::is_ok);
+        return ok.len();
+    }
+
+    /// Trys to spawn a worker thread for each thread index in the specified range. Each worker
+    /// thread gets access to this `Hive`'s shared data. Returns a `Vec` of results, where each
+    /// result is either a `JoinHandle` or a `SpawnError`.
+    fn try_brood(&self, thread_indices: Range<usize>) -> Vec<Result<JoinHandle<()>, SpawnError>> {
+        thread_indices
+            .map(|thread_index| Self::spawn(thread_index, Arc::clone(self.shared())))
+            .collect::<Vec<_>>()
     }
 
     /// Sends one input to the `Hive` for processing and returns its index. The `Outcome`
     /// of the task is sent to the `outcome_tx` channel if provided, otherwise it is retained in
     /// the `Hive` for later retrieval.
     ///
-    /// This method is called by all the `*apply*` methotds.
+    /// This method is called by all the `*apply*` methods.
     fn send_one(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> usize {
         #[cfg(debug_assertions)]
         if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
-        let task = self.shared.prepare_task(input, outcome_tx);
+        let task = self.shared().prepare_task(input, outcome_tx);
         let index = task.index();
-        self.task_tx
+        self.task_tx()
             .send(task)
             .expect("unable to send task into queue");
         index
@@ -123,12 +169,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Sends one `input` to the `Hive` for procesing and returns the result, blocking until the
     /// result is available.
     ///
+    /// Returns an error with the task index if the `Hive` is poisoned or is dropped before the
+    /// task finishes processing - it may still be possible to retrieve the unprocessed input.
+    ///
     /// Creates a channel to send the input and receive the outcome. Panics if the channel hangs
     /// up before the outcome is received.
-    pub fn apply(&self, input: W::Input) -> Outcome<W> {
+    pub fn apply(&self, input: W::Input) -> Result<Outcome<W>, usize> {
         let (tx, rx) = outcome_channel();
-        self.send_one(input, Some(tx));
-        rx.recv().expect("channel hung up unexpectedly")
+        let index = self.send_one(input, Some(tx));
+        rx.recv().map_err(|_| index)
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its index. The `Outcome` of the
@@ -160,15 +209,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
+        let task_tx = self.task_tx();
         let iter = batch.into_iter();
         let (batch_size, _) = iter.size_hint();
-        self.shared
+        self.shared()
             .prepare_batch(batch_size, iter, outcome_tx)
             .map(|task| {
                 let index = task.index();
-                self.task_tx
-                    .send(task)
-                    .expect("unable to send task into queue");
+                task_tx.send(task).expect("unable to send task into queue");
                 index
             })
             .collect()
@@ -177,8 +225,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
     /// `Outcome`s in the same order as the inputs.
     ///
+    /// Each item in the iterator will be an `Ok(Outcome)` or an `Err(index)` if the task with that
+    /// index was not processed due to the `Hive` being dropped or poisoned.
+    ///
     /// This method is more efficient than `map_iter` when the input is an `ExactSizeIterator`.
-    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
+    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Result<Outcome<W>, usize>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
@@ -191,8 +242,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
     /// `Outcome`s.
     ///
-    /// The `Outcome`s will be sent in the order they are completed. Use `swarm` to instead
-    /// receive the `Outcome`s in the order they were submitted.
+    /// The `Outcome`s will be sent in the order they are completed; use `swarm` to instead receive
+    /// the `Outcome`s in the order they were submitted. The iterator may not yield `Outcome`s for
+    /// all tasks in the case that the `Hive` is dropped or poisoned.
     ///
     /// This method is more efficient than `map_unordered` when the input is an
     /// `ExactSizeIterator`.
@@ -233,11 +285,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Iterates over `inputs` and sends each one to the `Hive` for processing and returns an
     /// iterator over the `Outcome`s in the same order as the inputs.
     ///
+    /// Each item in the iterator will be an `Ok(Outcome)` or an `Err(index)` if the task with that
+    /// index was not processed due to the `Hive` being dropped or poisoned.
+    ///
     /// `swarm` should be preferred when `inputs` is an `ExactSizeIterator`.
     pub fn map(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = Outcome<W>> {
+    ) -> impl Iterator<Item = Result<Outcome<W>, usize>> {
         let (tx, rx) = outcome_channel();
         let indices: Vec<_> = inputs
             .into_iter()
@@ -248,6 +303,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Iterates over `inputs`, sends each one to the `Hive` for processing, and returns an
     /// iterator over the `Outcome`s in order they become available.
+    ///
+    /// The iterator may not yield `Outcome`s for all tasks in the case that the `Hive` is dropped
+    /// or poisoned.
     ///
     /// `swarm_unordered` should be preferred when `inputs` is an `ExactSizeIterator`.
     pub fn map_unordered(
@@ -292,7 +350,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing.
-    /// This function returns an `OutcomeBatch` of the outputs and the final state value.
+    ///
+    /// This function returns an `OutcomeBatch` of the outputs and the final state value. The
+    /// `OutcomeBatch` may not contain `Outcome`s for all items in the case that the `Hive` is
+    /// dropped or poisoned.
     pub fn scan<St, T, F>(
         &self,
         items: impl IntoIterator<Item = T>,
@@ -310,8 +371,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
-    /// or an error. This function returns an `OutcomeBatch` of the outputs and the final state
-    /// value, or an error if any calls to `f` resulted in an error.
+    /// or an error.
+    ///
+    /// This function returns an `OutcomeBatch` of the outputs and the final state value, or an
+    /// error if any calls to `f` resulted in an error. The `OutcomeBatch` may not contain
+    /// `Outcome`s for all items in the case that the `Hive` is dropped or poisoned.
     pub fn try_scan<St, T, E, F>(
         &self,
         items: impl IntoIterator<Item = T>,
@@ -422,22 +486,17 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Returns the number of worker threads, i.e., the maximum number of tasks that can be
     /// processed concurrently.
     pub fn num_threads(&self) -> usize {
-        self.shared.config.num_threads.get_or_default()
+        self.shared().config.num_threads.get_or_default()
     }
 
-    /// Returns the number of tasks currently queued for processing.
-    pub fn num_tasks_queued(&self) -> usize {
-        self.shared.num_tasks_queued.get()
-    }
-
-    /// Returns the number of tasks currently being processed.
-    pub fn num_tasks_active(&self) -> usize {
-        self.shared.num_tasks_active.get()
+    /// Returns the number of tasks currently (queued for processing, being processed).
+    pub fn num_tasks(&self) -> (u64, u64) {
+        self.shared().num_tasks()
     }
 
     /// Returns the number of times one of this `Hive`'s worker threads has panicked.
     pub fn num_panics(&self) -> usize {
-        self.shared.num_panics.get()
+        self.shared().num_panics.get()
     }
 
     /// Sets the suspended flag, which notifies worker threads that they a) MAY terminate their
@@ -461,36 +520,34 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// # fn main() {
     /// let hive = Builder::new()
     ///     .num_threads(4)
-    ///     .build_with_default::<ThunkWorker<()>>();
+    ///     .build_with_default::<ThunkWorker<()>>()
+    ///     .unwrap();
     /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be started.
     /// // There should be 4 active tasks and 6 queued tasks.
     /// hive.suspend();
-    /// assert_eq!(hive.num_tasks_active(), 4);
-    /// assert_eq!(hive.num_tasks_queued(), 6);
+    /// assert_eq!(hive.num_tasks(), (6, 4));
     /// // Wait for active tasks to complete.
     /// hive.join();
-    /// assert_eq!(hive.num_tasks_active(), 0);
-    /// assert_eq!(hive.num_tasks_queued(), 6);
+    /// assert_eq!(hive.num_tasks(), (6, 0));
     /// hive.resume();
     /// // Wait for remaining tasks to complete.
     /// hive.join();
-    /// assert_eq!(hive.num_tasks_active(), 0);
-    /// assert_eq!(hive.num_tasks_queued(), 0);
+    /// assert_eq!(hive.num_tasks(), (0, 0));
     /// # }
     /// ```
     ///
     pub fn suspend(&self) {
-        self.shared.set_suspended(true);
+        self.shared().set_suspended(true);
     }
 
     /// Unsets the suspended flag, allowing worker threads to continue processing queued tasks.
     pub fn resume(&self) {
-        self.shared.set_suspended(false);
+        self.shared().set_suspended(false);
     }
 
     fn take_unprocessed_inputs(&self) -> impl ExactSizeIterator<Item = W::Input> {
-        self.shared
+        self.shared()
             .take_unprocessed()
             .into_iter()
             .map(|outcome| match outcome {
@@ -502,7 +559,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Resume this `Hive` and re-submit any unprocessed tasks for processing, with their results
     /// to be sent to `tx`. Returns a `Vec` of task indices that were resumed.
     pub fn resume_send(&self, outcome_tx: OutcomeSender<W>) -> Vec<usize> {
-        self.shared
+        self.shared()
             .set_suspended(false)
             .then(|| self.swarm_send(self.take_unprocessed_inputs(), outcome_tx))
             .unwrap_or_default()
@@ -511,7 +568,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Resume this `Hive` and re-submit any unprocessed tasks for processing, with their results
     /// to be stored in the queue. Returns a `Vec` of task indices that were resumed.
     pub fn resume_store(&self) -> Vec<usize> {
-        self.shared
+        self.shared()
             .set_suspended(false)
             .then(|| self.swarm_store(self.take_unprocessed_inputs()))
             .unwrap_or_default()
@@ -519,51 +576,75 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Returns `true` if the cancelled flag is set.
     pub fn is_suspended(&self) -> bool {
-        self.shared.is_suspended()
+        self.shared().is_suspended()
     }
 
     /// Returns any stored `Outcome`s.
     pub fn take_stored(&self) -> HashMap<usize, Outcome<W>> {
-        self.shared.take_outcomes()
+        self.shared().take_outcomes()
     }
 
     /// Blocks this thread until all tasks finish.
     pub fn join(&self) {
-        self.shared.wait_on_done();
+        self.shared().wait_on_done();
     }
 
     /// Consumes this `Hive` and returns a `Husk` containing the remnants of this `Hive`, including
-    /// any stored task outcomes, and all the data necessary to create a new `Hive`. If `join` is
-    /// `true`, this method will block until all tasks finish before consuming this `Hive`,
-    /// otherwise the
-    pub fn into_husk(self) -> Husk<W, Q> {
-        self.join();
-        drop(self.task_tx);
-        self.shared.no_work_notify_all();
+    /// any stored task outcomes, and all the data necessary to create a new `Hive`.
+    ///
+    /// This method first joins on the `Hive` to wait for all tasks to finish.
+    ///
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method will
+    /// return `None` since it cannot take exclusive ownership of the shared data.
+    pub fn into_husk(mut self) -> Option<Husk<W, Q>> {
+        if self.shared().num_referrers() > 1 {
+            return None;
+        }
+        // take the inner value and replace it with `None`
+        let inner = self.0.take().unwrap();
+        // wait for all tasks to finish
+        inner.shared.wait_on_done();
+        // drop the task sender so receivers will drop automatically
+        drop(inner.task_tx);
+        // wait for threads to drop
         let mut backoff = None::<Backoff>;
-        while Arc::strong_count(&self.shared) > 1 {
+        while Arc::strong_count(&inner.shared) > 1 {
             backoff.get_or_insert_with(Backoff::new).spin();
         }
-        let shared = match Arc::try_unwrap(self.shared) {
-            Ok(data) => data,
-            Err(_) => panic!("Arc::try_unwrap failed"),
-        };
-        shared.into_husk()
+        // take the shared data out of the Arc
+        let shared = Arc::into_inner(inner.shared).expect("Arc::try_unwrap failed");
+        // convert the shared data into a Husk
+        Some(shared.into_husk())
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> Clone for Hive<W, Q> {
     fn clone(&self) -> Self {
-        Self {
-            task_tx: self.task_tx.clone(),
-            shared: Arc::clone(&self.shared),
+        let inner = self.0.as_ref().unwrap();
+        self.shared().referrer_is_cloning();
+        Self(Some(HiveInner {
+            task_tx: inner.task_tx.clone(),
+            shared: Arc::clone(&inner.shared),
+        }))
+    }
+}
+
+impl<W: Worker, Q: Queen<Kind = W>> Debug for Hive<W, Q> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(inner) = self.0.as_ref() {
+            f.debug_struct("Hive")
+                .field("task_tx", &inner.task_tx)
+                .field("shared", &inner.shared)
+                .finish()
+        } else {
+            return f.write_str("Hive {}");
         }
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> PartialEq for Hive<W, Q> {
     fn eq(&self, other: &Hive<W, Q>) -> bool {
-        Arc::ptr_eq(&self.shared, &other.shared)
+        Arc::ptr_eq(&self.shared(), &other.shared())
     }
 }
 
@@ -571,15 +652,31 @@ impl<W: Worker, Q: Queen<Kind = W>> Eq for Hive<W, Q> {}
 
 impl<W: Worker, Q: Queen<Kind = W>> OutcomesDeref<W> for Hive<W, Q> {
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
-        self.shared.outcomes()
+        self.shared().outcomes()
     }
 
     fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>> {
-        self.shared.outcomes()
+        self.shared().outcomes()
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> OutcomeDerefStore<W> for Hive<W, Q> {}
+
+impl<W: Worker, Q: Queen<Kind = W>> Drop for Hive<W, Q> {
+    fn drop(&mut self) {
+        // if this Hive has already been turned into a Husk, it's inner value will be `None`
+        if let Some(inner) = self.0.as_ref() {
+            // reduce the referrer count
+            let _ = inner.shared.referrer_is_dropping();
+            // if this Hive is the only one with a (strong) pointer to the shared data, poison it
+            // to prevent any worker threads that still have access to the shared data from
+            // re-spawning.
+            if inner.shared.num_referrers() == 0 {
+                inner.shared.poison();
+            }
+        }
+    }
+}
 
 /// Sentinel for a worker thread. Until the sentinel is cancelled, it will respawn the worker
 /// thread if it panics.
@@ -608,8 +705,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
     fn drop(&mut self) {
         self.shared.finish_task(thread::panicking());
         // the thread is only respawned if the sentinel is active
-        if self.active {
-            Hive::spawn(self.thread_index, Arc::clone(&self.shared));
+        if self.active && !self.shared.is_poisoned() {
+            // nothing we can do if we fail to re-spawn the thread
+            let _ = Hive::spawn(self.thread_index, Arc::clone(&self.shared));
         }
     }
 }
@@ -644,7 +742,7 @@ mod affinity {
         /// The provided `affinity` specifies additional CPU core indices to which the worker threads
         /// may be pinned - these are added to the existing pool of core indicies (if any).
         pub fn grow_with_affinity(&self, num_threads: usize, affinity: &Cores) {
-            self.shared.add_core_affinity(affinity);
+            self.shared().add_core_affinity(affinity);
             self.grow(num_threads);
         }
 
@@ -653,7 +751,7 @@ mod affinity {
         ///
         /// Returns the number of new threads spun up (if any).
         pub fn use_all_cores_with_affinity(&self) -> usize {
-            self.shared.add_core_affinity(&Cores::all());
+            self.shared().add_core_affinity(&Cores::all());
             self.use_all_cores()
         }
     }
@@ -753,25 +851,23 @@ mod tests {
     fn test_suspend() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<ThunkWorker<()>>();
+            .build_with_default::<ThunkWorker<()>>()
+            .unwrap();
         let outcome_iter =
             hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
         // Allow first set of tasks to be started.
         thread::sleep(Duration::from_secs(1));
         // There should be 4 active tasks and 6 queued tasks.
         hive.suspend();
-        assert_eq!(hive.num_tasks_active(), 4);
-        assert_eq!(hive.num_tasks_queued(), 6);
+        assert_eq!(hive.num_tasks(), (6, 4));
         // Wait for active tasks to complete.
         hive.join();
-        assert_eq!(hive.num_tasks_active(), 0);
-        assert_eq!(hive.num_tasks_queued(), 6);
+        assert_eq!(hive.num_tasks(), (6, 0));
         hive.resume();
         // Wait for remaining tasks to complete.
         hive.join();
-        assert_eq!(hive.num_tasks_active(), 0);
-        assert_eq!(hive.num_tasks_queued(), 0);
-        let outputs: Vec<_> = outcome_iter.into_outputs().collect();
+        assert_eq!(hive.num_tasks(), (0, 0));
+        let outputs: Vec<_> = outcome_iter.map(Result::unwrap).into_outputs().collect();
         assert_eq!(outputs.len(), 10);
     }
 }

@@ -136,8 +136,9 @@
 //! // parallelize the computation of `double` on a range of numbers
 //! // over 4 threads, and sum the results
 //! const N: usize = 100;
-//! let sum_doubles: usize =
-//!     beekeeper::util::map(4, 0..N, double).into_iter().sum();
+//! let sum_doubles: usize = beekeeper::util::map(4, 0..N, double)
+//!     .into_iter()
+//!     .sum();
 //! println!("Sum of {} doubles: {}", N, sum_doubles);
 //! # }
 //! ```
@@ -154,7 +155,8 @@
 //! let hive = Builder::new()
 //!     .num_threads(4)
 //!     .thread_name("thunk_hive")
-//!     .build_with_default::<ThunkWorker<i32>>();
+//!     .build_with_default::<ThunkWorker<i32>>()
+//!     .unwrap();
 //!
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
@@ -279,7 +281,8 @@
 //! // build the Hive
 //! let hive = Builder::new()
 //!     .num_threads(4)
-//!     .build_default::<CatQueen>();
+//!     .build_default::<CatQueen>()
+//!     .unwrap();
 //!
 //! // prepare inputs
 //! let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
@@ -287,6 +290,7 @@
 //! // execute tasks and collect outputs
 //! let output = hive
 //!     .swarm(inputs)
+//!     .map(Result::unwrap)
 //!     .into_outputs()
 //!     .fold(String::new(), |mut a, b| {
 //!         a.push_str(&b);
@@ -300,7 +304,7 @@
 //!
 //! // shutdown the hive, use the Queen to wait on child processes, and
 //! // report errors
-//! let (mut queen, _outcomes) = hive.into_husk().into_parts();
+//! let (mut queen, _outcomes) = hive.into_husk().unwrap().into_parts();
 //! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
 //!     queen.wait_for_all().into_iter().partition(Result::is_ok);
 //! if !wait_err.is_empty() {

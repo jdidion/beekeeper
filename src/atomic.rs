@@ -5,9 +5,9 @@
 //! equivalents from the `atomic`, `atomig`, or `radium` crates, but none of those seem to be
 //! well-maintained at this point.
 
+pub use num::PrimInt;
 use paste::paste;
 use std::fmt::Debug;
-use std::ops::Add;
 pub use std::sync::atomic::Ordering;
 
 /// Trait for wrappers of [`atomic`](std::sync::atomic) types that provides a common API.
@@ -65,7 +65,15 @@ macro_rules! atomic {
 
             impl [<Atomic $type:camel>] {
                 #[allow(dead_code)]
-                pub fn new(value: $type, orderings: Orderings) -> Self {
+                pub fn new(value: $type) -> Self {
+                    Self {
+                        inner: value.into(),
+                        orderings: Orderings::default(),
+                    }
+                }
+
+                #[allow(dead_code)]
+                pub fn with_orderings(value: $type, orderings: Orderings) -> Self {
                     Self {
                         inner: value.into(),
                         orderings,
@@ -123,7 +131,7 @@ macro_rules! atomic {
 }
 
 /// Trait for wrappers of [`atomic`](std::sync::atomic) numeric types that provides a common API.
-pub trait AtomicNumber<T: Clone + Debug + Default>: Atomic<T> {
+pub trait AtomicInt<T: PrimInt + Debug + Default>: Atomic<T> {
     /// Mutably adds `rhs` to the current value of this `Atomic` using `AcqRel` ordering and
     /// returns the previous value.
     fn add(&self, rhs: T) -> T;
@@ -134,12 +142,12 @@ pub trait AtomicNumber<T: Clone + Debug + Default>: Atomic<T> {
 }
 
 /// Generates a wrapper for numeric type `T` that implements the `Atomic` and `AtomicNumber` traits.
-macro_rules! atomic_number {
+macro_rules! atomic_int {
     ($type:ident) => {
         paste! {
             atomic!($type);
 
-            impl AtomicNumber<$type> for [<Atomic $type:camel>] {
+            impl AtomicInt<$type> for [<Atomic $type:camel>] {
                 fn add(&self, value: $type) -> $type {
                     self.inner.fetch_add(value, self.orderings.fetch_add)
                 }
@@ -153,9 +161,9 @@ macro_rules! atomic_number {
 }
 
 atomic!(bool);
-atomic_number!(u32);
-atomic_number!(u64);
-atomic_number!(usize);
+atomic_int!(u32);
+atomic_int!(u64);
+atomic_int!(usize);
 
 /// Wrapper for [`RwLock`](parking_lot::RwLock) that implements the `Atomic` trait. This enables
 /// any type that is `Clone + Default` to be used in an `Atomic` context.
@@ -301,8 +309,8 @@ pub enum MutError {
 
 impl<P, A> AtomicOption<P, A>
 where
-    P: Copy + Debug + Default + Add<P, Output = P>,
-    A: AtomicNumber<P>,
+    P: PrimInt + Debug + Default,
+    A: AtomicInt<P>,
 {
     /// If this is a `Sync` variant whose value is `Some`, updates the value to be the sum of
     /// the current value and `value` and returns the previous value. Otherwise returns a
@@ -318,8 +326,8 @@ where
 
 impl<P, A> AtomicOption<P, A>
 where
-    P: Copy + Debug + Default + PartialOrd<P>,
-    A: AtomicNumber<P>,
+    P: PrimInt + Debug + Default,
+    A: AtomicInt<P>,
 {
     /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
     /// current value and `rhs` and returns the previous value. Otherwise returns a `MutError`.

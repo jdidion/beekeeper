@@ -1,6 +1,6 @@
 use super::{
     Builder, Config, Hive, Outcome, OutcomeBatch, OutcomeDerefStore, OutcomeSender, OutcomeStore,
-    Outcomes, OutcomesDeref,
+    Outcomes, OutcomesDeref, SpawnError,
 };
 use crate::bee::{Queen, Worker};
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Consumes this `Husk` and returns a new `Hive` with the same configuration as the one that
     /// produced this `Husk`.
-    pub fn into_hive(self) -> Hive<W, Q> {
+    pub fn into_hive(self) -> Result<Hive<W, Q>, SpawnError> {
         self.as_builder().build(self.queen)
     }
 
@@ -69,8 +69,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
     /// produced this `Husk`, and queues all the `Outcome::Unprocessed` values. The results will
     /// be sent to `tx`. Returns the new `Hive` and the indices of the tasks that were queued.
+    ///
+    /// This method panics if there is an error creating the new `Hive`.
     pub fn into_hive_swarm_unprocessed_to(self, tx: OutcomeSender<W>) -> (Hive<W, Q>, Vec<usize>) {
-        let hive = self.as_builder().build(self.queen);
+        let hive = self.as_builder().build(self.queen).unwrap();
         let unprocessed = Self::collect_unprocessed(self.outcomes);
         let indices = hive.swarm_send(unprocessed, tx);
         (hive, indices)
@@ -80,8 +82,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// produced this `Husk`, and queues all the `Outcome::Unprocessed` values. The results will
     /// be retained in the new `Hive` for later retrieval. Returns the new `Hive` and the indices
     /// of the tasks that were queued.
+    ///
+    /// This method panics if there is an error creating the new `Hive`.
     pub fn into_hive_swarm_unprocessed_store(self) -> (Hive<W, Q>, Vec<usize>) {
-        let hive = self.as_builder().build(self.queen);
+        let hive = self.as_builder().build(self.queen).unwrap();
         let unprocessed = Self::collect_unprocessed(self.outcomes);
         let indices = hive.swarm_store(unprocessed);
         (hive, indices)
@@ -124,11 +128,12 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>>()
+            .unwrap();
         let mut indices = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
-        let mut husk = hive.into_husk();
+        let mut husk = hive.into_husk().unwrap();
         assert!(husk.has_unprocessed());
         for i in indices.iter() {
             assert!(husk.get(*i).unwrap().is_unprocessed());
@@ -149,16 +154,17 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>>()
+            .unwrap();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.into_husk();
+        let husk1 = hive1.into_husk().unwrap();
         let (hive2, _) = husk1.into_hive_swarm_unprocessed_store();
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
-        let husk2 = hive2.into_husk();
+        let husk2 = hive2.into_husk().unwrap();
         assert!(!husk2.has_unprocessed());
         assert!(husk2.has_successes());
         assert_eq!(husk2.iter_successes().count(), 10);
@@ -169,20 +175,22 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>>()
+            .unwrap();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.into_husk();
+        let husk1 = hive1.into_husk().unwrap();
         let (tx, rx) = outcome_channel();
         let (hive2, indices) = husk1.into_hive_swarm_unprocessed_to(tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
-        let husk2 = hive2.into_husk();
+        let husk2 = hive2.into_husk().unwrap();
         assert!(husk2.is_empty());
         let mut outputs = rx
             .take_ordered(indices)
+            .map(Result::unwrap)
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs.sort();
@@ -193,10 +201,11 @@ mod tests {
     fn test_into_result() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>>()
+            .unwrap();
         hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
-        let mut outputs = hive.into_husk().into_parts().1.unwrap();
+        let mut outputs = hive.into_husk().unwrap().into_parts().1.unwrap();
         outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }
@@ -206,12 +215,13 @@ mod tests {
     fn test_into_result_panic() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<PunkWorker<u8>>();
+            .build_with_default::<PunkWorker<u8>>()
+            .unwrap();
         hive.map_store(
             (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );
         hive.join();
-        let (_, result) = hive.into_husk().into_parts();
+        let (_, result) = hive.into_husk().unwrap().into_parts();
         let _ = result.ok_or_unwrap_errors(true);
     }
 }
