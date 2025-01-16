@@ -29,7 +29,7 @@
 
 use super::{
     outcome_channel, Config, Hive, HiveInner, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
-    OutcomeSender, OutcomeStore, OutcomesDeref, Shared, TaskSender,
+    OutcomeSender, OutcomeStore, DerefOutcomes, Shared, TaskSender,
 };
 use crate::atomic::Atomic;
 use crate::bee::{Queen, Worker};
@@ -661,7 +661,7 @@ impl<W: Worker, Q: Queen<Kind = W>> PartialEq for Hive<W, Q> {
 
 impl<W: Worker, Q: Queen<Kind = W>> Eq for Hive<W, Q> {}
 
-impl<W: Worker, Q: Queen<Kind = W>> OutcomesDeref<W> for Hive<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>> DerefOutcomes<W> for Hive<W, Q> {
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
         self.shared().outcomes()
     }

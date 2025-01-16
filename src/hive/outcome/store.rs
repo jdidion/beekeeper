@@ -10,20 +10,20 @@ pub mod sealed {
         ops::{Deref, DerefMut},
     };
 
-    pub trait Outcomes<W: Worker> {
-        /// Returns an owned map of task index to `Outcome`.
-        fn outcomes(self) -> HashMap<usize, Outcome<W>>;
-
-        /// Returns a read-only reference to a map of task index to `Outcome`.
-        fn outcomes_ref(&self) -> &HashMap<usize, Outcome<W>>;
-    }
-
-    pub trait OutcomesDeref<W: Worker> {
+    pub trait DerefOutcomes<W: Worker> {
         /// Returns a read-only reference to a map of task index to `Outcome`.
         fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>>;
 
         /// Returns a mutable reference to a map of task index to `Outcome`.
         fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>>;
+    }
+
+    pub trait OwnedOutcomes<W: Worker>: Sized {
+        /// Returns an owned map of task index to `Outcome`.
+        fn outcomes(self) -> HashMap<usize, Outcome<W>>;
+
+        /// Returns a read-only reference to a map of task index to `Outcome`.
+        fn outcomes_ref(&self) -> &HashMap<usize, Outcome<W>>;
     }
 }
 
@@ -31,7 +31,7 @@ pub mod sealed {
 /// first group of methods provided by this trait only require dereferencing the underlying map,
 /// while the second group of methods require the ability to borrow or take ownership of the
 /// underlying map (and thus, are not in scope for `Hive`).
-pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
+pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     fn len(&self) -> usize {
         self.outcomes_deref().len()
     }
@@ -213,7 +213,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// Consumes this store and returns an iterator over the outcomes in index order.
     fn into_iter(self) -> impl Iterator<Item = Outcome<W>>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes().into_values()
     }
@@ -221,7 +221,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// Returns the successes as a `Vec` if there are no errors, otherwise panics.
     fn unwrap(self) -> Vec<W::Output>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         assert!(
             !(self.has_failures() || self.has_unprocessed()),
@@ -240,7 +240,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// they cause this method to panic.
     fn ok_or_unwrap_errors(self, drop_unprocessed: bool) -> Result<Vec<W::Output>, Vec<W::Error>>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         assert!(
             drop_unprocessed || !self.has_unprocessed(),
@@ -262,7 +262,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// inputs are returned in index order, otherwise they are unordered.
     fn into_unprocessed(self, ordered: bool) -> Vec<W::Input>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         let values = self
             .outcomes()
@@ -287,7 +287,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// Returns the stored `Outcome` associated with the given index, if any.
     fn get(&self, index: usize) -> Option<&Outcome<W>>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref().get(&index)
     }
@@ -296,7 +296,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// that were queued but not yet processed when the `Hive` was dropped.
     fn iter_unprocessed(&self) -> impl Iterator<Item = (&usize, &W::Input)>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
@@ -310,7 +310,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// that were successfully processed but not sent to any output channel.
     fn iter_successes(&self) -> impl Iterator<Item = (&usize, &W::Output)>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
@@ -324,7 +324,7 @@ pub trait OutcomeStore<W: Worker>: sealed::OutcomesDeref<W> {
     /// that were successfully processed but not sent to any output channel.
     fn iter_failures(&self) -> impl Iterator<Item = &Outcome<W>>
     where
-        Self: sealed::Outcomes<W> + Sized,
+        Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()

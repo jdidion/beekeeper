@@ -9,4 +9,4 @@ pub use iter::OutcomeIteratorExt;
 pub use outcome::Outcome;
 pub use store::OutcomeStore;
 
-pub(super) use store::sealed::{Outcomes, OutcomesDeref};
+pub(super) use store::sealed::{DerefOutcomes, OwnedOutcomes};

@@ -1,6 +1,6 @@
 use super::{
-    Builder, Config, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore, Outcomes,
-    OutcomesDeref, SpawnError,
+    Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore,
+    OwnedOutcomes, SpawnError,
 };
 use crate::bee::{Queen, Worker};
 use std::collections::HashMap;
@@ -92,7 +92,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> OutcomesDeref<W> for Husk<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>> DerefOutcomes<W> for Husk<W, Q> {
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
         &self.outcomes
     }
@@ -102,7 +102,7 @@ impl<W: Worker, Q: Queen<Kind = W>> OutcomesDeref<W> for Husk<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> Outcomes<W> for Husk<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>> OwnedOutcomes<W> for Husk<W, Q> {
     fn outcomes(self) -> HashMap<usize, Outcome<W>> {
         self.outcomes
     }

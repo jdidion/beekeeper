@@ -1,4 +1,4 @@
-use super::{Outcome, OutcomeStore, Outcomes, OutcomesDeref};
+use super::{Outcome, OutcomeStore, DerefOutcomes, OwnedOutcomes};
 use crate::bee::Worker;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -23,7 +23,7 @@ impl<W: Worker, I: IntoIterator<Item = Outcome<W>>> From<I> for OutcomeBatch<W> 
     }
 }
 
-impl<W: Worker> Outcomes<W> for OutcomeBatch<W> {
+impl<W: Worker> OwnedOutcomes<W> for OutcomeBatch<W> {
     fn outcomes(self) -> HashMap<usize, Outcome<W>> {
         self.0
     }
@@ -33,7 +33,7 @@ impl<W: Worker> Outcomes<W> for OutcomeBatch<W> {
     }
 }
 
-impl<W: Worker> OutcomesDeref<W> for OutcomeBatch<W> {
+impl<W: Worker> DerefOutcomes<W> for OutcomeBatch<W> {
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
         &self.0
     }

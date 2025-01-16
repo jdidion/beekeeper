@@ -35,7 +35,7 @@ pub use outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
 use self::counter::DualCounter;
-use self::outcome::{Outcomes, OutcomesDeref};
+use self::outcome::{DerefOutcomes, OwnedOutcomes};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
 use gate::{Gate, PhasedGate};
@@ -163,7 +163,7 @@ mod test {
         Worker, WorkerResult,
     };
     use crate::channel::{Message, ReceiverExt};
-    use crate::hive::outcome::OutcomesDeref;
+    use crate::hive::outcome::DerefOutcomes;
     use std::{
         fmt::Debug,
         io::{self, BufRead, BufReader, Write},
