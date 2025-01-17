@@ -28,8 +28,8 @@
 // - `Identity<T>`, which simply returns the input value.
 
 use super::{
-    outcome_channel, Config, Hive, HiveInner, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
-    OutcomeSender, OutcomeStore, DerefOutcomes, Shared, TaskSender,
+    outcome_channel, Config, DerefOutcomes, Hive, HiveInner, Husk, Outcome, OutcomeBatch,
+    OutcomeIteratorExt, OutcomeSender, OutcomeStore, Shared, TaskSender,
 };
 use crate::atomic::Atomic;
 use crate::bee::{Queen, Worker};
@@ -136,7 +136,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             .try_brood(thread_indices)
             .into_iter()
             .partition(Result::is_ok);
-        return ok.len();
+        ok.len()
     }
 
     /// Trys to spawn a worker thread for each thread index in the specified range. Each worker
@@ -648,14 +648,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Debug for Hive<W, Q> {
                 .field("shared", &inner.shared)
                 .finish()
         } else {
-            return f.write_str("Hive {}");
+            f.write_str("Hive {}")
         }
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> PartialEq for Hive<W, Q> {
     fn eq(&self, other: &Hive<W, Q>) -> bool {
-        Arc::ptr_eq(&self.shared(), &other.shared())
+        Arc::ptr_eq(self.shared(), other.shared())
     }
 }
 

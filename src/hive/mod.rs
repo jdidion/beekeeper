@@ -83,7 +83,6 @@ use retry_prelude::*;
 /// dropping the `Hive`, the `try_into_husk()` method can be called to retrieve all of the `Hive` data
 /// necessary to build a new `Hive`, as well as any stored outcomes (those that were not sent to an
 /// output channel).
-
 pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
 
 struct HiveInner<W: Worker, Q: Queen<Kind = W>> {
