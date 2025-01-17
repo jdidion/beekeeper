@@ -394,16 +394,12 @@ mod test {
         }
 
         // queued tasks will not be processed after the hive is dropped, so we need to wait to make
-        // sure that all threads tasks have started and are waiting on the barrier
-        thread::sleep(Duration::from_secs(1));
-
-        drop(hive);
-
-        // If are were any unscheduled tasks after the drop, the barrier count won't be reached and
-        // the following wait will cause the main thread to hang, so we have to make sure it will
-        // succeed.
+        // sure that all tasks have started and are waiting on the barrier
         // TODO: find a Barrier implementation with try_wait() semantics
+        thread::sleep(Duration::from_secs(1));
         assert_eq!(waiter_count.load(Ordering::SeqCst), TEST_TASKS);
+        
+        drop(hive);
 
         // Kick off the failure.
         waiter.wait();
