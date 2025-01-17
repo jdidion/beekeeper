@@ -380,17 +380,30 @@ mod test {
     fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
         let hive = thunk_hive(TEST_TASKS);
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
+        let waiter_count = Arc::new(AtomicUsize::new(0));
 
         // Panic all the existing threads in a bit.
         for _ in 0..TEST_TASKS {
             let waiter = waiter.clone();
+            let waiter_count = waiter_count.clone();
             hive.apply_store(Thunk::of(move || {
+                waiter_count.fetch_add(1, Ordering::SeqCst);
                 waiter.wait();
                 panic!("intentional panic");
             }));
         }
 
+        // queued tasks will not be processed after the hive is dropped, so we need to wait to make
+        // sure that all threads tasks have started and are waiting on the barrier
+        thread::sleep(Duration::from_secs(1));
+
         drop(hive);
+
+        // If are were any unscheduled tasks after the drop, the barrier count won't be reached and
+        // the following wait will cause the main thread to hang, so we have to make sure it will
+        // succeed.
+        // TODO: find a Barrier implementation with try_wait() semantics
+        assert_eq!(waiter_count.load(Ordering::SeqCst), TEST_TASKS);
 
         // Kick off the failure.
         waiter.wait();
