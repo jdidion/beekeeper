@@ -1,4 +1,4 @@
-use super::{Outcome, OutcomeStore, DerefOutcomes, OwnedOutcomes};
+use super::{DerefOutcomes, Outcome, OutcomeStore, OwnedOutcomes};
 use crate::bee::Worker;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
