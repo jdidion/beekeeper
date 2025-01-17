@@ -382,7 +382,7 @@ mod test {
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
         let waiter_count = Arc::new(AtomicUsize::new(0));
 
-        // Panic all the existing threads in a bit.
+        // panic all the existing threads in a bit
         for _ in 0..TEST_TASKS {
             let waiter = waiter.clone();
             let waiter_count = waiter_count.clone();
@@ -398,10 +398,10 @@ mod test {
         // TODO: find a Barrier implementation with try_wait() semantics
         thread::sleep(Duration::from_secs(1));
         assert_eq!(waiter_count.load(Ordering::SeqCst), TEST_TASKS);
-        
+
         drop(hive);
 
-        // Kick off the failure.
+        // unblock the tasks and allow them to panic
         waiter.wait();
     }
 
