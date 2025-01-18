@@ -4,15 +4,15 @@ use std::marker::PhantomData;
 
 /// A `Worker` that simply returns the input.
 #[derive(Debug)]
-pub struct Echo<T>(PhantomData<T>);
+pub struct EchoWorker<T>(PhantomData<T>);
 
-impl<T> Default for Echo<T> {
+impl<T> Default for EchoWorker<T> {
     fn default() -> Self {
-        Echo(PhantomData)
+        EchoWorker(PhantomData)
     }
 }
 
-impl<T: Send + Debug + 'static> Worker for Echo<T> {
+impl<T: Send + Debug + 'static> Worker for EchoWorker<T> {
     type Input = T;
     type Output = T;
     type Error = ();
@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn test_echo() {
-        let mut echo = Echo::<u8>::default();
+        let mut echo = EchoWorker::<u8>::default();
         assert_eq!(1, echo.apply(1, &Context::empty()).unwrap());
     }
 }

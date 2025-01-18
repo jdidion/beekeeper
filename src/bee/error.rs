@@ -1,3 +1,4 @@
+//! Error types that may be returned by `Worker`s.
 use crate::panic::Panic;
 use std::fmt::Debug;
 
@@ -53,6 +54,39 @@ impl<I, E> ApplyError<I, E> {
             Self::Cancelled { .. } => None,
             Self::Panic { input: _, payload } => payload.resume(),
         }
+    }
+}
+
+/// Error that can result from applying a `RefWorker`'s function to an input.
+#[derive(thiserror::Error, Debug)]
+pub enum ApplyRefError<E> {
+    /// The task failed due to a fatal error that cannot be retried.
+    #[error("Error is not retryable")]
+    Fatal(E),
+    /// The task failed due to a (possibly) transient error and can be retried.
+    #[error("Error is retryable")]
+    Retryable(E),
+    /// The task was cancelled before it completed.
+    #[error("Task was cancelled")]
+    Cancelled,
+}
+
+impl<E> ApplyRefError<E> {
+    pub(super) fn into_apply_error<I>(self, input: I) -> ApplyError<I, E> {
+        match self {
+            Self::Fatal(error) => ApplyError::Fatal {
+                input: Some(input),
+                error,
+            },
+            Self::Retryable(error) => ApplyError::Retryable { input, error },
+            Self::Cancelled => ApplyError::Cancelled { input },
+        }
+    }
+}
+
+impl<E> From<E> for ApplyRefError<E> {
+    fn from(e: E) -> Self {
+        ApplyRefError::Fatal(e)
     }
 }
 

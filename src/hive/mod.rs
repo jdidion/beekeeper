@@ -1523,7 +1523,7 @@ mod retry_tests {
                 }),
                 2 => Err(ApplyError::Fatal {
                     input: Some(i),
-                    error: "NotRetryable".into(),
+                    error: "Fatal".into(),
                 }),
                 _ => unreachable!(),
             }

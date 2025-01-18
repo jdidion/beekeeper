@@ -483,6 +483,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             })
     }
 
+    /// Returns the `MutexGuard` for the `Queen`.
+    ///
+    /// Note that the `Queen` will remain locked until the returned guard is dropped, and that
+    /// locking the `Queen` prevents new worker threads from being started.
+    pub fn queen(&self) -> impl Deref<Target = Q> + '_ {
+        self.shared().queen.lock()
+    }
+
     /// Returns the number of worker threads, i.e., the maximum number of tasks that can be
     /// processed concurrently.
     pub fn num_threads(&self) -> usize {

@@ -1,3 +1,4 @@
+//! The Queen bee trait.
 use super::Worker;
 use std::marker::PhantomData;
 

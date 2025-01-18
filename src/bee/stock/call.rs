@@ -81,7 +81,7 @@ impl<I, O, F: FnMut(I) -> O + Clone + 'static> From<F> for Caller<I, O, F> {
 }
 
 /// A `Caller` that executes its function once on each input. The input value is consumed by the
-/// function. If the function returns an error, it is wrapped in `ApplyError::NotRetryable`.
+/// function. If the function returns an error, it is wrapped in `ApplyError::Fatal`.
 ///
 /// If ownership of the input value is not required, consider using `RefCaller` instead.
 pub struct OnceCaller<I, O, E, F>(Callable<I, O, E, F>);
@@ -137,9 +137,9 @@ where
 }
 
 /// A `Caller` that executes its function once on a reference to the input. If the function
-/// returns an error, it is wrapped in `ApplyError::NotRetryable`.
+/// returns an error, it is wrapped in `ApplyError::Fatal`.
 ///
-/// The benefit of using `RefCaller` over `OnceCaller` is that the `NotRetryable` error
+/// The benefit of using `RefCaller` over `OnceCaller` is that the `Fatal` error
 /// contains the input value for later recovery.
 pub struct RefCaller<I, O, E, F>(Callable<I, O, E, F>);
 
@@ -168,7 +168,7 @@ where
 
     #[inline]
     fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
-        (self.0.f)(input).map_err(|error| ApplyRefError::NotRetryable(error))
+        (self.0.f)(input).map_err(|error| ApplyRefError::Fatal(error))
     }
 }
 

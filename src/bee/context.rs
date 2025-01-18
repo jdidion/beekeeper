@@ -6,8 +6,9 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct Context {
     index: usize,
-    attempt: u32,
     cancelled: Arc<AtomicBool>,
+    #[cfg(feature = "retry")]
+    attempt: u32,
 }
 
 impl Context {
@@ -15,18 +16,15 @@ impl Context {
     pub fn new(index: usize, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             index,
-            attempt: 0,
             cancelled,
+            #[cfg(feature = "retry")]
+            attempt: 0,
         }
     }
 
     /// Creates an empty `Context`.
     pub fn empty() -> Self {
-        Self {
-            index: 0,
-            attempt: 0,
-            cancelled: Arc::new(AtomicBool::from(false)),
-        }
+        Self::new(0, Arc::new(AtomicBool::from(false)))
     }
 
     /// The index of this task within the `Hive`.
@@ -34,6 +32,15 @@ impl Context {
         self.index
     }
 
+    /// Returns `true` if the task has been cancelled. A long-running `Worker` should check this
+    /// periodically and, if it returns `true`, exit early with an `ApplyError::Cancelled` result.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.get()
+    }
+}
+
+#[cfg(feature = "retry")]
+impl Context {
     /// The current retry attempt. The value is `0` for the first attempt and increments by `1` for
     /// each retry attempt (if any).
     pub fn attempt(&self) -> u32 {
@@ -42,11 +49,5 @@ impl Context {
 
     pub fn inc_attempt(&mut self) {
         self.attempt += 1;
-    }
-
-    /// Returns `true` if the task has been cancelled. A long-running `Worker` should check this
-    /// periodically and, if it returns `true`, exit early with an `ApplyError::Cancelled` result.
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.get()
     }
 }

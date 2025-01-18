@@ -466,7 +466,7 @@ mod retry {
 
     impl Builder {
         /// Sets the maximum number of times to retry an [`ApplyError::Retryable`] error. A worker
-        /// thread will retry a task until it either returns `Err(ApplyError::NotRetryable)` or the
+        /// thread will retry a task until it either returns `Err(ApplyError::Fatal)` or the
         /// maximum number of retries is reached. Each time a task is retried, the worker thread will
         /// first sleep for `retry_factor * (2 ** (attempt - 1))` before attempting the task again. If
         /// not specified, tasks are retried a default number of times. Set to `0` to disable retrying.
@@ -489,7 +489,7 @@ mod retry {
         ///     match i % 3 {
         ///         0 => Ok("Success".into()),
         ///         1 => Err(ApplyError::Retryable { input: i, error: "Retryable".into() }),
-        ///         2 => Err(ApplyError::Fatal { input: Some(i), error: "NotRetryable".into() }),
+        ///         2 => Err(ApplyError::Fatal { input: Some(i), error: "Fatal".into() }),
         ///         _ => unreachable!(),
         ///     }
         /// }

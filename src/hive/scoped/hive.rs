@@ -96,7 +96,7 @@ impl<W: Worker> Outcome<W> {
                     index,
                 }
             }
-            Err(ApplyError::NotRetryable(error)) => Self::Failure { error, index },
+            Err(ApplyError::Fatal(error)) => Self::Failure { error, index },
         }
     }
 }

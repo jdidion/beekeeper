@@ -1,4 +1,5 @@
-use super::{ApplyError, Context};
+//! Worker bee traits.
+use super::{ApplyError, ApplyRefError, Context};
 use crate::panic::Panic;
 use std::fmt::Debug;
 
@@ -52,39 +53,6 @@ pub trait Worker: Debug + Sized + 'static {
 /// `W::Error` respectively.
 pub type RefWorkerError<W> = ApplyRefError<<W as RefWorker>::Error>;
 pub type RefWorkerResult<W> = Result<<W as RefWorker>::Output, RefWorkerError<W>>;
-
-/// Error that can result from applying a `RefWorker`'s function to an input.
-#[derive(thiserror::Error, Debug)]
-pub enum ApplyRefError<E> {
-    /// The task was cancelled before it completed.
-    #[error("Task was cancelled")]
-    Cancelled,
-    /// The task failed due to a (possibly) transient error and can be retried.
-    #[error("Error is retryable")]
-    Retryable(E),
-    /// The task failed due to a fatal error that cannot be retried.
-    #[error("Error is not retryable")]
-    NotRetryable(E),
-}
-
-impl<E> ApplyRefError<E> {
-    fn into_apply_error<I>(self, input: I) -> ApplyError<I, E> {
-        match self {
-            Self::Cancelled => ApplyError::Cancelled { input },
-            Self::Retryable(error) => ApplyError::Retryable { input, error },
-            Self::NotRetryable(error) => ApplyError::Fatal {
-                input: Some(input),
-                error,
-            },
-        }
-    }
-}
-
-impl<E> From<E> for ApplyRefError<E> {
-    fn from(e: E) -> Self {
-        ApplyRefError::NotRetryable(e)
-    }
-}
 
 /// A trait for stateful, fallible, idempotent functions that take a reference to their input.
 pub trait RefWorker: Debug + Sized + 'static {
@@ -166,7 +134,7 @@ mod tests {
         fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
             match *input {
                 0 => Err(ApplyRefError::Retryable(())),
-                1 => Err(ApplyRefError::NotRetryable(())),
+                1 => Err(ApplyRefError::Fatal(())),
                 2 => Err(ApplyRefError::Cancelled),
                 i => Ok(i + 1),
             }
