@@ -309,7 +309,6 @@ impl Builder {
     ///
     /// let sum: isize = hive
     ///     .map((0..100).zip((0..4).cycle()))
-    ///     .map(Result::unwrap)
     ///     .into_outputs()
     ///     .sum();
     /// assert_eq!(sum, 8920);
@@ -362,7 +361,6 @@ impl Builder {
     ///
     /// let sum: isize = hive
     ///     .map((1..=100).map(|i| NonZeroIsize::new(i).unwrap()).zip((0..4).cycle()))
-    ///     .map(Result::unwrap)
     ///     .into_outputs()
     ///     .sum();
     /// assert_eq!(sum, -25);

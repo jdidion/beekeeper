@@ -316,7 +316,6 @@ if !wait_err.is_empty() {
 }
 let exec_err_codes: Vec<_> = wait_ok
     .into_iter()
-    .map(Result::unwrap)
     .filter_map(|status| (!status.success()).then(|| status.code()))
     .flatten()
     .collect();

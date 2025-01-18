@@ -34,10 +34,9 @@ impl<T> DelayQueue<T> {
         }
     }
 
-    /// Consumes this queue and returns all the items. Panics if more than one thread holds a
-    /// reference to this queue.
-    pub fn into_iter(self) -> impl Iterator<Item = T> {
-        self.0.into_iter().map(|delayed| delayed.value)
+    /// Drains all items from the queue and returns them as an iterator.
+    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.0.drain().map(|delayed| delayed.value)
     }
 }
 
@@ -124,7 +123,7 @@ mod tests {
         queue.push(1, Duration::from_secs(1));
         queue.push(2, Duration::from_secs(2));
         queue.push(3, Duration::from_secs(3));
-        let mut v: Vec<_> = queue.into_iter().collect();
+        let mut v: Vec<_> = queue.drain().collect();
         v.sort();
         assert_eq!(v, vec![1, 2, 3]);
     }

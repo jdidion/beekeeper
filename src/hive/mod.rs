@@ -16,23 +16,28 @@ pub mod cores;
 #[cfg(feature = "retry")]
 mod delay;
 
+pub use builder::Builder;
+pub use config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
+#[cfg(feature = "retry")]
+pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
+pub use hive::SpawnError;
+pub use husk::Husk;
+pub use outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
+
+pub type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
+pub type OutcomeReceiver<W> = crate::channel::Receiver<Outcome<W>>;
+
+#[inline]
+pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
+    crate::channel::channel()
+}
+
 pub mod prelude {
     pub use super::{
         outcome_channel, Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
         OutcomeStore, SpawnError,
     };
 }
-
-pub use crate::channel::channel as outcome_channel;
-
-pub use builder::Builder;
-pub use config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
-pub use hive::SpawnError;
-pub use husk::Husk;
-pub use outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
-
-#[cfg(feature = "retry")]
-pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
 use self::counter::DualCounter;
 use self::outcome::{DerefOutcomes, OwnedOutcomes};
@@ -45,9 +50,6 @@ use std::sync::Arc;
 
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
 type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
-type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
-//pub type OutcomeReceiver<W> = channel::Receiver<Outcome<W>>;
-
 type Usize = AtomicOption<usize, AtomicUsize>;
 type Any<T> = AtomicOption<T, AtomicAny<T>>;
 
@@ -163,17 +165,15 @@ mod test {
     };
     use crate::channel::{Message, ReceiverExt};
     use crate::hive::outcome::DerefOutcomes;
-    use std::{
-        fmt::Debug,
-        io::{self, BufRead, BufReader, Write},
-        process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Barrier,
-        },
-        thread,
-        time::Duration,
+    use std::fmt::Debug;
+    use std::io::{self, BufRead, BufReader, Write};
+    use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Barrier,
     };
+    use std::thread;
+    use std::time::Duration;
 
     const TEST_TASKS: usize = 4;
     const ONE_SEC: Duration = Duration::from_secs(1);
@@ -194,7 +194,7 @@ mod test {
     #[test]
     fn test_works() {
         let hive = thunk_hive(TEST_TASKS);
-        let (tx, rx) = super::outcome_channel();
+        let (tx, rx) = mpsc::channel();
         for _ in 0..TEST_TASKS {
             let tx = tx.clone();
             hive.apply_store(Thunk::of(move || {
@@ -413,7 +413,7 @@ mod test {
         let b0 = Arc::new(Barrier::new(TEST_TASKS + 1));
         let b1 = Arc::new(Barrier::new(TEST_TASKS + 1));
 
-        let (tx, rx) = super::outcome_channel();
+        let (tx, rx) = mpsc::channel();
 
         for i in 0..test_tasks {
             let tx = tx.clone();
@@ -453,7 +453,7 @@ mod test {
             .num_threads(2)
             .build_with_default::<ThunkWorker<()>>()
             .unwrap();
-        let (tx, rx) = super::outcome_channel();
+        let (tx, rx) = mpsc::channel();
 
         // initial thread should share the name "test"
         for _ in 0..2 {
@@ -492,7 +492,6 @@ mod test {
                 //println!("This thread has a 4 MB stack size!");
                 stacker::remaining_stack().unwrap()
             }))
-            .unwrap()
             .unwrap() as f64;
 
         // measured value should be within 1% of actual
@@ -670,7 +669,6 @@ mod test {
                     i
                 })
             }))
-            .map(Result::unwrap)
             .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
@@ -763,7 +761,6 @@ mod test {
                     i
                 })
             }))
-            .map(Result::unwrap)
             .map(Outcome::unwrap)
             .collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
@@ -1121,7 +1118,7 @@ mod test {
                 // wait for the first batch of tasks to finish
                 hive.join();
 
-                let (tx, rx) = super::outcome_channel();
+                let (tx, rx) = mpsc::channel();
                 for i in 0..42 {
                     let tx = tx.clone();
                     hive.apply_store(Thunk::of(move || {
@@ -1138,7 +1135,7 @@ mod test {
                 // wait for the first batch of tasks to finish
                 pool.join();
 
-                let (tx, rx) = super::outcome_channel();
+                let (tx, rx) = mpsc::channel();
                 for i in 1..12 {
                     let tx = tx.clone();
                     pool.apply_store(Thunk::of(move || {
@@ -1190,7 +1187,7 @@ mod test {
     fn test_join_wavesurfer() {
         let n_waves = 4;
         let n_workers = 4;
-        let (tx, rx) = super::outcome_channel();
+        let (tx, rx) = mpsc::channel();
         let builder = Builder::new()
             .num_threads(n_workers)
             .thread_name("join wavesurfer");
@@ -1294,7 +1291,6 @@ mod test {
         // return results as an iterator...
         let outputs2: Vec<_> = hive
             .swarm((0..10).map(|i: i32| Thunk::of(move || i * -i)))
-            .map(Result::unwrap)
             .into_outputs()
             .collect();
         assert_eq!(-285, outputs2.into_iter().sum());
@@ -1395,7 +1391,6 @@ mod test {
         // execute tasks and collect outputs
         let output = hive
             .swarm(inputs)
-            .map(Result::unwrap)
             .into_outputs()
             .fold(String::new(), |mut a, b| {
                 a.push_str(&b);
@@ -1504,11 +1499,7 @@ mod retry_tests {
             .build_with(RetryCaller::of(echo_time))
             .unwrap();
 
-        let v: Result<Vec<_>, _> = hive
-            .swarm(0..10)
-            .map(Result::unwrap)
-            .into_results()
-            .collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert_eq!(v.unwrap().len(), 10);
     }
 
@@ -1535,7 +1526,7 @@ mod retry_tests {
             .build_with(RetryCaller::of(sometimes_fail))
             .unwrap();
 
-        let (success, retry_failed, not_retried) = hive.swarm(0..10).map(Result::unwrap).fold(
+        let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
             (0, 0, 0),
             |(success, retry_failed, not_retried), outcome| match outcome {
                 Outcome::Success { .. } => (success + 1, retry_failed, not_retried),
@@ -1557,11 +1548,7 @@ mod retry_tests {
             .with_no_retries()
             .build_with(RetryCaller::of(echo_time))
             .unwrap();
-        let v: Result<Vec<_>, _> = hive
-            .swarm(0..10)
-            .map(Result::unwrap)
-            .into_results()
-            .collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert!(matches!(v, Err(_)));
     }
 }

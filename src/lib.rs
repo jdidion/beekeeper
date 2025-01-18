@@ -290,7 +290,6 @@
 //! // execute tasks and collect outputs
 //! let output = hive
 //!     .swarm(inputs)
-//!     .map(Result::unwrap)
 //!     .into_outputs()
 //!     .fold(String::new(), |mut a, b| {
 //!         a.push_str(&b);

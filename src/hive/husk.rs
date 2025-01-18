@@ -186,7 +186,6 @@ mod tests {
         assert!(husk2.is_empty());
         let mut outputs = rx
             .take_ordered(indices)
-            .map(Result::unwrap)
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs.sort();

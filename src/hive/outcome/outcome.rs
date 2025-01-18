@@ -21,6 +21,9 @@ pub enum Outcome<W: Worker> {
     },
     /// The task was not executed before the Hive was closed.
     Unprocessed { input: W::Input, index: usize },
+    /// The task with the given index was not found in the `Hive` or iterator from which it was
+    /// being requested.
+    Missing { index: usize },
     /// The task panicked. The input value that caused the panic is provided if possible.
     Panic {
         input: Option<W::Input>,
@@ -98,6 +101,7 @@ impl<W: Worker> Outcome<W> {
             Self::Success { index, .. }
             | Self::Failure { index, .. }
             | Self::Unprocessed { index, .. }
+            | Self::Missing { index }
             | Self::Panic { index, .. } => index,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { index, .. } => index,
@@ -119,6 +123,7 @@ impl<W: Worker> Outcome<W> {
             Self::Success { .. } => None,
             Self::Failure { input, .. } => input,
             Self::Unprocessed { input, .. } => Some(input),
+            Self::Missing { .. } => None,
             Self::Panic { input, .. } => input,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { input, .. } => Some(input),
@@ -127,13 +132,14 @@ impl<W: Worker> Outcome<W> {
 
     /// Consumes this `Outcome` and depending on the variant:
     /// * Returns the wrapped error if this is a `Failure` or `MaxRetriesAttempted`,
-    /// * Panics if this is a `Success` or `Unprocessed` outcome,
+    /// * Panics if this is a `Success`, `Unprocessed`, or `Missing` outcome,
     /// * Resumes unwinding if this is a `Panic` outcome.
     pub fn into_error(self) -> W::Error {
         match self {
             Self::Success { .. } => panic!("not an error outcome"),
             Self::Failure { error, .. } => error,
             Self::Unprocessed { .. } => panic!("unprocessed input"),
+            Self::Missing { .. } => panic!("missing input"),
             Self::Panic { payload, .. } => payload.resume(),
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { error, .. } => error,

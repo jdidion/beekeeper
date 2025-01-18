@@ -31,7 +31,6 @@ where
         .build_with(Caller::of(f))
         .unwrap()
         .map(inputs)
-        .map(Result::unwrap)
         .map(Outcome::unwrap)
         .collect()
 }
@@ -72,7 +71,6 @@ where
         .build_with(OnceCaller::of(f))
         .unwrap()
         .map(inputs)
-        .map(Result::unwrap)
         .into()
 }
 
@@ -164,7 +162,6 @@ mod retry {
             .build_with(RetryCaller::of(f))
             .unwrap()
             .map(inputs)
-            .map(Result::unwrap)
             .into()
     }
 

@@ -45,7 +45,7 @@ impl<W: Worker> OutcomeIterator<W> {
 }
 
 impl<W: Worker> Iterator for OutcomeIterator<W> {
-    type Item = Result<Outcome<W>, usize>;
+    type Item = Outcome<W>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -54,7 +54,7 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
                     let index = outcome.index();
                     if index == next {
                         self.indices.pop_front();
-                        return Some(Ok(outcome));
+                        return Some(outcome);
                     } else {
                         if self.indices.contains(index) {
                             self.buf.insert(*index, outcome);
@@ -62,7 +62,7 @@ impl<W: Worker> Iterator for OutcomeIterator<W> {
                         continue;
                     }
                 } else {
-                    return Some(Err(*next));
+                    return Some(Outcome::Missing { index: *next });
                 }
             }
             return None;
@@ -74,7 +74,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
     /// Each item in the iterator is either an `Ok(Outcome)` or an `Err(index)` of a task that was
     /// not processed (e.g., because the hive was dropped or poisoned).
-    fn take_ordered(self, indices: Vec<usize>) -> impl Iterator<Item = Result<Outcome<W>, usize>>
+    fn take_ordered(self, indices: Vec<usize>) -> impl Iterator<Item = Outcome<W>>
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
@@ -114,10 +114,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(|result| match result {
-            Ok(outcome) => outcome.into(),
-            Err(index) => panic!("Task was not processed: {}", index),
-        })
+        OutcomeIterator::new(self, indices).map(Outcome::into)
     }
 
     /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
@@ -153,10 +150,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
     where
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(|result| match result {
-            Ok(outcome) => outcome.unwrap(),
-            Err(index) => panic!("Task was not processed: {}", index),
-        })
+        OutcomeIterator::new(self, indices).map(Outcome::unwrap)
     }
 }
 

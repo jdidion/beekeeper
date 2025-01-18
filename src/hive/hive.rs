@@ -160,9 +160,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         }
         let task = self.shared().prepare_task(input, outcome_tx);
         let index = task.index();
-        self.task_tx()
-            .send(task)
-            .expect("unable to send task into queue");
+        if !self.is_poisoned() {
+            self.task_tx()
+                .send(task)
+                .expect("unable to send task into queue");
+        } else if let Some(outcome) = task.into_unprocessed_try_send() {
+            self.shared().add_outcome(outcome);
+        }
         index
     }
 
@@ -174,10 +178,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// Creates a channel to send the input and receive the outcome. Panics if the channel hangs
     /// up before the outcome is received.
-    pub fn apply(&self, input: W::Input) -> Result<Outcome<W>, usize> {
+    pub fn apply(&self, input: W::Input) -> Outcome<W> {
         let (tx, rx) = outcome_channel();
         let index = self.send_one(input, Some(tx));
-        rx.recv().map_err(|_| index)
+        rx.recv().unwrap_or_else(|_| Outcome::Missing { index })
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its index. The `Outcome` of the
@@ -212,14 +216,18 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         let task_tx = self.task_tx();
         let iter = batch.into_iter();
         let (batch_size, _) = iter.size_hint();
-        self.shared()
-            .prepare_batch(batch_size, iter, outcome_tx)
-            .map(|task| {
-                let index = task.index();
-                task_tx.send(task).expect("unable to send task into queue");
-                index
-            })
-            .collect()
+        let batch = self.shared().prepare_batch(batch_size, iter, outcome_tx);
+        if !self.is_poisoned() {
+            batch
+                .map(|task| {
+                    let index = task.index();
+                    task_tx.send(task).expect("unable to send task into queue");
+                    index
+                })
+                .collect()
+        } else {
+            self.shared().send_or_store_as_unprocessed(batch)
+        }
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
@@ -229,7 +237,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// index was not processed due to the `Hive` being dropped or poisoned.
     ///
     /// This method is more efficient than `map_iter` when the input is an `ExactSizeIterator`.
-    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Result<Outcome<W>, usize>>
+    pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
@@ -292,7 +300,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     pub fn map(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = Result<Outcome<W>, usize>> {
+    ) -> impl Iterator<Item = Outcome<W>> {
         let (tx, rx) = outcome_channel();
         let indices: Vec<_> = inputs
             .into_iter()
@@ -779,7 +787,6 @@ mod affinity {
 #[cfg(not(feature = "retry"))]
 mod no_retry {
     use crate::bee::{Queen, Worker};
-    use crate::channel::SenderExt;
     use crate::hive::{Hive, Outcome, Shared, Task};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
@@ -788,15 +795,7 @@ mod no_retry {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
             let outcome = Outcome::from_worker_result(result, ctx.index());
-            // Try to send the outcome to the receiver if there is one
-            if let Some(outcome) = if let Some(tx) = outcome_tx {
-                tx.try_send_msg(outcome)
-            } else {
-                Some(outcome)
-            } {
-                // If there is no sender, or if the send failed, store the outcome in the hive
-                shared.add_outcome(outcome)
-            }
+            shared.send_or_store_outcome(outcome, outcome_tx);
         }
     }
 }
@@ -818,15 +817,7 @@ mod retry {
                 }
                 result => {
                     let outcome = Outcome::from_worker_result(result, ctx.index());
-                    // Try to send the outcome to the receiver if there is one
-                    if let Some(outcome) = if let Some(tx) = outcome_tx {
-                        tx.try_send_msg(outcome)
-                    } else {
-                        Some(outcome)
-                    } {
-                        // If there is no sender, or if the send failed, store the outcome in the hive
-                        shared.add_outcome(outcome)
-                    }
+                    shared.send_or_store_outcome(outcome, outcome_tx);
                 }
             }
         }
@@ -886,7 +877,7 @@ mod tests {
         // Wait for remaining tasks to complete.
         hive.join();
         assert_eq!(hive.num_tasks(), (0, 0));
-        let outputs: Vec<_> = outcome_iter.map(Result::unwrap).into_outputs().collect();
+        let outputs: Vec<_> = outcome_iter.into_outputs().collect();
         assert_eq!(outputs.len(), 10);
     }
 }

@@ -1,3 +1,4 @@
+//! The context for a task processed by a `Worker`.
 use crate::atomic::{Atomic, AtomicBool};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -47,7 +48,8 @@ impl Context {
         self.attempt
     }
 
-    pub fn inc_attempt(&mut self) {
+    /// Increments the retry attempt.
+    pub(crate) fn inc_attempt(&mut self) {
         self.attempt += 1;
     }
 }

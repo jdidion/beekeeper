@@ -2,6 +2,7 @@ use super::counter::{self, DualCounter};
 use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, Worker};
+use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
@@ -104,6 +105,40 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             })
     }
 
+    /// Sends an outcome to `outcome_tx`, or stores it in the `Hive` shared data if there is no
+    /// sender, or if the send fails.
+    pub fn send_or_store_outcome(&self, outcome: Outcome<W>, outcome_tx: Option<OutcomeSender<W>>) {
+        if let Some(outcome) = if let Some(tx) = outcome_tx {
+            tx.try_send_msg(outcome)
+        } else {
+            Some(outcome)
+        } {
+            self.add_outcome(outcome)
+        }
+    }
+
+    /// Converts each `Task` in the iterator into `Outcome::Unprocessed` and attempts to send it
+    /// to its `OutcomeSender` if there is one, or stores it if there is no sender or the send
+    /// fails. Returns a vector of indices of the tasks.
+    pub fn send_or_store_as_unprocessed<I>(&self, tasks: I) -> Vec<usize>
+    where
+        I: Iterator<Item = Task<W>>,
+    {
+        // don't unlock outcomes unless we have to
+        let mut outcomes = Option::None;
+        tasks
+            .map(|task| {
+                let index = task.index();
+                if let Some(outcome) = task.into_unprocessed_try_send() {
+                    outcomes
+                        .get_or_insert_with(|| self.outcomes.lock())
+                        .insert(index, outcome);
+                }
+                index
+            })
+            .collect()
+    }
+
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
     pub fn finish_task(&self, panicking: bool) {
@@ -160,9 +195,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.num_referrers.sub(1)
     }
 
-    /// Sets the `poisoned `
+    /// Sets the `poisoned` flag to `true`. Converts all queued tasks to `Outcome::Unprocessed`
+    /// and stores them in `outcomes`.
     pub fn poison(&self) {
         self.poisoned.set(true);
+        self.drain_tasks_into_unprocessed();
     }
 
     /// Returns `true` if the hive has been poisoned. A poisoned have may accept new tasks but will
@@ -261,25 +298,21 @@ mod affinity {
     }
 }
 
-fn insert_unprocessed_into<W: Worker>(task: Task<W>, outcomes: &mut HashMap<usize, Outcome<W>>) {
-    let (value, ctx, _) = task.into_parts();
-    outcomes.insert(
-        ctx.index(),
-        Outcome::Unprocessed {
-            input: value,
-            index: ctx.index(),
-        },
-    );
-}
-
 // time to wait in between polling the retry queue and then the task receiver
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
-fn drain_task_receiver_into<W: Worker>(
-    rx: TaskReceiver<W>,
+// TODO: if `outcomes` were `DerefMut` then the argument could either be a mutable referece or
+// a Lazy<Mutex> that aquires the lock on first access. Unfortunately, rust's Lazy does not support
+// mutable access, so we'd need something like OnceCell or OnceMutex.
+fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
+    tasks: I,
     outcomes: &mut HashMap<usize, Outcome<W>>,
 ) {
-    iter::from_fn(|| rx.try_recv().ok()).for_each(|task| insert_unprocessed_into(task, outcomes));
+    tasks.for_each(|task| {
+        if let Some(outcome) = task.into_unprocessed_try_send() {
+            outcomes.insert(*outcome.index(), outcome);
+        }
+    });
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -294,7 +327,7 @@ pub enum NextTaskError {
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use super::NextTaskError;
+    use super::{send_or_store, NextTaskError};
     use crate::atomic::Atomic;
     use crate::bee::{Queen, Worker};
     use crate::hive::{Husk, Shared, Task};
@@ -329,13 +362,23 @@ mod no_retry {
             })
         }
 
+        /// Drains all queued tasks, converts them into `Outcome::Unprocessed` outcomes, and tries
+        /// to send them or (if the task does not have a sender, or if the send fails) stores them
+        /// in the `outcomes` map.
+        pub fn drain_tasks_into_unprocessed(&self) {
+            let task_rx = self.task_rx.lock();
+            let mut outcomes = self.outcomes.lock();
+            send_or_store(task_rx.try_iter(), &mut outcomes);
+        }
+
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
         /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
-        /// tasks are converted into `Outcome::Unprocessed` outcomes.
+        /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
+        /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
         pub fn try_into_husk(self) -> Husk<W, Q> {
             let task_rx = self.task_rx.into_inner();
             let mut outcomes = self.outcomes.into_inner();
-            super::drain_task_receiver_into(task_rx, &mut outcomes);
+            send_or_store(task_rx.try_iter(), &mut outcomes);
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),
@@ -442,17 +485,27 @@ mod retry {
             })
         }
 
+        /// Drains all queued tasks, converts them into `Outcome::Unprocessed` outcomes, and tries
+        /// to send them or (if the task does not have a sender, or if the send fails) stores them
+        /// in the `outcomes` map.
+        pub fn drain_tasks_into_unprocessed(&self) {
+            let mut outcomes = self.outcomes.lock();
+            let task_rx = self.task_rx.lock();
+            super::send_or_store(task_rx.try_iter(), &mut outcomes);
+            let mut retry_queue = self.retry_queue.lock();
+            super::send_or_store(retry_queue.drain(), &mut outcomes);
+        }
+
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
         /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
-        /// tasks are converted into `Outcome::Unprocessed` outcomes.
+        /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
+        /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
         pub fn try_into_husk(self) -> Husk<W, Q> {
-            let task_rx = self.task_rx.into_inner();
-            let retry_queue = self.retry_queue.into_inner();
             let mut outcomes = self.outcomes.into_inner();
-            super::drain_task_receiver_into(task_rx, &mut outcomes);
-            retry_queue
-                .into_iter()
-                .for_each(|task| super::insert_unprocessed_into(task, &mut outcomes));
+            let task_rx = self.task_rx.into_inner();
+            super::send_or_store(task_rx.try_iter(), &mut outcomes);
+            let mut retry_queue = self.retry_queue.into_inner();
+            super::send_or_store(retry_queue.drain(), &mut outcomes);
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),
