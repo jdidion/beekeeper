@@ -20,16 +20,16 @@
 //!
 //! The `Context` contains information about the task, including:
 //! * The task index. Each task submitted to a `Hive` is assigned an index that is unique within
-//! that `Hive`.
+//!   that `Hive`.
 //! * Whether the task has been cancelled: the user may request that all active tasks are cancelled,
-//! such as by calling [`Hive::suspend()`](crate::hive::hive::Hive#suspend). A `Worker` is not
-//! required to handle cancellation, but for long-running tasks it is suggested that the worker
-//! periodically check the cancellation flag by calling
-//! [`Context::is_cancelled()`](crate::bee::context::Context#is_cancelled). If the cancellation
-//! flag is set, the worker may terminate early by returning `ApplyError::Cancelled`.
+//!   such as by calling [`Hive::suspend()`](crate::hive::hive::Hive#suspend). A `Worker` is not
+//!   required to handle cancellation, but for long-running tasks it is suggested that the worker
+//!   periodically check the cancellation flag by calling
+//!   [`Context::is_cancelled()`](crate::bee::context::Context#is_cancelled). If the cancellation
+//!   flag is set, the worker may terminate early by returning `ApplyError::Cancelled`.
 //! * If the `retry` feature is enabled, the `Context` also contains the retry
-//! [`attempt`](crate::bee::context::Context#attempt), which starts at `0` the first time the task
-//! is attempted and increments by `1` for each subsequent retry attempt.
+//!   [`attempt`](crate::bee::context::Context#attempt), which starts at `0` the first time the task
+//!   is attempted and increments by `1` for each subsequent retry attempt.
 //!
 //! If a fatal error occurs during processing of the task, the worker should return
 //! `ApplyError::Fatal`.
@@ -50,29 +50,29 @@
 //! * You implement `apply_ref` instead of `apply`.
 //! * The `apply_ref` method takes a reference to the input rather than an owned value.
 //! * The `apply_ref` method returns a `Result` containing an either an `Output` or an
-//! [`ApplyRefError`](crate::bee::error::ApplyRefError).
+//!   [`ApplyRefError`](crate::bee::error::ApplyRefError).
 //! * You do not need to catch panics - the blanket implementation of `Worker::apply` for
-//! `RefWorker` calls `apply_ref` within a `Panic::try_call` closure and automatically handles the
-//! result.
+//!   `RefWorker` calls `apply_ref` within a `Panic::try_call` closure and automatically handles the
+//!   result.
 //!
 //! ## Stock Workers
 //!
 //! The [`stock`](crate::bee::stock) Submodule provides some commonly used worker implementations:
 //! * `Caller`: a worker that wraps a callable (function or closure) with a single input parameter
-//! of type `Input` (i.e., the worker's associated `Input` type) and an output of type `Output`.
+//!   of type `Input` (i.e., the worker's associated `Input` type) and an output of type `Output`.
 //!     * A `OnceCaller` is like `Caller`, but it may also return an error, which is always
-//!     considered fatal.
+//!       considered fatal.
 //!     * A `RefCaller` is like `OnceCaller`, except that it passes an `&Input` to its wrapped
-//!     callable. The benefit of using `RefCaller` is that the input can be recovered if there is
-//!     an error.
+//!       callable. The benefit of using `RefCaller` is that the input can be recovered if there is
+//!       an error.
 //!     * `RetryCaller` is like `OnceCaller`, but its error type is `ApplyError`, which enables
-//!     transient errors to be retried (when the `retry` feature is enabled).
+//!       transient errors to be retried (when the `retry` feature is enabled).
 //! * `ThunkWorker`: a worker that processes `Thunk`s, which are no-argument callables (functions
-//! or closures) with a common return type.
+//!   or closures) with a common return type.
 //!     * `FunkWorker` is like `ThunkWorker` except that it processes fallible thunks (`Funk`s),
-//!     which also have a common error type.
+//!       which also have a common error type.
 //!     * `PunkWorker` is like `ThunkWorker` except that it processes thunks that may panic
-//!     (`Punk`s).
+//!       (`Punk`s).
 //! * `EchoWorker`: simply returns its input. This is primarily useful for testing.
 //!
 //! # Queen
