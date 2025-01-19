@@ -803,7 +803,6 @@ mod no_retry {
 #[cfg(feature = "retry")]
 mod retry {
     use crate::bee::{ApplyError, Queen, Worker};
-    use crate::channel::SenderExt;
     use crate::hive::{Hive, Outcome, Shared, Task};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
