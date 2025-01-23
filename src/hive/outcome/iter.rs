@@ -38,7 +38,7 @@ impl<W: Worker> UnorderedOutcomeIterator<W> {
         let task_ids: BTreeSet<_> = task_ids.into_iter().collect();
         Self {
             inner: Box::new(inner.into_iter().take(task_ids.len())),
-            task_ids: task_ids,
+            task_ids,
         }
     }
 }

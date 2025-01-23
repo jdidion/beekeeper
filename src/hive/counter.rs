@@ -35,7 +35,7 @@ pub struct DualCounter<const L: u32>(AtomicU64);
 
 impl<const L: u32> DualCounter<L> {
     // validate that L is > 0
-    const L_BITS: u32 = L.checked_sub(1).expect("L must be > 0") as u32 + 1;
+    const L_BITS: u32 = L.checked_sub(1).expect("L must be > 0") + 1;
     // validate that L is < 64
     const R_BITS: u32 = 63u32.checked_sub(Self::L_BITS).expect("L must be <= 63") + 1;
     // compute the maximum possible values for L and R
