@@ -3,8 +3,9 @@ use crate::panic::Panic;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
-/// The possible outcomes of a task execution. Each outcome includes the task ID of the task that
-/// produced it.
+/// The possible outcomes of a task execution.
+///
+/// Each outcome includes the task ID of the task that produced it.
 ///
 /// Note that `Outcome`s can only be compared or ordered with other `Outcome`s produced by the same
 /// `Hive`, because comparison/ordering is completely based on the task ID.

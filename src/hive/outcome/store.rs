@@ -27,8 +27,9 @@ pub mod sealed {
     }
 }
 
-/// Trait implemented by structs that store `Outcome`s (`Hive`, `Husk`, and `OutcomeBatch`). The
-/// first group of methods provided by this trait only require dereferencing the underlying map,
+/// Trait implemented by structs that store `Outcome`s (`Hive`, `Husk`, and `OutcomeBatch`).
+///
+/// The first group of methods provided by this trait only require dereferencing the underlying map,
 /// while the second group of methods require the ability to borrow or take ownership of the
 /// underlying map (and thus, are not in scope for `Hive`).
 pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {

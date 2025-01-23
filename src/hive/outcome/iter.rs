@@ -123,6 +123,7 @@ impl<W: Worker> Iterator for OrderedOutcomeIterator<W> {
     }
 }
 
+/// Extension trait for iterators over `Outcome`s.
 pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized {
     /// Consumes this iterator and returns an unordered iterator over the `Outcome`s with the
     /// specified `task_ids`.

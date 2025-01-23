@@ -71,7 +71,7 @@
 //!       is `ApplyError`, which enables transient errors to be retried (when the `retry` feature
 //!       is enabled).
 //! * [`ThunkWorker`](crate::bee::stock::ThunkWorker): a worker that processes
-//!   [`Thunk`](crate:bee::stock::Thunk)s, which are no-argument callables (functions or closures)
+//!   [`Thunk`](crate::bee::stock::Thunk)s, which are no-argument callables (functions or closures)
 //!   with a common return type.
 //!     * [`FunkWorker`](crate::bee::stock::FunkWorker) is like `ThunkWorker` except that it
 //!       processes fallible thunks (`Funk`s), which also have a common error type.

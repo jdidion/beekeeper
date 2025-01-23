@@ -15,8 +15,8 @@
 //! `Outcome` in the `Hive` for later retrieval.
 //!
 //! When a `Hive` is no longer needed, it may be simply dropped, which will cause the worker
-//! threads to terminate automatically. Alternatively, a `Hive` may be turned into a `Husk`, which
-//! will preserve its internal state and enable later retrieval of stored outcomes.
+//! threads to terminate automatically. Alternatively, a `Hive` may be turned into a [`Husk`],
+//! which will preserve its internal state and enable later retrieval of stored outcomes.
 //!
 //! # Creating a `Hive`
 //!
@@ -79,7 +79,7 @@
 //! CPU cores. Internally, a mapping is maintained between the index and the OS-specific core ID.
 //!
 //! The [`Builder::core_affinity`](crate::hive::builder::Builder::core_affinity) method accepts a
-//! range of core task_IDs that are reserved as *available* for the `Hive` to use for thread-pinning,
+//! range of core indices that are reserved as *available* for the `Hive` to use for thread-pinning,
 //! but they may or may not actually be used (depending on the number of worker threads and core
 //! availability). The number of available cores can be smaller or larger than the number of
 //! threads. Any thread that is spawned for which there is no corresponding core index is simply
@@ -127,7 +127,7 @@
 //!   `Outcome::MaxRetriesAttempted` and sent/stored.
 //! * Otherwise, the task is added to the `Hive`'s retry queue.
 //!     * If a `retry_factor` is configured, then the task is queued with a delay of at least
-//!       `2^(attempt - 1`) * retry_factor`.
+//!       `2^(attempt - 1) * retry_factor`.
 //!     * If a `retry_factor` is not configured, then the task is queued with no delay.
 //! * When a worker thread becomes available, it first checks the retry queue to see if there is
 //!   a task to retry before taking a new task from the input channel.
@@ -193,30 +193,31 @@
 //!
 //! Each task that is successfully submitted to a `Hive` will have a corresponding `Outcome`.
 //! [`Outcome`] is similar to `Result`, except that the error variants are enumerated:
-//! * `Failure`: the task failed with an error of type `W::Error`. If possible, the input value is
-//!   also provided.
-//! * `Panic`: the `Worker` panicked while processing the task. The panic
+//! * [`Failure`](Outcome::Failure): the task failed with an error of type `W::Error`. If possible,
+//!   the input value is also provided.
+//! * [`Panic`](Outcome::Panic): the `Worker` panicked while processing the task. The panic
 //!   [`payload`](crate::panic::Panic) is provided, and the unwinding can be
 //!   [`resume`d](crate::panic::Panic::resume) to panic the handling thread. The input is also
 //!   provided if possible.
-//! * `Unprocessed`: the input was not processed by the `Hive`, typically because the `Hive` was
-//!   dropped first. The input value is always provided.
-//! * `Missing`: an `Outcome` was requested by ID, but no `Outcome` with that ID was found.
-//!   This variant is only used when a list of outcomes is requested, such as when using one of the
-//!   `select_*` methods on an `Outcome` iterator (see below).
+//! * [`Unprocessed`](Outcome::Unprocessed): the input was not processed by the `Hive`, typically
+//!   because the `Hive` was dropped first. The input value is always provided.
+//! * [`Missing`](Outcome::Missing): an `Outcome` was requested by ID, but no `Outcome` with that
+//!   ID was found. This variant is only used when a list of outcomes is requested, such as when
+//!   using one of the `select_*` methods on an `Outcome` iterator (see below).
 //!
 //! An `Outcome` can be converted into a `Result` (using `into()`) or
-//! [`unwrap`ped](crate::hive::Outcome::unwrap) into an output value of type `W::Output`.
+//! [`unwrap`](crate::hive::Outcome::unwrap)ped into an output value of type `W::Output`.
 //!
 //! ## Outcome iterators
 //!
-//! The `map` and `swarm` methods return an ordered iterator over the `Outcome`s, while
-//! `map_unordered` and `swarm_unordered` return unordered iterators. These methods create a
-//! dedicated outcome channel to use for each batch of tasks, and thus expect the channel receiver
-//! to receive exactly the outcomes with the task IDs of the submitted tasks. If, somehow, an
-//! unexpected `Outcome` is received, it is silently dropped. If any expected outcomes have not
-//! been received after the channel sender has disconnected, then those task IDs are yielded as
-//! `Outcome::Missing` results.
+//! The [`map`](crate::hive::Hive::map) and [`swarm`](crate::hive::Hive::swarm) methods return an
+//! ordered iterator over the `Outcome`s, while [`map_unordered`](crate::hive::Hive::map_unordered)
+//! and [`swarm_unordered`](crate::hive::Hive::swarm_unordered) return unordered iterators. These
+//! methods create a dedicated outcome channel to use for each batch of tasks, and thus expect the
+//! channel receiver to receive exactly the outcomes with the task IDs of the submitted tasks. If,
+//! somehow, an unexpected `Outcome` is received, it is silently dropped. If any expected outcomes
+//! have not been received after the channel sender has disconnected, then those task IDs are'
+//! yielded as `Outcome::Missing` results.
 //!
 //! When the [`OutcomeIteratorExt`] trait is in scope, then additional methods become available on
 //! any iterator over `Outcome`:
@@ -236,8 +237,8 @@
 //! be received, or until the sending end of the channel is dropped (in which case an error is
 //! returned).
 //!
-//! Alternatively, a `Receiver` type can be converted into a blocking iterator using the `iter()`
-//! method. The iterator yields `Outcome` values until the sender is dropped. With
+//! Alternatively, a `Receiver` type can be converted into a blocking iterator using its `iter()`
+//! or `into_iter()` method. The iterator yields `Outcome` values until the sender is dropped. With
 //! `OutcomeIteratorExt` in scope, any of the methods mentioned in the previous section may be used
 //! to convert the outcomes. Notably, the `select_*` methods take a collection of task IDs and
 //! return an iterator that yields items (`Outcome`s, `Result`s, or outputs) that match those
@@ -275,7 +276,10 @@
 //! });
 //! assert_eq!(sum, 45);
 //! assert_eq!(outcomes.num_successes(), 10);
-//! let mut outputs = outcomes.iter_successes().map(|(_, output)| *output).collect::<Vec<_>>();
+//! let mut outputs = outcomes
+//!     .iter_successes()
+//!     .map(|(_, output)| *output)
+//!     .collect::<Vec<_>>();
 //! outputs.sort();
 //! assert_eq!(outputs, (0..10).map(|i| i * 2).collect::<Vec<_>>());
 //! ```
@@ -285,7 +289,7 @@
 //! Processing of tasks by a `Hive` can be temporarily suspended by calling the
 //! [`suspend`](crate::hive::Hive::suspend) method. This prevents worker threads from starting
 //! any new tasks, and it also notifies worker threads that they may (but are not required to)
-//! cancel processing of their current tasks. Cancelled tasks are sent/stored as `Unprocessed
+//! cancel processing of their current tasks. Cancelled tasks are sent/stored as `Unprocessed`
 //! outcomes.
 //!
 //! Processing can be resumed by calling the [`resume`](crate::hive::Hive::resume) method.
@@ -325,7 +329,7 @@
 //! stateful, you can access its final state.
 //!
 //! The `Husk` also retains any stored `Outcome`s from the `Hive`, which can be accessed using the
-//! `OutcomeStore` API.
+//! [`OutcomeStore`] API.
 //!
 //! The `Husk` can be used to create a new `Builder`
 //! ([`Husk::as_builder`](crate::hive::husk::Husk::as_builder)) or a new `Hive`
@@ -393,8 +397,9 @@ type U32 = AtomicOption<u32, crate::atomic::AtomicU32>;
 #[cfg(feature = "retry")]
 type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
-/// A pool of worker threads that each execute the same function. See the
-/// [module documentation](crate::hive) for details.
+/// A pool of worker threads that each execute the same function.
+///
+/// See the [module documentation](crate::hive) for details.
 pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
 
 /// A `Hive`'s inner state. Wraps a) the `Hive`'s reference to the `Shared` data (which is shared
