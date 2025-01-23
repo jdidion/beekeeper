@@ -1,6 +1,8 @@
-//! Utility functions for simple use cases. In all cases, the number of threads is specified as a
-//! parameter, and the function takes care of creating the `Hive`, submitting tasks, collecting
-//! results, and shutting down the `Hive` properly.
+//! Utility functions for simple use cases.
+//!
+//! In all cases, the number of threads is specified as a parameter, and the function takes care of
+//! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
+//! down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
 use crate::hive::{Builder, Outcome, OutcomeBatch};
 use std::fmt::Debug;

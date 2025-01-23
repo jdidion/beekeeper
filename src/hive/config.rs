@@ -31,20 +31,24 @@ pub fn reset_defaults() {
 }
 
 impl Config {
+    /// Creates a new `Config` with all values unset.
     pub fn empty() -> Self {
         Self::default()
     }
 
+    /// Creates a new `Config` with default values. This simply clones `DEFAULTS`.
     pub fn with_defaults() -> Self {
         DEFAULTS.lock().clone()
     }
 
+    /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
     }
 
+    /// Converts fields into `Sync` variants to make this `Config` thread-safe.
     pub fn into_sync(self) -> Self {
         Self {
             num_threads: self.num_threads.into_sync_default(),
@@ -59,6 +63,8 @@ impl Config {
         }
     }
 
+    /// Converts fields into `Unsync` variants to enable them to be modified in a single-threaded
+    /// context.
     pub fn into_unsync(self) -> Self {
         Self {
             num_threads: self.num_threads.into_unsync(),
@@ -76,7 +82,7 @@ impl Config {
 
 #[cfg(test)]
 pub mod reset {
-    // Struct that resets the default values when `drop`ped.
+    /// Struct that resets the default values when `drop`ped.
     pub struct Reset;
 
     impl Drop for Reset {

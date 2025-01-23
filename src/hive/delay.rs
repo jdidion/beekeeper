@@ -2,6 +2,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
+/// A queue where each item has an associated `Instant` at which it will be available.
+///
+/// This is implemented internally as a `BinaryHeap`. This data structure is *not* thread-safe.
 #[derive(Debug)]
 pub struct DelayQueue<T>(BinaryHeap<Delayed<T>>);
 
@@ -14,13 +17,14 @@ impl<T> DelayQueue<T> {
         until
     }
 
-    /// Retursn the `Instant` at which the next item will be available. Returns `None` if the queue
+    /// Returns the `Instant` at which the next item will be available. Returns `None` if the queue
     /// is empty.
     pub fn next_available(&self) -> Option<Instant> {
         self.0.peek().map(|head| head.until)
     }
 
-    /// Returns the item at the head of the queue, if one exists, and removes it.
+    /// Returns the item at the head of the queue, if one exists and is available (i.e. its delay
+    /// has been exceeded), and removes it.
     pub fn try_pop(&mut self) -> Option<T> {
         if self
             .0

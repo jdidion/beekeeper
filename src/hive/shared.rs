@@ -1,7 +1,7 @@
 use super::counter::{self, DualCounter};
 use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
-use crate::bee::{Context, Queen, Worker};
+use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -11,13 +11,15 @@ use std::time::Duration;
 use std::{fmt, iter, mem};
 
 impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
+    /// and all other fields set to their default values.
     pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
         Shared {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
             num_tasks: DualCounter::default(),
-            next_task_index: Default::default(),
+            next_task_id: Default::default(),
             num_panics: Default::default(),
             num_referrers: AtomicUsize::new(1),
             poisoned: Default::default(),
@@ -55,24 +57,30 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.config.num_threads.set_max(num_threads).unwrap()
     }
 
+    /// Reduces `self.num_threads` by `num_threads`. This is used to adjust the number of threads
+    /// after calling `add_threads` if any of the threads could not be started successfully.
+    pub fn adjust_threads(&self, num_threads: usize) -> usize {
+        self.config.num_threads.sub(num_threads).unwrap()
+    }
+
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
     pub fn create_worker(&self) -> Q::Kind {
         self.queen.lock().create()
     }
 
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
-    /// `outcome_tx` and the next index.
+    /// `outcome_tx` and the next ID.
     pub fn prepare_task(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Task<W> {
         self.num_tasks
             .increment_left(1)
             .expect("overflowed queued task counter");
-        let index = self.next_task_index.add(1);
-        let ctx = Context::new(index, self.suspended.clone());
+        let task_id = self.next_task_id.add(1);
+        let ctx = Context::new(task_id, self.suspended.clone());
         Task::new(input, ctx, outcome_tx)
     }
 
     /// Increments the number of queued tasks by the number of provided inputs. Returns an iterator
-    /// over `Task`s created from the provided inputs, `outcome_tx`s, and sequential indices.
+    /// over `Task`s created from the provided inputs, `outcome_tx`s, and sequential task_ids.
     pub fn prepare_batch<'a, T: Iterator<Item = W::Input> + 'a>(
         &'a self,
         min_size: usize,
@@ -82,20 +90,20 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.num_tasks
             .increment_left(min_size as u64)
             .expect("overflowed queued task counter");
-        let index_start = self.next_task_index.add(min_size);
-        let index_end = index_start + min_size;
+        let task_id_start = self.next_task_id.add(min_size);
+        let task_id_end = task_id_start + min_size;
         inputs
             .map(Some)
             .chain(iter::repeat_with(|| None))
             .zip(
-                (index_start..index_end)
+                (task_id_start..task_id_end)
                     .map(Some)
                     .chain(iter::repeat_with(|| None)),
             )
             .map_while(move |pair| match pair {
-                (Some(input), Some(index)) => Some(Task {
+                (Some(input), Some(task_id)) => Some(Task {
                     input,
-                    ctx: Context::new(index, self.suspended.clone()),
+                    ctx: Context::new(task_id, self.suspended.clone()),
                     //attempt: 0,
                     outcome_tx: outcome_tx.clone(),
                 }),
@@ -119,8 +127,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
     /// Converts each `Task` in the iterator into `Outcome::Unprocessed` and attempts to send it
     /// to its `OutcomeSender` if there is one, or stores it if there is no sender or the send
-    /// fails. Returns a vector of indices of the tasks.
-    pub fn send_or_store_as_unprocessed<I>(&self, tasks: I) -> Vec<usize>
+    /// fails. Returns a vector of task_ids of the tasks.
+    pub fn send_or_store_as_unprocessed<I>(&self, tasks: I) -> Vec<TaskId>
     where
         I: Iterator<Item = Task<W>>,
     {
@@ -128,13 +136,13 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         let mut outcomes = Option::None;
         tasks
             .map(|task| {
-                let index = task.index();
+                let task_id = task.id();
                 if let Some(outcome) = task.into_unprocessed_try_send() {
                     outcomes
                         .get_or_insert_with(|| self.outcomes.lock())
-                        .insert(index, outcome);
+                        .insert(task_id, outcome);
                 }
-                index
+                task_id
             })
             .collect()
     }
@@ -173,7 +181,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.join_gate.wait_while(|| self.has_work());
     }
 
-    /// Notify all observers joining this hive when there is no more work to do.
+    /// Notify all observers joining this hive when all tasks have been completed.
     pub fn no_work_notify_all(&self) {
         if !self.has_work() {
             self.join_gate.notify_all();
@@ -196,10 +204,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     }
 
     /// Sets the `poisoned` flag to `true`. Converts all queued tasks to `Outcome::Unprocessed`
-    /// and stores them in `outcomes`.
+    /// and stores them in `outcomes`. Also automatically resumes the hive if it is suspendend,
+    /// which enables blocked worker threads to terminate.
     pub fn poison(&self) {
         self.poisoned.set(true);
         self.drain_tasks_into_unprocessed();
+        self.set_suspended(false);
     }
 
     /// Returns `true` if the hive has been poisoned. A poisoned have may accept new tasks but will
@@ -210,8 +220,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         self.poisoned.get()
     }
 
-    /// Sets the `cancelled` flag. Worker threads may terminate early. No new worker threads will
-    /// be spawned. Returns `true` if the value was changed.
+    /// Sets the `suspended` flag. If `true`, worker threads may terminate early, and no new tasks
+    /// will be started until this flag is set to `false`. Returns `true` if the value was changed.
     pub fn set_suspended(&self, suspended: bool) -> bool {
         if self.suspended.set(suspended) == suspended {
             false
@@ -230,18 +240,18 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     }
 
     /// Returns a mutable reference to the retained task outcomes.
-    pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>> + '_ {
+    pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_ {
         self.outcomes.lock()
     }
 
     /// Adds a new outcome to the retained task outcomes.
     pub fn add_outcome(&self, outcome: Outcome<W>) {
         let mut lock = self.outcomes.lock();
-        lock.insert(*outcome.index(), outcome);
+        lock.insert(*outcome.task_id(), outcome);
     }
 
     /// Removes and returns all retained task outcomes.
-    pub fn take_outcomes(&self) -> HashMap<usize, Outcome<W>> {
+    pub fn take_outcomes(&self) -> HashMap<TaskId, Outcome<W>> {
         let mut lock = self.outcomes.lock();
         mem::take(&mut *lock)
     }
@@ -249,14 +259,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     /// Removes and returns all retained `Unprocessed` outcomes.
     pub fn take_unprocessed(&self) -> Vec<Outcome<W>> {
         let mut outcomes = self.outcomes.lock();
-        let unprocessed_indices: Vec<_> = outcomes
+        let unprocessed_task_ids: Vec<_> = outcomes
             .keys()
             .cloned()
-            .filter(|index| matches!(outcomes.get(index), Some(Outcome::Unprocessed { .. })))
+            .filter(|task_id| matches!(outcomes.get(task_id), Some(Outcome::Unprocessed { .. })))
             .collect();
-        unprocessed_indices
+        unprocessed_task_ids
             .into_iter()
-            .map(|index| outcomes.remove(&index).unwrap())
+            .map(|task_id| outcomes.remove(&task_id).unwrap())
             .collect()
     }
 }
@@ -281,9 +291,9 @@ mod affinity {
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Adds cores to which worker threads may be pinned.
-        pub fn add_core_affinity(&self, new_cores: &Cores) {
+        pub fn add_core_affinity(&self, new_cores: Cores) {
             let _ = self.config.affinity.try_update_with(|mut affinity| {
-                let updated = affinity.union(new_cores) > 0;
+                let updated = affinity.union(&new_cores) > 0;
                 updated.then_some(affinity)
             });
         }
@@ -301,16 +311,17 @@ mod affinity {
 // time to wait in between polling the retry queue and then the task receiver
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
-// TODO: if `outcomes` were `DerefMut` then the argument could either be a mutable referece or
-// a Lazy<Mutex> that aquires the lock on first access. Unfortunately, rust's Lazy does not support
-// mutable access, so we'd need something like OnceCell or OnceMutex.
+/// Sends each `Task` to its associated outcome sender (if any) or stores it in `outcomes`.
+/// TODO: if `outcomes` were `DerefMut` then the argument could either be a mutable referece or
+/// a Lazy<Mutex> that aquires the lock on first access. Unfortunately, rust's Lazy does not support
+/// mutable access, so we'd need something like OnceCell or OnceMutex.
 fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
     tasks: I,
-    outcomes: &mut HashMap<usize, Outcome<W>>,
+    outcomes: &mut HashMap<TaskId, Outcome<W>>,
 ) {
     tasks.for_each(|task| {
         if let Some(outcome) = task.into_unprocessed_try_send() {
-            outcomes.insert(*outcome.index(), outcome);
+            outcomes.insert(*outcome.task_id(), outcome);
         }
     });
 }
@@ -408,6 +419,7 @@ mod retry {
                 .unwrap_or(false)
         }
 
+        /// Updates the `next_retry` field if `instant` is earlier than the current value.
         fn update_next_retry(&self, instant: Option<Instant>) {
             let mut next_retry = self.next_retry.write();
             if let Some(new_val) = instant {
@@ -419,6 +431,7 @@ mod retry {
             }
         }
 
+        /// Adds a task to the retry queue with a delay based on `ctx.attempt()`.
         pub fn queue_retry(
             &self,
             input: W::Input,
@@ -449,10 +462,10 @@ mod retry {
             self.update_next_retry(Some(available_at));
         }
 
-        /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
-        /// since this requires holding a lock on the task `Reciever`, this also blocks any other
-        /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
-        /// are no tasks queued for retry.
+        /// Returns the next queued `Task`. The thread blocks until a new task becomes available,
+        /// and since this requires holding a lock on the task `Reciever`, this also blocks any
+        /// other threads that call this method. Returns an error if the task `Sender` has hung up
+        /// and there are no tasks queued for retry.
         pub fn next_task(&self) -> Result<Task<W>, NextTaskError> {
             loop {
                 self.resume_gate.wait_while(|| self.is_suspended());

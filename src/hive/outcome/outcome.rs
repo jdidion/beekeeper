@@ -1,55 +1,57 @@
-use crate::bee::{ApplyError, Worker, WorkerResult};
+use crate::bee::{ApplyError, TaskId, Worker, WorkerResult};
 use crate::panic::Panic;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
-/// The possible outcomes of a task execution. Each outcome includes the index of the task that
+/// The possible outcomes of a task execution. Each outcome includes the task ID of the task that
 /// produced it.
 ///
-/// Note that `Outcome`s can only be compared or ordered with other `Outcome`s proced by the same
-/// `Hive`, because comparison/ordering is completely based on the `index`.
+/// Note that `Outcome`s can only be compared or ordered with other `Outcome`s produced by the same
+/// `Hive`, because comparison/ordering is completely based on the task ID.
 #[derive(Debug)]
 pub enum Outcome<W: Worker> {
     /// The task was executed successfully.
-    Success { value: W::Output, index: usize },
+    Success { value: W::Output, task_id: TaskId },
     /// The task failed with an error that was not retryable. The input value that caused the
     /// failure is provided if possible.
     Failure {
         input: Option<W::Input>,
         error: W::Error,
-        index: usize,
+        task_id: TaskId,
     },
-    /// The task was not executed before the Hive was closed.
-    Unprocessed { input: W::Input, index: usize },
-    /// The task with the given index was not found in the `Hive` or iterator from which it was
+    /// The task was not executed before the Hive was dropped, or processing of the task was
+    /// interrupted (e.g., by `suspend`ing the `Hive`).
+    Unprocessed { input: W::Input, task_id: TaskId },
+    /// The task with the given task_id was not found in the `Hive` or iterator from which it was
     /// being requested.
-    Missing { index: usize },
+    Missing { task_id: TaskId },
     /// The task panicked. The input value that caused the panic is provided if possible.
     Panic {
         input: Option<W::Input>,
         payload: Panic<String>,
-        index: usize,
+        task_id: TaskId,
     },
     /// The task failed after retrying the maximum number of times.
     #[cfg(feature = "retry")]
     MaxRetriesAttempted {
         input: W::Input,
         error: W::Error,
-        index: usize,
+        task_id: TaskId,
     },
 }
 
 impl<W: Worker> Outcome<W> {
-    pub(in crate::hive) fn from_worker_result(result: WorkerResult<W>, index: usize) -> Self {
+    /// Converts a worker `result` into an `Outcome` with the given task_id.
+    pub(in crate::hive) fn from_worker_result(result: WorkerResult<W>, task_id: TaskId) -> Self {
         match result {
-            Ok(value) => Self::Success { index, value },
+            Ok(value) => Self::Success { task_id, value },
             Err(ApplyError::Retryable { input, error }) => {
                 #[cfg(feature = "retry")]
                 {
                     Self::MaxRetriesAttempted {
                         input,
                         error,
-                        index,
+                        task_id,
                     }
                 }
                 #[cfg(not(feature = "retry"))]
@@ -57,20 +59,20 @@ impl<W: Worker> Outcome<W> {
                     Self::Failure {
                         input: Some(input),
                         error,
-                        index,
+                        task_id,
                     }
                 }
             }
             Err(ApplyError::Fatal { input, error }) => Self::Failure {
                 input,
                 error,
-                index,
+                task_id,
             },
-            Err(ApplyError::Cancelled { input }) => Self::Unprocessed { input, index },
+            Err(ApplyError::Cancelled { input }) => Self::Unprocessed { input, task_id },
             Err(ApplyError::Panic { input, payload }) => Self::Panic {
                 input,
                 payload,
-                index,
+                task_id,
             },
         }
     }
@@ -85,7 +87,7 @@ impl<W: Worker> Outcome<W> {
         matches!(self, Self::Unprocessed { .. })
     }
 
-    /// Returns `true` if this outcome represents a task failure.
+    /// Returns `true` if this outcome represents a task processing failure.
     pub fn is_failure(&self) -> bool {
         match self {
             Self::Failure { .. } | Self::Panic { .. } => true,
@@ -95,30 +97,34 @@ impl<W: Worker> Outcome<W> {
         }
     }
 
-    /// Returns the index of the task that produced this outcome.
-    pub fn index(&self) -> &usize {
+    /// Returns the task_id of the task that produced this outcome.
+    pub fn task_id(&self) -> &TaskId {
         match self {
-            Self::Success { index, .. }
-            | Self::Failure { index, .. }
-            | Self::Unprocessed { index, .. }
-            | Self::Missing { index }
-            | Self::Panic { index, .. } => index,
+            Self::Success { task_id, .. }
+            | Self::Failure { task_id, .. }
+            | Self::Unprocessed { task_id, .. }
+            | Self::Missing { task_id }
+            | Self::Panic { task_id, .. } => task_id,
             #[cfg(feature = "retry")]
-            Self::MaxRetriesAttempted { index, .. } => index,
+            Self::MaxRetriesAttempted { task_id, .. } => task_id,
         }
     }
 
-    /// Consumes this `Outcome` and returns the value of this `Success` outcome. Panics if this is
-    /// not a `Success` outcome.
+    /// Consumes this `Outcome` and returns the value if it is a `Success`, otherwise panics.
     pub fn unwrap(self) -> W::Output {
+        self.success().expect("not a Success outcome")
+    }
+
+    /// Consumes this `Outcome` and returns the output value if it is a `Success`, otherwise `None`.
+    pub fn success(self) -> Option<W::Output> {
         match self {
-            Self::Success { value, .. } => value,
-            _ => panic!("not a Success outcome"),
+            Self::Success { value, .. } => Some(value),
+            _ => None,
         }
     }
 
-    /// Returns the input value if available, otherwise `None`.
-    pub fn into_input(self) -> Option<W::Input> {
+    /// Consumes this `Outcome` and returns the input value if available, otherwise `None`.
+    pub fn try_into_input(self) -> Option<W::Input> {
         match self {
             Self::Success { .. } => None,
             Self::Failure { input, .. } => input,
@@ -132,17 +138,17 @@ impl<W: Worker> Outcome<W> {
 
     /// Consumes this `Outcome` and depending on the variant:
     /// * Returns the wrapped error if this is a `Failure` or `MaxRetriesAttempted`,
-    /// * Panics if this is a `Success`, `Unprocessed`, or `Missing` outcome,
-    /// * Resumes unwinding if this is a `Panic` outcome.
-    pub fn into_error(self) -> W::Error {
+    /// * Resumes unwinding if this is a `Panic` outcome,
+    /// * Otherwise returns `None`.
+    pub fn try_into_error(self) -> Option<W::Error> {
         match self {
-            Self::Success { .. } => panic!("not an error outcome"),
-            Self::Failure { error, .. } => error,
-            Self::Unprocessed { .. } => panic!("unprocessed input"),
-            Self::Missing { .. } => panic!("missing input"),
+            Self::Success { .. } => None,
+            Self::Failure { error, .. } => Some(error),
+            Self::Unprocessed { .. } => None,
+            Self::Missing { .. } => None,
             Self::Panic { payload, .. } => payload.resume(),
             #[cfg(feature = "retry")]
-            Self::MaxRetriesAttempted { error, .. } => error,
+            Self::MaxRetriesAttempted { error, .. } => Some(error),
         }
     }
 }
@@ -150,14 +156,15 @@ impl<W: Worker> Outcome<W> {
 impl<W: Worker> PartialEq for Outcome<W> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Success { index: a, .. }, Self::Success { index: b, .. }) => a == b,
-            (Self::Failure { index: a, .. }, Self::Failure { index: b, .. }) => a == b,
-            (Self::Unprocessed { index: a, .. }, Self::Unprocessed { index: b, .. }) => a == b,
-            (Self::Panic { index: a, .. }, Self::Panic { index: b, .. }) => a == b,
+            (Self::Success { task_id: a, .. }, Self::Success { task_id: b, .. }) => a == b,
+            (Self::Failure { task_id: a, .. }, Self::Failure { task_id: b, .. }) => a == b,
+            (Self::Unprocessed { task_id: a, .. }, Self::Unprocessed { task_id: b, .. }) => a == b,
+            (Self::Missing { task_id: a }, Self::Missing { task_id: b }) => a == b,
+            (Self::Panic { task_id: a, .. }, Self::Panic { task_id: b, .. }) => a == b,
             #[cfg(feature = "retry")]
             (
-                Self::MaxRetriesAttempted { index: a, .. },
-                Self::MaxRetriesAttempted { index: b, .. },
+                Self::MaxRetriesAttempted { task_id: a, .. },
+                Self::MaxRetriesAttempted { task_id: b, .. },
             ) => a == b,
             _ => false,
         }
@@ -174,6 +181,6 @@ impl<W: Worker> PartialOrd for Outcome<W> {
 
 impl<W: Worker> Ord for Outcome<W> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.index().cmp(other.index())
+        self.task_id().cmp(other.task_id())
     }
 }

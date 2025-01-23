@@ -10,7 +10,7 @@ pub type WorkerResult<W> = Result<<W as Worker>::Output, WorkerError<W>>;
 
 /// A trait for stateful, fallible, idempotent functions.
 pub trait Worker: Debug + Sized + 'static {
-    /// The type of the input to this funciton.
+    /// The type of the input to this function.
     type Input: Send;
     /// The type of the output from this function.
     type Output: Send;
@@ -18,18 +18,20 @@ pub trait Worker: Debug + Sized + 'static {
     type Error: Send + Debug;
 
     /// Applies this `Worker`'s function to the given input of type `Self::Input` and returns a
-    /// `Result` containing the output of type `Self::Output` or an error that indicates whether
-    /// the task can be retried.
+    /// `Result` containing the output of type `Self::Output` or an [`ApplyError`] that indicates
+    /// whether the task can be retried.
     ///
-    /// The `Context` parameter provides additional context for the task, including:
-    /// * index: the index of the task within the `Hive`. This value is used for ordering results.
+    /// The [`Context`] parameter provides additional context for the task, including:
+    /// * task_id: the ID of the task within the [`Hive`](crate::hive::Hive). This value is used
+    ///   for ordering results.
     /// * attempt: the retry attempt number. The attempt value is `0` the first time the task is
-    ///   attempted and increases by `1` for each subsequent retry attempt.
+    ///   attempted and increases by `1` for each subsequent retry attempt. (Note: retrying is only
+    ///   supported when the `retry` feature is enabled.)
     /// * cancelled: whether the task has been cancelled and should exit early with an
-    ///   `ApplyError::Cancelled` result.
+    ///   [`ApplyError::Cancelled`] result.
     ///
-    /// This method should not panic. If it may panic, then `Panic::try_call` should be used to
-    /// catch the panic and turn it into an `ApplyError::Panic` error.
+    /// This method should not panic. If it may panic, then [`Panic::try_call`] should be used to
+    /// catch the panic and turn it into an [`ApplyError::Panic`] error.
     fn apply(&mut self, _: Self::Input, _: &Context) -> WorkerResult<Self>;
 
     /// Applies this `Worker`'s function sequentially to an iterator of inputs and returns a

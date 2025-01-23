@@ -1,9 +1,9 @@
-use super::Outcome;
-use crate::bee::Worker;
+use super::{DerefOutcomes, Outcome};
+use crate::bee::{TaskId, Worker};
 
 /// Traits with methods that should only be accessed internally by public traits.
 pub mod sealed {
-    use crate::bee::Worker;
+    use crate::bee::{TaskId, Worker};
     use crate::hive::Outcome;
     use std::{
         collections::HashMap,
@@ -11,19 +11,19 @@ pub mod sealed {
     };
 
     pub trait DerefOutcomes<W: Worker> {
-        /// Returns a read-only reference to a map of task index to `Outcome`.
-        fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>>;
+        /// Returns a read-only reference to a map of task task_id to `Outcome`.
+        fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
 
-        /// Returns a mutable reference to a map of task index to `Outcome`.
-        fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>>;
+        /// Returns a mutable reference to a map of task task_id to `Outcome`.
+        fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
     }
 
     pub trait OwnedOutcomes<W: Worker>: Sized {
-        /// Returns an owned map of task index to `Outcome`.
-        fn outcomes(self) -> HashMap<usize, Outcome<W>>;
+        /// Returns an owned map of task task_id to `Outcome`.
+        fn outcomes(self) -> HashMap<TaskId, Outcome<W>>;
 
-        /// Returns a read-only reference to a map of task index to `Outcome`.
-        fn outcomes_ref(&self) -> &HashMap<usize, Outcome<W>>;
+        /// Returns a read-only reference to a map of task task_id to `Outcome`.
+        fn outcomes_ref(&self) -> &HashMap<TaskId, Outcome<W>>;
     }
 }
 
@@ -79,12 +79,12 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             .count()
     }
 
-    /// Returns the task indicies of the unprocessed outcomes.
-    fn unprocessed_indices(&self) -> Vec<usize> {
+    /// Returns the task IDs of the unprocessed outcomes.
+    fn unprocessed_task_ids(&self) -> Vec<TaskId> {
         self.outcomes_deref()
             .values()
             .filter(|outcome| outcome.is_unprocessed())
-            .map(|outcome| *outcome.index())
+            .map(|outcome| *outcome.task_id())
             .collect()
     }
 
@@ -95,6 +95,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             .any(|outcome| outcome.is_success())
     }
 
+    /// Returns the number of success outcomes in this store.
     fn num_successes(&self) -> usize {
         self.outcomes_deref()
             .values()
@@ -102,22 +103,24 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             .count()
     }
 
-    /// Returns the task indicies of the success outcomes.
-    fn success_indices(&self) -> Vec<usize> {
+    /// Returns the task IDs of the success outcomes.
+    fn success_task_ids(&self) -> Vec<TaskId> {
         self.outcomes_deref()
             .values()
             .filter(|outcome| outcome.is_success())
-            .map(|outcome| *outcome.index())
+            .map(|outcome| *outcome.task_id())
             .collect()
     }
 
-    /// Returns `true` if any of the outcomes are `Outcome::Success`.
+    /// Returns `true` if any of the outcomes are [`Outcome::Failure`], [`Outcome::Panic`], or
+    /// [`Outcome::MaxRetriesAttempted`] (if the `retry` feature is enabled).
     fn has_failures(&self) -> bool {
         self.outcomes_deref()
             .values()
             .any(|outcome| outcome.is_failure())
     }
 
+    /// Returns the number of failure outcomes in this store.
     fn num_failures(&self) -> usize {
         self.outcomes_deref()
             .values()
@@ -125,18 +128,18 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             .count()
     }
 
-    /// Returns the task indicies of the success outcomes.
-    fn failure_indices(&self) -> Vec<usize> {
+    /// Returns the task IDs of the success outcomes.
+    fn failure_task_ids(&self) -> Vec<TaskId> {
         self.outcomes_deref()
             .values()
             .filter(|outcome| outcome.is_failure())
-            .map(|outcome| *outcome.index())
+            .map(|outcome| *outcome.task_id())
             .collect()
     }
 
-    /// Removes the outcome with the given index. Returns `None` if the index does not exist.
-    fn remove(&mut self, index: usize) -> Option<Outcome<W>> {
-        self.outcomes_deref_mut().remove(&index)
+    /// Removes the outcome with the given `task_id``. Returns `None` if the task ID does not exist.
+    fn remove(&mut self, task_id: TaskId) -> Option<Outcome<W>> {
+        self.outcomes_deref_mut().remove(&task_id)
     }
 
     /// Removes all outcomes from this store. Returns a `Vec` containing the removed outcomes.
@@ -150,67 +153,75 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
         outcomes
     }
 
-    /// Removes the outcome with the given index and returns its value. Returns `None` if the index
-    /// does not exist. Panics if the outcome is not `Outcome::Unprocessed`.
-    fn remove_unprocessed(&mut self, index: usize) -> Option<W::Input> {
+    /// Removes the outcome with the given `task_id` and returns its value. Returns `None` if the
+    /// task ID does not exist. Panics if the outcome is not [`Outcome::Unprocessed`].
+    fn remove_unprocessed(&mut self, task_id: TaskId) -> Option<W::Input> {
         self.outcomes_deref_mut()
-            .remove(&index)
+            .remove(&task_id)
             .map(|outcome| match outcome {
                 Outcome::Unprocessed { input: value, .. } => value,
                 _ => panic!("not an Unprocessed outcome"),
             })
     }
 
-    /// Removes and returns all unprocessed outcomes as a `Vec` of tuples `(index, value)`.
-    fn remove_all_unprocessed(&mut self) -> Vec<(usize, W::Input)> {
-        let indices = self.unprocessed_indices();
-        indices
+    /// Removes and returns all unprocessed outcomes as a `Vec` of tuples `(task_id, value)`.
+    fn remove_all_unprocessed(&mut self) -> Vec<(TaskId, W::Input)> {
+        let task_ids = self.unprocessed_task_ids();
+        task_ids
             .into_iter()
-            .map(|index| (index, self.remove_unprocessed(index).unwrap()))
+            .map(|task_id| (task_id, self.remove_unprocessed(task_id).unwrap()))
             .collect()
     }
 
-    /// Removes the outcome with the given index and returns its value. Returns `None` if the index
-    /// does not exist. Panics if the outcome is not `Outcome::Success`.
-    fn remove_success(&mut self, index: usize) -> Option<W::Output> {
+    /// Removes the outcome with the given `task_id y and returns its value. Returns `None` if the
+    /// task ID does not exist. Panics if the outcome is not [`Outcome::Success`].
+    fn remove_success(&mut self, task_id: TaskId) -> Option<W::Output> {
         self.outcomes_deref_mut()
-            .remove(&index)
+            .remove(&task_id)
             .map(|outcome| match outcome {
                 Outcome::Success { value, .. } => value,
                 _ => panic!("not a Success outcome"),
             })
     }
 
-    /// Removes and returns all success outcomes as a `Vec` of tuples `(index, value)`.
-    fn remove_all_successes(&mut self) -> Vec<(usize, W::Output)> {
-        let indices = self.success_indices();
-        indices
+    /// Removes and returns all success outcomes as a `Vec` of tuples `(task_id, value)`.
+    fn remove_all_successes(&mut self) -> Vec<(TaskId, W::Output)> {
+        let task_ids = self.success_task_ids();
+        task_ids
             .into_iter()
-            .map(|index| (index, self.remove_success(index).unwrap()))
+            .map(|task_id| (task_id, self.remove_success(task_id).unwrap()))
             .collect()
     }
 
-    /// Removes the outcome with the given index and returns its value. Returns `None` if the index
-    /// does not exist. Panics if the outcome is not `Outcome::Success`.
-    fn remove_failure(&mut self, index: usize) -> Option<Outcome<W>> {
+    /// Removes the outcome with the given `task_id` and returns its value. Returns `None` if the
+    /// task ID does not exist. Panics if the outcome is not a failure outcome.
+    fn remove_failure(&mut self, task_id: TaskId) -> Option<Outcome<W>> {
         self.outcomes_deref_mut()
-            .remove(&index)
+            .remove(&task_id)
             .inspect(|outcome| assert!(outcome.is_failure(), "not a failure outcome"))
     }
 
-    /// Removes and returns all success outcomes as a `Vec` of tuples `(index, value)`.
+    /// Removes and returns all failure outcomes as a `Vec` of tuples `(task_id, value)`.
     fn remove_all_failures(&mut self) -> Vec<Outcome<W>> {
-        let indices = self.failure_indices();
-        indices
+        let task_ids = self.failure_task_ids();
+        task_ids
             .into_iter()
-            .map(|index| self.remove_failure(index).unwrap())
+            .map(|task_id| self.remove_failure(task_id).unwrap())
             .collect()
     }
 
     // The following methods are available for structs that store *and* have ownership of
     // `Outcome`s (`Husk` and `OutcomeBatch`).
 
-    /// Consumes this store and returns an iterator over the outcomes in index order.
+    /// Returns the stored `Outcome` associated with the given task_id, if any.
+    fn get(&self, task_id: TaskId) -> Option<&Outcome<W>>
+    where
+        Self: sealed::OwnedOutcomes<W>,
+    {
+        self.outcomes_ref().get(&task_id)
+    }
+
+    /// Consumes this store and returns an iterator over the outcomes in task_id order.
     fn into_iter(self) -> impl Iterator<Item = Outcome<W>>
     where
         Self: sealed::OwnedOutcomes<W>,
@@ -250,7 +261,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             let failures = self
                 .into_iter()
                 .filter(Outcome::is_failure)
-                .map(Outcome::into_error)
+                .filter_map(Outcome::try_into_error)
                 .collect();
             Err(failures)
         } else {
@@ -259,7 +270,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     }
 
     /// Consumes this store and returns all the `Outcome::Unprocessed`. If `ordered` is `true`, the
-    /// inputs are returned in index order, otherwise they are unordered.
+    /// inputs are returned in task_id order, otherwise they are unordered.
     fn into_unprocessed(self, ordered: bool) -> Vec<W::Input>
     where
         Self: sealed::OwnedOutcomes<W>,
@@ -273,49 +284,41 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             unordered.sort();
             unordered
                 .into_iter()
-                .map(Outcome::into_input)
+                .map(Outcome::try_into_input)
                 .map(Option::unwrap)
                 .collect()
         } else {
             values
-                .map(Outcome::into_input)
+                .map(Outcome::try_into_input)
                 .map(Option::unwrap)
                 .collect()
         }
     }
 
-    /// Returns the stored `Outcome` associated with the given index, if any.
-    fn get(&self, index: usize) -> Option<&Outcome<W>>
-    where
-        Self: sealed::OwnedOutcomes<W>,
-    {
-        self.outcomes_ref().get(&index)
-    }
-
     /// Returns an iterator over all the stored `Outcome::Unprocessed` outcomes. These are tasks
     /// that were queued but not yet processed when the `Hive` was dropped.
-    fn iter_unprocessed(&self) -> impl Iterator<Item = (&usize, &W::Input)>
+    fn iter_unprocessed(&self) -> impl Iterator<Item = (&TaskId, &W::Input)>
     where
         Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
             .filter_map(|result| match result {
-                Outcome::Unprocessed { input, index } => Some((index, input)),
+                Outcome::Unprocessed { input, task_id } => Some((task_id, input)),
                 _ => None,
             })
     }
 
     /// Returns an iterator over all the stored `Outcome::Success` outcomes. These are tasks
     /// that were successfully processed but not sent to any output channel.
-    fn iter_successes(&self) -> impl Iterator<Item = (&usize, &W::Output)>
+    fn iter_successes(&self) -> impl Iterator<Item = (&TaskId, &W::Output)>
     where
         Self: sealed::OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
             .filter_map(|result| match result {
-                Outcome::Success { value, index } => Some((index, value)),
+                Outcome::Success { value, task_id } => Some((task_id, value)),
                 _ => None,
             })
     }
@@ -331,6 +334,9 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
             .filter(|outcome| outcome.is_failure())
     }
 }
+
+/// Blanket implementation of `OutcomeStore` for types that implement `DerefOutcomes`.
+impl<W: Worker, D: DerefOutcomes<W>> OutcomeStore<W> for D {}
 
 #[cfg(test)]
 mod tests {
@@ -354,17 +360,23 @@ mod tests {
 
     fn make_batch() -> OutcomeBatch<TestWorker> {
         let mut store = OutcomeBatch::empty();
-        store.insert(Outcome::Success { value: 1, index: 0 });
-        store.insert(Outcome::Unprocessed { input: 2, index: 1 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 2,
+            task_id: 1,
+        });
         store.insert(Outcome::Failure {
             input: Some(3),
             error: (),
-            index: 2,
+            task_id: 2,
         });
         store.insert(Outcome::Panic {
             input: Some(5),
             payload: Panic::new("oh no!", None),
-            index: 3,
+            task_id: 3,
         });
         store
     }
@@ -373,7 +385,10 @@ mod tests {
     fn test_is_empty() {
         let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
         assert!(store.is_empty());
-        store.insert(Outcome::Success { value: 1, index: 0 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
         assert!(!store.is_empty());
     }
 
@@ -392,7 +407,10 @@ mod tests {
     #[test]
     fn test_assert_empty_with_success() {
         let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
-        store.insert(Outcome::Success { value: 1, index: 0 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
         store.assert_empty(true);
     }
 
@@ -400,12 +418,18 @@ mod tests {
     #[should_panic]
     fn test_assert_empty_fail() {
         let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
-        store.insert(Outcome::Success { value: 1, index: 0 });
-        store.insert(Outcome::Unprocessed { input: 2, index: 1 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 2,
+            task_id: 1,
+        });
         store.insert(Outcome::Failure {
             input: Some(3),
             error: (),
-            index: 2,
+            task_id: 2,
         });
         store.assert_empty(false);
     }
@@ -414,12 +438,18 @@ mod tests {
     #[should_panic]
     fn test_assert_empty_fail_with_success() {
         let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
-        store.insert(Outcome::Success { value: 1, index: 0 });
-        store.insert(Outcome::Unprocessed { input: 2, index: 1 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 2,
+            task_id: 1,
+        });
         store.insert(Outcome::Failure {
             input: Some(3),
             error: (),
-            index: 2,
+            task_id: 2,
         });
         store.assert_empty(true);
     }
@@ -430,28 +460,28 @@ mod tests {
 
         assert!(store.has_successes());
         assert!(store.get(0).unwrap().is_success());
-        for index in 1..=3 {
-            assert!(!store.get(index).unwrap().is_success());
+        for task_id in 1..=3 {
+            assert!(!store.get(task_id).unwrap().is_success());
         }
-        assert_eq!(store.success_indices(), vec![0]);
+        assert_eq!(store.success_task_ids(), vec![0]);
 
         assert!(store.has_unprocessed());
         assert!(store.get(1).unwrap().is_unprocessed());
-        for index in [0, 2, 3] {
-            assert!(!store.get(index).unwrap().is_unprocessed());
+        for task_id in [0, 2, 3] {
+            assert!(!store.get(task_id).unwrap().is_unprocessed());
         }
-        assert_eq!(store.unprocessed_indices(), vec![1]);
+        assert_eq!(store.unprocessed_task_ids(), vec![1]);
 
         assert!(store.has_failures());
-        for index in 2..=3 {
-            assert!(store.get(index).unwrap().is_failure())
+        for task_id in 2..=3 {
+            assert!(store.get(task_id).unwrap().is_failure())
         }
-        for index in [0, 1] {
-            assert!(!store.get(index).unwrap().is_failure());
+        for task_id in [0, 1] {
+            assert!(!store.get(task_id).unwrap().is_failure());
         }
-        let mut failure_indices = store.failure_indices();
-        failure_indices.sort();
-        assert_eq!(failure_indices, vec![2, 3]);
+        let mut failure_task_ids = store.failure_task_ids();
+        failure_task_ids.sort();
+        assert_eq!(failure_task_ids, vec![2, 3]);
     }
 
     #[test]
@@ -472,7 +502,7 @@ mod tests {
             store.remove_failure(2),
             Some(Outcome::Failure {
                 input: Some(3),
-                index: 2,
+                task_id: 2,
                 ..
             })
         ));
@@ -480,7 +510,7 @@ mod tests {
             store.remove_failure(3),
             Some(Outcome::Panic {
                 input: Some(5),
-                index: 3,
+                task_id: 3,
                 ..
             })
         ));
@@ -505,22 +535,28 @@ mod retry_tests {
 
     fn make_batch() -> OutcomeBatch<TestWorker> {
         let mut store = OutcomeBatch::empty();
-        store.insert(Outcome::Success { value: 1, index: 0 });
-        store.insert(Outcome::Unprocessed { input: 2, index: 1 });
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 2,
+            task_id: 1,
+        });
         store.insert(Outcome::Failure {
             input: Some(3),
             error: (),
-            index: 2,
+            task_id: 2,
         });
         store.insert(Outcome::MaxRetriesAttempted {
             input: 4,
             error: (),
-            index: 3,
+            task_id: 3,
         });
         store.insert(Outcome::Panic {
             input: Some(5),
             payload: Panic::new("oh no!", None),
-            index: 4,
+            task_id: 4,
         });
         store
     }
@@ -537,28 +573,28 @@ mod retry_tests {
 
         assert!(store.has_successes());
         assert!(store.get(0).unwrap().is_success());
-        for index in 1..=4 {
-            assert!(!store.get(index).unwrap().is_success());
+        for task_id in 1..=4 {
+            assert!(!store.get(task_id).unwrap().is_success());
         }
-        assert_eq!(store.success_indices(), vec![0]);
+        assert_eq!(store.success_task_ids(), vec![0]);
 
         assert!(store.has_unprocessed());
         assert!(store.get(1).unwrap().is_unprocessed());
-        for index in vec![0, 2, 3, 4] {
-            assert!(!store.get(index).unwrap().is_unprocessed());
+        for task_id in vec![0, 2, 3, 4] {
+            assert!(!store.get(task_id).unwrap().is_unprocessed());
         }
-        assert_eq!(store.unprocessed_indices(), vec![1]);
+        assert_eq!(store.unprocessed_task_ids(), vec![1]);
 
         assert!(store.has_failures());
-        for index in 2..=4 {
-            assert!(store.get(index).unwrap().is_failure())
+        for task_id in 2..=4 {
+            assert!(store.get(task_id).unwrap().is_failure())
         }
-        for index in vec![0, 1] {
-            assert!(!store.get(index).unwrap().is_failure());
+        for task_id in vec![0, 1] {
+            assert!(!store.get(task_id).unwrap().is_failure());
         }
-        let mut failure_indices = store.failure_indices();
-        failure_indices.sort();
-        assert_eq!(failure_indices, vec![2, 3, 4]);
+        let mut failure_task_ids = store.failure_task_ids();
+        failure_task_ids.sort();
+        assert_eq!(failure_task_ids, vec![2, 3, 4]);
     }
 
     #[test]
@@ -579,7 +615,7 @@ mod retry_tests {
             store.remove_failure(2),
             Some(Outcome::Failure {
                 input: Some(3),
-                index: 2,
+                task_id: 2,
                 ..
             })
         ));
@@ -587,7 +623,7 @@ mod retry_tests {
             store.remove_failure(3),
             Some(Outcome::MaxRetriesAttempted {
                 input: 4,
-                index: 3,
+                task_id: 3,
                 ..
             })
         ));
@@ -595,7 +631,7 @@ mod retry_tests {
             store.remove_failure(4),
             Some(Outcome::Panic {
                 input: Some(5),
-                index: 4,
+                task_id: 4,
                 ..
             })
         ));

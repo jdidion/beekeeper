@@ -1,25 +1,29 @@
 use super::{
-    Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore,
-    OwnedOutcomes, SpawnError,
+    Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OwnedOutcomes,
+    SpawnError,
 };
-use crate::bee::{Queen, Worker};
+use crate::bee::{Queen, TaskId, Worker};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 /// The remnants of a `Hive`.
+///
+/// Provides access to the `Queen` and to stored `Outcome`s. Can be used to create a new `Hive`
+/// based on the previous `Hive`'s configuration.
 pub struct Husk<W: Worker, Q: Queen<Kind = W>> {
     config: Config,
     queen: Q,
     num_panics: usize,
-    outcomes: HashMap<usize, Outcome<W>>,
+    outcomes: HashMap<TaskId, Outcome<W>>,
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
+    /// Creates a new `Husk`. Should only be called from `Shared::try_into_husk`.
     pub(super) fn new(
         config: Config,
         queen: Q,
         num_panics: usize,
-        outcomes: HashMap<usize, Outcome<W>>,
+        outcomes: HashMap<TaskId, Outcome<W>>,
     ) -> Self {
         Self {
             config,
@@ -50,13 +54,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
         self.config.clone().into()
     }
 
-    /// Consumes this `Husk` and returns a new `Hive` with the same configuration as the one that
-    /// produced this `Husk`.
+    /// Consumes this `Husk` and returns a new `Hive` with the same configuration and `Queen` as
+    /// the one that produced this `Husk`.
     pub fn into_hive(self) -> Result<Hive<W, Q>, SpawnError> {
         self.as_builder().build(self.queen)
     }
 
-    fn collect_unprocessed(outcomes: HashMap<usize, Outcome<W>>) -> Vec<W::Input> {
+    /// Extracts all the `Outcome::Unprocessed` values from the provided map and returns them as a
+    /// `Vec` of input values.
+    fn collect_unprocessed(outcomes: HashMap<TaskId, Outcome<W>>) -> Vec<W::Input> {
         outcomes
             .into_values()
             .filter_map(|outcome| match outcome {
@@ -68,51 +74,56 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
     /// produced this `Husk`, and queues all the `Outcome::Unprocessed` values. The results will
-    /// be sent to `tx`. Returns the new `Hive` and the indices of the tasks that were queued.
+    /// be sent to `tx`. Returns the new `Hive` and the IDs of the tasks that were queued.
     ///
-    /// This method panics if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_unprocessed_to(self, tx: OutcomeSender<W>) -> (Hive<W, Q>, Vec<usize>) {
-        let hive = self.as_builder().build(self.queen).unwrap();
+    /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
+    pub fn into_hive_swarm_unprocessed_to(
+        self,
+        tx: OutcomeSender<W>,
+    ) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
+        let hive = self.as_builder().build(self.queen)?;
         let unprocessed = Self::collect_unprocessed(self.outcomes);
-        let indices = hive.swarm_send(unprocessed, tx);
-        (hive, indices)
+        let task_ids = hive.swarm_send(unprocessed, tx);
+        Ok((hive, task_ids))
     }
 
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
     /// produced this `Husk`, and queues all the `Outcome::Unprocessed` values. The results will
-    /// be retained in the new `Hive` for later retrieval. Returns the new `Hive` and the indices
+    /// be retained in the new `Hive` for later retrieval. Returns the new `Hive` and the IDs
     /// of the tasks that were queued.
     ///
-    /// This method panics if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_unprocessed_store(self) -> (Hive<W, Q>, Vec<usize>) {
-        let hive = self.as_builder().build(self.queen).unwrap();
+    /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
+    pub fn into_hive_swarm_unprocessed_store(self) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
+        let hive = self.as_builder().build(self.queen)?;
         let unprocessed = Self::collect_unprocessed(self.outcomes);
-        let indices = hive.swarm_store(unprocessed);
-        (hive, indices)
+        let task_ids = hive.swarm_store(unprocessed);
+        Ok((hive, task_ids))
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> DerefOutcomes<W> for Husk<W, Q> {
-    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
+    #[inline]
+    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>> {
         &self.outcomes
     }
 
-    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>> {
+    #[inline]
+    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
         &mut self.outcomes
     }
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> OwnedOutcomes<W> for Husk<W, Q> {
-    fn outcomes(self) -> HashMap<usize, Outcome<W>> {
+    #[inline]
+    fn outcomes(self) -> HashMap<TaskId, Outcome<W>> {
         self.outcomes
     }
 
-    fn outcomes_ref(&self) -> &HashMap<usize, Outcome<W>> {
+    #[inline]
+    fn outcomes_ref(&self) -> &HashMap<TaskId, Outcome<W>> {
         &self.outcomes
     }
 }
-
-impl<W: Worker, Q: Queen<Kind = W>> OutcomeStore<W> for Husk<W, Q> {}
 
 #[cfg(test)]
 mod tests {
@@ -126,22 +137,22 @@ mod tests {
             .num_threads(0)
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
-        let mut indices = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
+        let mut task_ids = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
         let mut husk = hive.try_into_husk().unwrap();
         assert!(husk.has_unprocessed());
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(husk.get(*i).unwrap().is_unprocessed());
         }
         assert_eq!(husk.iter_unprocessed().count(), 10);
-        let mut unprocessed_indices = husk
+        let mut unprocessed_task_ids = husk
             .iter_unprocessed()
-            .map(|(index, _)| *index)
+            .map(|(task_id, _)| *task_id)
             .collect::<Vec<_>>();
-        indices.sort();
-        unprocessed_indices.sort();
-        assert_eq!(indices, unprocessed_indices);
+        task_ids.sort();
+        unprocessed_task_ids.sort();
+        assert_eq!(task_ids, unprocessed_task_ids);
         assert_eq!(husk.remove_all_unprocessed().len(), 10);
     }
 
@@ -156,7 +167,7 @@ mod tests {
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
-        let (hive2, _) = husk1.into_hive_swarm_unprocessed_store();
+        let (hive2, _) = husk1.into_hive_swarm_unprocessed_store().unwrap();
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
@@ -178,14 +189,14 @@ mod tests {
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
-        let (hive2, indices) = husk1.into_hive_swarm_unprocessed_to(tx);
+        let (hive2, task_ids) = husk1.into_hive_swarm_unprocessed_to(tx).unwrap();
         // now spin up worker threads to process the tasks
         hive2.grow(8);
         hive2.join();
         let husk2 = hive2.try_into_husk().unwrap();
         assert!(husk2.is_empty());
         let mut outputs = rx
-            .take_ordered(indices)
+            .select_ordered(task_ids)
             .map(Outcome::unwrap)
             .collect::<Vec<_>>();
         outputs.sort();

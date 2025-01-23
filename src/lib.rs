@@ -4,36 +4,34 @@
 //!
 //! ## Overview
 //!
-//! * Operations are defined by implementing the [`Worker`](crate::bee::worker::Worker) trait.
-//! * A [`Builder`](crate::hive::builder::Builder) is used to configure and create a worker pool
+//! * Operations are defined by implementing the [`Worker`](crate::bee::Worker) trait.
+//! * A [`Builder`](crate::hive::Builder) is used to configure and create a worker pool
 //!   called a [`Hive`](crate::hive::Hive).
 //! * The `Hive` creates a `Worker` instance for each thread in the pool.
 //! * Each thread in the pool continually:
 //!     * Recieves a task from an input [`channel`](::std::sync::mpsc::channel),
-//!     * Calls its `Worker`'s [`apply`](crate::bee::worker::Worker#apply) method on the input, and
-//!     * Produces an [`Outcome`](crate::hive::outcome::outcome::Outcome).
+//!     * Calls its `Worker`'s [`apply`](crate::bee::Worker::apply) method on the input, and
+//!     * Produces an [`Outcome`](crate::hive::Outcome).
 //! * Depending on which of `Hive`'s methods are called to submit a task (or batch of tasks), the
-//!   `Outcome`(s) may be returned as an `Iterator`, sent to an output `channel`, or stored in the
+//!   `Outcome`(s) may be returned as an [`Iterator`], sent to an output `channel`, or stored in the
 //!   `Hive` for later retrieval.
 //! * A `Hive` may create `Worker`s may in one of three ways:
-//!     * Call the `default()` function on a `Worker` type that implements
-//!       [`Default`](std::default::Default)
-//!     * Clone an instance of a `Worker` that implements
-//!       [`Clone`](std::clone::Clone)
-//!     * Call the [`create()`](crate::bee::queen::Queen#create) method on a worker factory that
-//!       implements the [`Queen`](crate::bee::queen::Queen) trait.
+//!     * Call the `default()` function on a `Worker` type that implements [`Default`]
+//!     * Clone an instance of a `Worker` that implements [`Clone`]
+//!     * Call the [`create()`](crate::bee::Queen::create) method on a worker factory that
+//!       implements the [`Queen`](crate::bee::Queen) trait.
 //! * Both `Worker`s and `Queen`s may be stateful, i.e., `Worker::apply()` and `Queen::create()`
 //!   both take `&mut self`.
 //! * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
 //!   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
-//! * A `Hive` may be [`suspend`](crate::hive::Hive#suspend)ed and
-//!   [`resume`](crate::hive::Hive#resume)d at any time. When a `Hive` is suspended, worker threads
+//! * A `Hive` may be [`suspend`](crate::hive::Hive::suspend)ed and
+//!   [`resume`](crate::hive::Hive::resume)d at any time. When a `Hive` is suspended, worker threads
 //!   do no work and tasks accumulate in the input `channel`.
-//! * Several utility functions are provided in the [util](crate::util) module. Notably, the `map`
+//! * Several utility functions are provided in the [`util`] module. Notably, the `map`
 //!   and `try_map` functions enable simple parallel processing of a single batch of tasks.
 //! * Several useful `Worker` implementations are provided in the [stock](crate::bee::stock) module.
-//!   Most notable are those in the [`call`](crate::bee::stock::call) submodule, which provide
-//!   different ways of wrapping `callable`s, i.e., closures and function pointers.
+//!   Most notable are the `Caller*` types, which provide different ways of wrapping `callable`s,
+//!   i.e., closures and function pointers.
 //! * The following optional features are provided via feature flags:
 //!     * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
 //!       context-switching.
@@ -48,71 +46,72 @@
 //! ## Usage
 //!
 //! To parallelize a task, you'll need two things:
-//! 1. A `Worker` implementation. Your options are:
-//!     * Use an existing implementation from the [stock](crate::bee::stock) module (see Example 2 below)
+//! 1. A [`Worker`](crate::bee::Worker) implementation. Your options are:
+//!     * Use an existing implementation from the [`stock`](crate::bee::stock) module (see Example 2 below)
 //!     * Implement your own (See Example 3 below)
 //!         * `use` the necessary traits (e.g., `use beekeeper::bee::prelude::*`)
 //!         * Define a `struct` for your worker
-//!         * Implement the `Worker` trait on your struct and define the `apply` method with the
-//!           logic of your task
+//!         * Implement the `Worker` trait on your struct and define the
+//!           [`apply`](crate::bee::Worker::apply) method with the logic of your task
 //!         * Do at least one of the following:
-//!             * Implement `Default` for your worker
-//!             * Implement `Clone` for your worker
-//!             * Create a custom worker fatory that implements the `Queen` trait
-//! 2. A `Hive` to execute your tasks. Your options are:
-//!     * Use one of the convenience methods in the [util](crate::util) module (see Example 1 below)
-//!     * Create a `Hive` manually using [`Builder`](crate::hive::builder::Builder) (see Examples 2
+//!             * Implement [`Default`] for your worker
+//!             * Implement [`Clone`] for your worker
+//!             * Create a custom worker fatory that implements the [`Queen`](crate::bee::Queen)
+//!               trait
+//! 2. A [`Hive`](crate::hive::Hive) to execute your tasks. Your options are:
+//!     * Use one of the convenience methods in the [`util`] module (see Example 1 below)
+//!     * Create a `Hive` manually using [`Builder`](crate::hive::Builder) (see Examples 2
 //!       and 3 below)
-//!         * [`Builder::new()`](crate::hive::builder::Builder::new) creates an empty `Builder`
-//!         * [`Builder::default()`](crate::hive::builder::Builder::default) creates a `Builder`
+//!         * [`Builder::new()`](crate::hive::Builder::new) creates an empty `Builder`
+//!         * [`Builder::default()`](crate::hive::Builder::default) creates a `Builder`
 //!           with the global default settings (which may be changed using the functions in the
-//!           [`hive`](crate::hive) module, e.g., `beekeeper::hive::set_num_threads_default(4)`).
+//!           [`hive`] module, e.g., `beekeeper::hive::set_num_threads_default(4)`).
 //!         * Use one of the `build_*` methods to build the `Hive`:
 //!             * If you have a `Worker` that implements `Default`, use
-//!               [`build_with_default::<MyWorker>()`](crate::hive::builder::Builder::build_with_default)
+//!               [`build_with_default::<MyWorker>()`](crate::hive::Builder::build_with_default)
 //!             * If you have a `Worker` that implements `Clone`, use
-//!               [`build_with(MyWorker::new())`](crate::hive::builder::Builder::build_with)
+//!               [`build_with(MyWorker::new())`](crate::hive::Builder::build_with)
 //!             * If you have a custom `Queen`, use
-//!               [`build_default::<MyQueen>()`](crate::hive::builder::Builder::build_default) if it implements
-//!               `Default`, otherwise use [`build(MyQueen::new())`](crate::hive::builder::Builder::build)
-//!         * Note that [`Builder::num_threads()`](crate::hive::builder::Builder::num_threads) must be set
+//!               [`build_default::<MyQueen>()`](crate::hive::Builder::build_default) if it implements
+//!               `Default`, otherwise use [`build(MyQueen::new())`](crate::hive::Builder::build)
+//!         * Note that [`Builder::num_threads()`](crate::hive::Builder::num_threads) must be set
 //!           to a non-zero value, otherwise the built `Hive` will not start any worker threads
-//!           until you call the [`Hive::grow()`](crate::hive::Hive#grow) method.
+//!           until you call the [`Hive::grow()`](crate::hive::Hive::grow) method.
 //!
 //! Once you've created a `Hive`, use its methods to submit tasks for processing. There are
 //! four groups of methods available:
 //! * `apply`: submits a single task
 //! * `swarm`: submits a batch of tasks given a collection of inputs with known size (i.e., anything
-//!   that implements `IntoIterator<IntoIter: ExactSizeIterator>`)
+//!   that implements [`IntoIterator<IntoIter: ExactSizeIterator>`])
 //! * `map`: submits an arbitrary batch of tasks (i.e., anything that implements `IntoIterator`)
 //! * `scan`: Similar to `map`, but you also provide 1) an initial value for a state variable, and
 //!   2) a function that transforms each item in the input iterator into the input type required by
 //!   the `Worker`, and also has access to (and may modify) the state variable.
 //!
 //! There are multiple methods in each group that differ by how the task results (called
-//! `Outcome`s) are handled:
-//! * The unsuffixed methods return an `Iterator` over the `Outcome`s in the same order as the inputs
-//!   (or, in the case of `apply`, a single `Outcome`)
+//! [`Outcome`](crate::hive::Outcome)s) are handled:
+//! * The unsuffixed methods return an `Iterator` over the `Outcome`s in the same order as the
+//!   inputs (or, in the case of `apply`, a single `Outcome`)
 //! * The methods with the `_unordered` suffix instead return an unordered iterator, which may be
 //!   more performant than the ordered iterator
-//! * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
-//!   channel as they are completed
+//! * The methods with the `_send` suffix accept a channel [`Sender`](crate::channel::Sender) and
+//!   send the `Outcome`s to that channel as they are completed
 //! * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
-//!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive#take_stored) method, using
-//!   one of the `remove*` methods (which requires
-//!   [`OutcomeStore`](crate::hive::outcome::store::OutcomeStore) to be in scope), or by
-//!   using one of the methods on `Husk` after shutting down the `Hive` using
-//!   [`Hive::try_into_husk()`](crate::hive::Hive#try_into_husk).
+//!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive::take_stored) method,
+//!   using one of the `remove*` methods (which requires
+//!   [`OutcomeStore`](crate::hive::OutcomeStore) to be in scope), or by
+//!   using one of the methods on [`Husk`](crate::hive::Husk) after shutting down the `Hive` using
+//!   [`Hive::try_into_husk()`](crate::hive::Hive::try_into_husk).
 //!
 //! When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 //! all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
 //! will block indefinitely.
 //!
-//! Within a `Hive`, each submitted task is assinged a unique index. The `_send` and `_store`
-//! methods return the indices of the submitted tasks, which can be used to retrieve them later
-//! (e.g., using [`Hive::remove()`](crate::hive::Hive#remove)).
+//! Within a `Hive`, each submitted task is assinged a unique ID. The `_send` and `_store`
+//! methods return the task IDs of the submitted tasks, which can be used to retrieve them later
+//! (e.g., using [`Hive::remove()`](crate::hive::OutcomeStore::remove)).
 //!
-//! After submitting tasks, you may use the [`Hive::join()`](crate::hive::Hive#join) method to wait
+//! After submitting tasks, you may use the [`Hive::join()`](crate::hive::Hive::join) method to wait
 //! for all tasks to complete. Using `join` is strongly recommended when using one of the `_store`
 //! methods, otherwise you'll need to continually poll the `Hive` to check for completed tasks.
 //!
@@ -120,8 +119,8 @@
 //! it go out of scope) - the worker threads will be terminated automatically. If you used the
 //! `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 //! has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-//! parameters, you can use the [`Hive::try_into_husk()`](crate::hive::Hive#try_into_husk) method to extract
-//! the relevant data from the `Hive` into a [`Husk`](crate::hive::husk::Husk) object.
+//! parameters, you can use the [`Hive::try_into_husk()`](crate::hive::Hive::try_into_husk) method to extract
+//! the relevant data from the `Hive` into a [`Husk`](crate::hive::Husk) object.
 //!
 //! ## Examples
 //!

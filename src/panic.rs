@@ -1,3 +1,4 @@
+//! Data type that wraps a `panic` payload.
 use super::boxed::BoxedFnOnce;
 use std::any::Any;
 use std::fmt::Debug;

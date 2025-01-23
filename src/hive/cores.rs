@@ -50,11 +50,14 @@ pub fn refresh() -> usize {
 /// Represents a CPU core.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Core {
+    /// the OS-specific core ID
     id: core_affinity::CoreId,
+    /// whether this core is currently available for pinning threads
     available: bool,
 }
 
 impl Core {
+    /// Creates a new `Core` with `available` set to `true`.
     fn new(core_id: core_affinity::CoreId) -> Self {
         Self {
             id: core_id,
@@ -64,6 +67,9 @@ impl Core {
 
     /// Attempts to pin the current thread to this CPU core. Returns `true` if the thread was
     /// successfully pinned.
+    ///
+    /// If the `available` flag is `false`, this immediately returns `false` and does not attempt
+    /// to pin the thread.
     pub fn try_pin_current(&self) -> bool {
         self.available && core_affinity::set_for_current(self.id)
     }

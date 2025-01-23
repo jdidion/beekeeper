@@ -1,27 +1,43 @@
 use super::{Config, Hive, SpawnError};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 
-/// A `Builder` for a `Hive`.
+/// A `Builder` for a [`Hive`](crate::hive::Hive).
+///
+/// Calling [`Builder::new()`] creates an unconfigured `Builder`, while calling
+/// [`Builder::default()`] creates a `Builder` with fields pre-set to the global default values.
+/// Global defaults can be changed using the
+/// [`beekeeper::hive::set_*_default`](crate::hive#functions) functions.
 ///
 /// The configuration options available:
-/// * `num_threads`: maximum number of threads that will be alive at any given moment by the built
-///   [`Hive`].
-/// * `thread_name`: thread name for each of the threads spawned by the built [`Hive`].
-/// * `thread_stack_size`: stack size (in bytes) for each of the threads spawned by the built
-///   [`Hive`].
-/// * `max_retries`: maximum number of times a `Worker` will retry an [`ApplyError::Retryable`]
-///   before giving up. Only available with feature `retry`.
-/// * `retry_factor`: `Duration` factor for exponential backoff when retrying an
-///   `ApplyError::Retryable` error. Only available with feature `retry`.
-/// * `affinity`: List of CPU core indicies to which the threads should be pinned. Only available
-///   with feature `affinity`.
+/// * [`Builder::num_threads`]: number of worker threads that will be spawned by the built `Hive`.
+///     * [`Builder::with_default_num_threads`] will set `num_threads` to the global default value.
+///     * [`Builder::with_thread_per_core`] will set `num_threads` to the number of available CPU
+///       cores.
+/// * [`Builder::thread_name`]: thread name for each of the threads spawned by the built `Hive`. By
+///   default, threads are unnamed.
+/// * [`Builder::thread_stack_size`]: stack size (in bytes) for each of the threads spawned by the
+///   built `Hive`. See the
+///   [`std::thread`](https://doc.rust-lang.org/stable/std/thread/index.html#stack-size)
+///   documentation for details on the default stack size.
 ///
-/// Calling `Builder::new()` creates an unconfigured `Builder`, while calling `Builder::default()`
-/// creates a `Builder` with `num_threads`, `max_retries`, and `retry_factor` set to the global
-/// default values, which can be changed using the `beekeeper::hive::set_*_default` functions.
+/// The following configuration options are available when the `retry` feature is enabled:
+/// * [`Builder::max_retries`]: maximum number of times a `Worker` will retry an
+///   [`ApplyError::Retryable`](crate::bee::ApplyError#Retryable) before giving up.
+/// * [`Builder::retry_factor`]: [`Duration`](std::time::Duration) factor for exponential backoff
+///   when retrying an `ApplyError::Retryable` error.
+/// * [`Builder::with_default_retries`] sets the retry options to the global defaults, while
+///   [`Builder::with_no_retries`] disabled retrying.
 ///
-/// [`Hive`]: hive/struct.Hive.html
-/// [`ApplyError::Retryable`]: task/enum.ApplyError.html#variant.Retryable
+/// The following configuration options are available when the `affinity` feature is enabled:
+/// * [`Builder::core_affinity`]: List of CPU core indices to which the threads should be pinned.
+///     * [`Builder::with_default_core_affinity`] will set the list to all CPU core indices, though
+///       only the first `num_threads` indices will be used.
+///
+/// To create the [`Hive`], call one of the `build*` methods:
+/// * [`Builder::build`] requires a [`Queen`] instance.
+/// * [`Builder::build_default`] requires a [`Queen`] type that implements [`Default`].
+/// * [`Builder::build_with`] requires a [`Worker`] instance that implements [`Clone`].
+/// * [`Builder::build_with_default`] requires a [`Worker`] type that implements [`Default`].
 ///
 /// # Examples
 ///
@@ -47,9 +63,7 @@ impl Builder {
 
     /// Sets the maximum number of worker threads that will be alive at any given moment in the
     /// built [`Hive`]. If not specified, the built `Hive` will not be initialized with worker
-    /// threads until [`Hive::set_num_threads`] is called.
-    ///
-    /// [`Hive`]: hive/struct.Hive.html
+    /// threads until [`Hive::grow`] is called.
     ///
     /// # Examples
     ///
@@ -88,11 +102,9 @@ impl Builder {
 
     /// Specifies that the built [`Hive`] will use all available CPU cores for worker threads.
     ///
-    /// [`Hive`]: hive/struct.Hive.html
-    ///
     /// # Examples
     ///
-    /// All available threads will be alive simultaneously for this pool:
+    /// All available threads will be alive simultaneously for this hive:
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
@@ -119,11 +131,9 @@ impl Builder {
     /// Sets the thread name for each of the threads spawned by the built [`Hive`]. If not
     /// specified, threads spawned by the thread pool will be unnamed.
     ///
-    /// [`Hive`]: hive/struct.Hive.html
-    ///
     /// # Examples
     ///
-    /// Each thread spawned by this hive will have the name "foo":
+    /// Each thread spawned by this hive will have the name `"foo"`:
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
@@ -154,7 +164,6 @@ impl Builder {
     /// the `std::thread` documentation][thread].
     ///
     /// [thread]: https://doc.rust-lang.org/nightly/std/thread/index.html#stack-size
-    /// [`Hive`]: hive/struct.Hive.html
     ///
     /// # Examples
     ///
@@ -183,8 +192,11 @@ impl Builder {
         self
     }
 
-    /// Consumes this `Builder` and returns a new `Hive` using the given `Queen` to create
-    /// `Worker`s.
+    /// Consumes this `Builder` and returns a new [`Hive`] using the given [`Queen`] to create
+    /// [`Worker`]s.
+    ///
+    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
+    /// worker threads.
     ///
     /// # Examples
     ///
@@ -257,14 +269,17 @@ impl Builder {
         Hive::new(self.0, queen)
     }
 
-    /// Consumes this `Builder` and returns a new `Hive` using a `Queen` created with
-    /// `Q::default()` to create `Worker`s.
+    /// Consumes this `Builder` and returns a new [`Hive`] using a [`Queen`] created with
+    /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
     pub fn build_default<Q: Queen + Default>(self) -> Result<Hive<Q::Kind, Q>, SpawnError> {
         Hive::new(self.0, Q::default())
     }
 
-    /// Consumes this `Builder` and returns a new `Hive` with `Worker`s created by cloning
+    /// Consumes this `Builder` and returns a new [`Hive`] with [`Worker`]s created by cloning
     /// `worker`.
+    ///
+    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
+    /// worker threads.
     ///
     /// # Examples
     ///
@@ -321,8 +336,11 @@ impl Builder {
         Hive::new(self.0, CloneQueen::new(worker))
     }
 
-    /// Consumes this `Builder` and returns a new `Hive` with `Worker`s created using
-    /// `W::default()`.
+    /// Consumes this `Builder` and returns a new [`Hive`] with [`Worker`]s created using
+    /// [`W::default()`](std::default::Default).
+    ///
+    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
+    /// worker threads.
     ///
     /// # Examples
     ///
@@ -366,20 +384,21 @@ impl Builder {
     /// assert_eq!(sum, -25);
     /// # }
     /// ```
-    pub fn build_with_default<W: Worker + Send + Sync + Default>(
-        self,
-    ) -> Result<Hive<W, DefaultQueen<W>>, SpawnError> {
+    pub fn build_with_default<W>(self) -> Result<Hive<W, DefaultQueen<W>>, SpawnError>
+    where
+        W: Worker + Send + Sync + Default,
+    {
         Hive::new(self.0, DefaultQueen::default())
     }
 }
 
 impl Default for Builder {
     /// Creates a new `Builder` with default configuration options:
-    /// * `num_threads = DEFAULT_THREADS`
+    /// * `num_threads = config::DEFAULT_NUM_THREADS`
     ///
     /// The following default configuration options are used when the `retry` feature is enabled:
-    /// * `max_retries = DEFAULT_RETRIES`
-    /// * `retry_factor = DEFAULT_RETRY_FACTOR`
+    /// * `max_retries = config::retry::DEFAULT_MAX_RETRIES`
+    /// * `retry_factor = config::retry::DEFAULT_RETRY_FACTOR_SECS`
     fn default() -> Self {
         Builder(Config::with_defaults())
     }
@@ -397,14 +416,15 @@ mod affinity {
     use crate::hive::cores::Cores;
 
     impl Builder {
-        /// Sets set list of CPU core indicies to which threads in the `Hive` should be pinned.
+        /// Sets set list of CPU core indices to which threads in the `Hive` should be pinned.
         ///
         /// Core indices are integers in the range `0..N`, where `N` is the number of available CPU
-        /// cores as reported by `num_cpus::get()`. The mapping between core indicies and core IDs is
-        /// platform-specific. All CPU cores on a given system should be equivalent, and thus it does
-        /// not matter which cores are pinned so long as a core is not pinned to multiple threads.
+        /// cores as reported by [`num_cpus::get()`]. The mapping between core indices and core IDs
+        /// is platform-specific. All CPU cores on a given system should be equivalent, and thus it
+        /// does not matter which cores are pinned so long as a core is not pinned to multiple
+        /// threads.
         ///
-        /// Excess core indicies (i.e. if `affinity.len() > num_threads`) are ignored. If
+        /// Excess core indices (i.e., if `affinity.len() > num_threads`) are ignored. If
         /// `affinity.len() < num_threads` then the excess threads will not be pinned.
         ///
         /// # Examples
@@ -418,7 +438,7 @@ mod affinity {
         /// # fn main() {
         /// let hive = Builder::new()
         ///     .num_threads(4)
-        ///     .thread_affinity(0..4)
+        ///     .core_affinity(0..4)
         ///     .build_with_default::<ThunkWorker<()>>()
         ///     .unwrap();
         ///
@@ -430,14 +450,15 @@ mod affinity {
         /// # hive.join();
         /// # }
         /// ```
-        pub fn thread_affinity<C: Into<Cores>>(mut self, affinity: C) -> Self {
+        pub fn core_affinity<C: Into<Cores>>(mut self, affinity: C) -> Self {
             let _ = self.0.affinity.set(Some(affinity.into()));
             self
         }
 
-        /// Specifies that worker threads should be pinned to all available CPU cores. If `num_threads`
-        /// is greater than the available number of CPU cores, then some threads might not be pinned.
-        pub fn with_default_thread_affinity(mut self) -> Self {
+        /// Specifies that worker threads should be pinned to all available CPU cores. If
+        /// `num_threads` is greater than the available number of CPU cores, then some threads
+        /// might not be pinned.
+        pub fn with_default_core_affinity(mut self) -> Self {
             let _ = self.0.affinity.set(Some(Cores::all()));
             self
         }
@@ -451,7 +472,7 @@ mod affinity {
         #[test]
         fn test_with_affinity() {
             let mut builder = Builder::new();
-            builder = builder.with_default_thread_affinity();
+            builder = builder.with_default_core_affinity();
             assert_eq!(builder.0.affinity.get(), Some(Cores::all()));
         }
     }
@@ -463,14 +484,14 @@ mod retry {
     use std::time::Duration;
 
     impl Builder {
-        /// Sets the maximum number of times to retry an [`ApplyError::Retryable`] error. A worker
-        /// thread will retry a task until it either returns `Err(ApplyError::Fatal)` or the
-        /// maximum number of retries is reached. Each time a task is retried, the worker thread will
-        /// first sleep for `retry_factor * (2 ** (attempt - 1))` before attempting the task again. If
-        /// not specified, tasks are retried a default number of times. Set to `0` to disable retrying.
-        ///
-        /// [`ApplyError::Retryable`]: enum.ApplyError.html#variant.Retryable
-        /// [`Hive`]: hive/struct.Hive.html
+        /// Sets the maximum number of times to retry a
+        /// [`ApplyError::Retryable`](crate::bee::ApplyError::Retryable) error. A worker
+        /// thread will retry a task until it either returns
+        /// [`ApplyError::Fatal`](crate::bee::ApplyError::Fatal) or the maximum number of retries is
+        /// reached. Each time a task is retried, the worker thread will first sleep for
+        /// `retry_factor * (2 ** (attempt - 1))` before attempting the task again. If not
+        /// specified, tasks are retried a default number of times. If set to `0`, tasks will be
+        /// retried immediately without delay.
         ///
         /// # Examples
         ///
@@ -513,9 +534,10 @@ mod retry {
             self
         }
 
-        /// Sets the exponential back-off factor for retrying tasks. Each time a task is retried, the
-        /// thread will first sleep for `retry_factor * (2 ** (attempt - 1))`. If not specififed, a
-        /// default retry factor is used. Set to `Duration::ZERO` to disable exponential backoff.
+        /// Sets the exponential back-off factor for retrying tasks. Each time a task is retried,
+        /// the thread will first sleep for `retry_factor * (2 ** (attempt - 1))`. If not
+        /// specififed, a default retry factor is used. Set to
+        /// [`Duration::ZERO`](std::time::Duration::ZERO) to disableexponential backoff.
         ///
         /// # Examples
         ///

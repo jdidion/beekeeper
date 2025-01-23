@@ -3,20 +3,22 @@ use crate::atomic::{Atomic, AtomicBool};
 use std::fmt::Debug;
 use std::sync::Arc;
 
+pub type TaskId = usize;
+
 /// Context for a task.
 #[derive(Debug, Default)]
 pub struct Context {
-    index: usize,
+    task_id: TaskId,
     cancelled: Arc<AtomicBool>,
     #[cfg(feature = "retry")]
     attempt: u32,
 }
 
 impl Context {
-    /// Creates a new `Context` with the given index and shared cancellation status.
-    pub fn new(index: usize, cancelled: Arc<AtomicBool>) -> Self {
+    /// Creates a new `Context` with the given task_id and shared cancellation status.
+    pub fn new(task_id: TaskId, cancelled: Arc<AtomicBool>) -> Self {
         Self {
-            index,
+            task_id,
             cancelled,
             #[cfg(feature = "retry")]
             attempt: 0,
@@ -28,9 +30,9 @@ impl Context {
         Self::new(0, Arc::new(AtomicBool::from(false)))
     }
 
-    /// The index of this task within the `Hive`.
-    pub fn index(&self) -> usize {
-        self.index
+    /// The task_id of this task within the `Hive`.
+    pub fn task_id(&self) -> TaskId {
+        self.task_id
     }
 
     /// Returns `true` if the task has been cancelled. A long-running `Worker` should check this

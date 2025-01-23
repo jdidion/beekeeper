@@ -118,8 +118,8 @@ When using one of the `_send` methods, you should ensure that the `Sender` is dr
 all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
 will block indefinitely.
 
-Within a `Hive`, each submitted task is assinged a unique index. The `_send` and `_store`
-methods return the indices of the submitted tasks, which can be used to retrieve them later
+Within a `Hive`, each submitted task is assinged a unique ID. The `_send` and `_store`
+methods return the task_ids of the submitted tasks, which can be used to retrieve them later
 (e.g., using [`Hive::remove()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#remove)).
 
 After submitting tasks, you may use the [`Hive::join()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#join) method to wait
@@ -145,8 +145,9 @@ pub fn double(i: usize) -> usize {
 // parallelize the computation of `double` on a range of numbers
 // over 4 threads, and sum the results
 const N: usize = 100;
-let sum_doubles: usize =
-    beekeeper::util::map(4, 0..N, double).into_iter().sum();
+let sum_doubles: usize = beekeeper::util::map(4, 0..N, double)
+    .into_iter()
+    .sum();
 println!("Sum of {} doubles: {}", N, sum_doubles);
 ```
 
@@ -161,7 +162,8 @@ use beekeeper::hive::prelude::*;
 let hive = Builder::new()
     .num_threads(4)
     .thread_name("thunk_hive")
-    .build_with_default::<ThunkWorker<i32>>();
+    .build_with_default::<ThunkWorker<i32>>()
+    .unwrap();
 
 // return results to your own channel...
 let (tx, rx) = outcome_channel();
@@ -284,7 +286,8 @@ impl Drop for CatQueen {
 // build the Hive
 let hive = Builder::new()
     .num_threads(4)
-    .build_default::<CatQueen>();
+    .build_default::<CatQueen>()
+    .unwrap();
 
 // prepare inputs
 let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
@@ -305,7 +308,7 @@ assert_eq!(output, b"abcdefgh");
 
 // shutdown the hive, use the Queen to wait on child processes, and
 // report errors
-let (mut queen, _outcomes) = hive.try_into_husk().into_parts();
+let (mut queen, _outcomes) = hive.try_into_husk().unwrap().into_parts();
 let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
     queen.wait_for_all().into_iter().partition(Result::is_ok);
 if !wait_err.is_empty() {
@@ -316,6 +319,7 @@ if !wait_err.is_empty() {
 }
 let exec_err_codes: Vec<_> = wait_ok
     .into_iter()
+    .map(Result::unwrap)
     .filter_map(|status| (!status.success()).then(|| status.code()))
     .flatten()
     .collect();

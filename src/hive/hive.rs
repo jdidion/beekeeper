@@ -1,38 +1,7 @@
-//! This crate provides `Hive<W: Worker, Q: Queen>`.
-
-//! A [`Hive`] is a pool of threads used to execute a (possibly) stateful function in parallel on
-//! any number of inputs.
-//!
-// To create a `Hive`, use a `Builder` and set the necessary options. `Builder::default()` creates a `Hive` with all available threads and no thread pinning. There are multiple `build*` funcitons depending on the traits that `Worker` implements.
-
-// `Hive` has four groups of functions for executing tasks:
-// - `apply`: submits a single task to the hive.
-// - `map`: submits an arbitrary-sized batch (an `Iterator`) of tasks to the hive.
-// - `swarm`: submits a batch of tasks to the hive, where the size of the batch is known (i.e., it implements `IntoIterator<IntoIter = ExactSizeIterator>`).
-// - `scan`: like map/swarm, but also takes a state value and a function; the function takes the state value and an item from the batch and returns an input that is sent to the hive for processing.
-
-// Each group of functions has multiple variants.
-// * The functions that end with `_send` all take a channel sender as a second argument and will deliver results to that channel as they become available.
-// * The functions that end with `_store` are all non-blocking functions that return the indices associated with the submitted tasks and will store the task results in the hive. The results can be retrieved from the hive later by index, e.g. using `remove_success`. Note that, since these functions are non-blocking, it is necessary to call `hive.join` or otherwise prevent the `Hive` from being `drop`ped until the tasks are completed.
-// * For executing single tasks, there is `apply`, which submits the tasks and blocks waiting for the result.
-// * For executing batches of tasks, there are `map`/`swarm`/`scan`, which return an iterator yields results in the same order they were submitted. There are `_unordered` versions of the same functions that yield results as they become available.
-
-// Other functions of interest:
-// - `hive.join()` _blocking_ waits for all tasks to complete.
-
-// Several example workers are provided in `beekeeper::utils`:
-// - A stateless `ThunkWorker<O, E>`, which executes on inputs of `Thunk<T: Result<O, E>>` - effectively argumentless functions that are `Sized + Send`. These thunks are creates by wrapping functions (`FnOnce() -> Result<T, E>`) with `Thunk::of`.
-//   - There is also `ThunkWorker<T>` for `Thunk<T>`s
-// - A `Func<I, O, E>`, which wraps a function pointer `fn(I) -> Result<O, E>`.
-//   - There is also `InfallibleFunc<I, O>`, which wraps a function pointer `fn(I) -> O`.
-// - `Identity<T>`, which simply returns the input value.
-
-use super::{
-    outcome_channel, Config, DerefOutcomes, Hive, HiveInner, Husk, Outcome, OutcomeBatch,
-    OutcomeIteratorExt, OutcomeSender, OutcomeStore, Shared, TaskSender,
-};
+use super::prelude::*;
+use super::{Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, Task, TaskSender};
 use crate::atomic::Atomic;
-use crate::bee::{Queen, Worker};
+use crate::bee::{DefaultQueen, Queen, TaskId, Worker};
 use crossbeam_utils::Backoff;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -40,6 +9,7 @@ use std::ops::{Deref, DerefMut, Range};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
+/// Errors that can occur when spawning worker threads.
 #[derive(thiserror::Error, Debug)]
 pub enum SpawnError {
     #[error("Failed to spawn thread: {0}")]
@@ -49,51 +19,58 @@ pub enum SpawnError {
 }
 
 impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
-    /// Spawns a new worker thread.
-    fn spawn(index: usize, shared: Arc<Shared<W, Q>>) -> Result<JoinHandle<()>, SpawnError> {
+    /// Spawns a new worker thread with the specified task_id and with access to the `shared` data.
+    fn spawn(thread_index: usize, shared: Arc<Shared<W, Q>>) -> Result<JoinHandle<()>, SpawnError> {
         // do not start any new threads if the hive is poisoned
         if shared.is_poisoned() {
             return Err(SpawnError::Poisoned);
         }
-
+        // spawn a thread that executes the worker loop
         shared
             .thread_builder()
             .spawn(move || {
-                Self::init_thread(index, &shared);
-                // Will spawn a new thread on panic until it is cancelled
-                let sentinel = Sentinel::new(index, Arc::clone(&shared));
+                // perform one-time initialization of the worker thread
+                Self::init_thread(thread_index, &shared);
+                // create a Sentinel that will spawn a new thread on panic until it is cancelled
+                let sentinel = Sentinel::new(thread_index, Arc::clone(&shared));
+                // create a new Worker instance
                 let mut worker = shared.create_worker();
-                // Get the next task - increments the counter
+                // execute the main loop
+                // get the next task to process - this decrements the queued counter and increments
+                // the active counter
                 while let Ok(task) = shared.next_task() {
-                    // Execute the task until it succeeds or we reach maximum retries - this
-                    // should be the only place where a panic might occur
+                    // execute the task until it succeeds or we reach maximum retries - this should
+                    // be the only place where a panic can occur
                     Self::execute(task, &mut worker, &shared);
-                    // Finish the task - decrements the counter and notifies other threads
-                    //dbg!("Finish task in worker thread: {}", index);
+                    // finish the task - decrements the active counter and notifies other threads
                     shared.finish_task(false);
                 }
-                // Cancel the sentinel if the receiver hung up, thus avoiding the thread
-                // being restarted when it is dropped
+                // this is only reachable when the main loop exits due to the task receiver having
+                // disconnected; cancel the Sentinel so this thread won't be re-spawned on drop
                 sentinel.cancel();
             })
             .map_err(SpawnError::Spawn)
     }
 
+    /// Creates a new `Hive`. This should only be called from `Builder`.
     pub(super) fn new(config: Config, queen: Q) -> Result<Self, SpawnError> {
         let num_threads = config.num_threads.get().unwrap_or(0);
         let (task_tx, task_rx) = mpsc::channel();
         let shared = Arc::new(Shared::new(config.into_sync(), queen, task_rx));
         let hive = Self(Some(HiveInner { task_tx, shared }));
-        let (_ok, err): (Vec<_>, Vec<_>) = hive
-            .try_brood(0..num_threads)
-            .into_iter()
-            .partition(Result::is_ok);
-        // TODO: do something with join handles?
-        if err.is_empty() {
-            Ok(hive)
-        } else {
-            Err(err.into_iter().next().unwrap().err().unwrap())
+        if num_threads > 0 {
+            // spawn the worker threads
+            // TODO: do something with worker thread join handles?
+            let (_ok, err): (Vec<_>, Vec<_>) = hive
+                .try_brood(0..num_threads)
+                .into_iter()
+                .partition(Result::is_ok);
+            let _ = err
+                .into_iter()
+                .filter(Result::is_err)
+                .collect::<Result<Vec<_>, _>>()?;
         }
+        Ok(hive)
     }
 
     #[inline]
@@ -106,14 +83,20 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         &self.0.as_ref().unwrap().shared
     }
 
-    /// Increases the number of worker threads by `num_threads`.
+    /// Attempts to increase the number of worker threads by `num_threads`. Returns the number of
+    /// new worker threads that were successfully started.
     pub fn grow(&self, num_threads: usize) -> usize {
-        if num_threads > 0 {
-            let start = self.shared().add_threads(num_threads);
-            self.brood(start..start + num_threads)
-        } else {
-            0
-        }
+        (num_threads > 0)
+            .then(|| {
+                let start_task_id = self.shared().add_threads(num_threads);
+                self.brood(start_task_id..start_task_id + num_threads)
+            })
+            .inspect(|num_started| {
+                if *num_started < num_threads {
+                    self.shared().adjust_threads(num_threads - num_started);
+                }
+            })
+            .unwrap_or(0)
     }
 
     /// Sets the number of worker threads to the number of available CPU cores. Returns the number
@@ -121,90 +104,93 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     pub fn use_all_cores(&self) -> usize {
         let num_threads = num_cpus::get();
         let cur_threads = self.shared().ensure_threads(num_threads);
-        if num_threads > cur_threads {
-            self.brood(cur_threads..num_threads)
-        } else {
-            0
-        }
+        (num_threads > cur_threads)
+            .then(|| self.brood(cur_threads..num_threads))
+            .inspect(|num_started| {
+                let expected = num_threads - cur_threads;
+                if *num_started < expected {
+                    self.shared().adjust_threads(expected - num_started);
+                }
+            })
+            .unwrap_or(0)
     }
 
-    /// Trys to spawn a worker thread for each thread index in the specified range. Returns the
+    /// Trys to spawn a worker thread for each thread task_id in the specified range. Returns the
     /// number of threads that were successfully spawned.
     fn brood(&self, thread_indices: Range<usize>) -> usize {
         // TODO: do something with errors?
-        let (ok, _err): (Vec<_>, Vec<_>) = self
-            .try_brood(thread_indices)
+        self.try_brood(thread_indices)
             .into_iter()
-            .partition(Result::is_ok);
-        ok.len()
+            .filter(Result::is_ok)
+            .count()
     }
 
-    /// Trys to spawn a worker thread for each thread index in the specified range. Each worker
+    /// Tries to spawn a worker thread for each thread task_id in the specified range. Each worker
     /// thread gets access to this `Hive`'s shared data. Returns a `Vec` of results, where each
     /// result is either a `JoinHandle` or a `SpawnError`.
     fn try_brood(&self, thread_indices: Range<usize>) -> Vec<Result<JoinHandle<()>, SpawnError>> {
         thread_indices
-            .map(|thread_index| Self::spawn(thread_index, Arc::clone(self.shared())))
+            .map(|thread_task_id| Self::spawn(thread_task_id, Arc::clone(self.shared())))
             .collect::<Vec<_>>()
     }
 
-    /// Sends one input to the `Hive` for processing and returns its index. The `Outcome`
+    /// Sends one input to the `Hive` for processing and returns its ID. The `Outcome`
     /// of the task is sent to the `outcome_tx` channel if provided, otherwise it is retained in
     /// the `Hive` for later retrieval.
     ///
     /// This method is called by all the `*apply*` methods.
-    fn send_one(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> usize {
+    fn send_one(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> TaskId {
         #[cfg(debug_assertions)]
         if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task = self.shared().prepare_task(input, outcome_tx);
-        let index = task.index();
-        if !self.is_poisoned() {
-            self.task_tx()
-                .send(task)
-                .expect("unable to send task into queue");
-        } else if let Some(outcome) = task.into_unprocessed_try_send() {
+        let task_id = task.id();
+        // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
+        // the task into an `Unprocessed` outcome and try to send it to the outcome channel; if
+        // that fails, store the outcome in the hive
+        if let Some(outcome) = if self.is_poisoned() {
+            Some(task)
+        } else {
+            self.task_tx().send(task).err().map(|err| err.0)
+        }
+        .and_then(Task::into_unprocessed_try_send)
+        {
             self.shared().add_outcome(outcome);
         }
-        index
+        task_id
     }
 
     /// Sends one `input` to the `Hive` for procesing and returns the result, blocking until the
-    /// result is available.
-    ///
-    /// Returns an error with the task index if the `Hive` is poisoned or is dropped before the
-    /// task finishes processing - it may still be possible to retrieve the unprocessed input.
-    ///
-    /// Creates a channel to send the input and receive the outcome. Panics if the channel hangs
-    /// up before the outcome is received.
+    /// result is available. Creates a channel to send the input and receive the outcome. Returns
+    /// an [`Outcome`] with the task output or an error.
     pub fn apply(&self, input: W::Input) -> Outcome<W> {
         let (tx, rx) = outcome_channel();
-        let index = self.send_one(input, Some(tx));
-        rx.recv().unwrap_or_else(|_| Outcome::Missing { index })
+        let task_id = self.send_one(input, Some(tx));
+        rx.recv().unwrap_or_else(|_| Outcome::Missing { task_id })
     }
 
-    /// Sends one `input` to the `Hive` for processing and returns its index. The `Outcome` of the
-    /// task will be sent to `tx` upon completion.
-    pub fn apply_send(&self, input: W::Input, tx: OutcomeSender<W>) -> usize {
+    /// Sends one `input` to the `Hive` for processing and returns its ID. The [`Outcome`] of
+    /// the task will be sent to `tx` upon completion.
+    pub fn apply_send(&self, input: W::Input, tx: OutcomeSender<W>) -> TaskId {
         self.send_one(input, Some(tx))
     }
 
-    /// Sends one `input` to the `Hive` for processing and returns its index immediately. The
-    /// `Outcome` of the task will be retained and available for later retrieval.
-    pub fn apply_store(&self, input: W::Input) -> usize {
+    /// Sends one `input` to the `Hive` for processing and returns its ID immediately. The
+    /// [`Outcome`] of the task will be retained and available for later retrieval.
+    pub fn apply_store(&self, input: W::Input) -> TaskId {
         self.send_one(input, None)
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns a `Vec` of their
-    /// indices. The `Outcome`s of the tasks are sent to the `outcome_tx` channel if provided,
+    /// task IDs. The [`Outcome`]s of the tasks are sent to the `outcome_tx` channel if provided,
     /// otherwise they are retained in the `Hive` for later retrieval.
     ///
-    /// The batch is provided as an `ExactSizeIterator`, which enables the hive to reserve a range
-    /// of indicies (a single atomic operation) rather than one at a time.
+    /// The batch is provided as an [`ExactSizeIterator`], which enables the hive to reserve a
+    /// range of task IDs (a single atomic operation) rather than one at a time.
     ///
     /// This method is called by all the `swarm*` methods.
-    fn send_batch<T>(&self, batch: T, outcome_tx: Option<OutcomeSender<W>>) -> Vec<usize>
+    fn send_batch<T>(&self, batch: T, outcome_tx: Option<OutcomeSender<W>>) -> Vec<TaskId>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
@@ -220,57 +206,66 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if !self.is_poisoned() {
             batch
                 .map(|task| {
-                    let index = task.index();
-                    task_tx.send(task).expect("unable to send task into queue");
-                    index
+                    let task_id = task.id();
+                    // try to send the task to the hive; if sending fails, convert the task into an
+                    // `Unprocessed` outcome and try to send it to the outcome channel; if that
+                    // fails, store the outcome in the hive
+                    if let Some(outcome) = task_tx
+                        .send(task)
+                        .err()
+                        .map(|err| err.0)
+                        .and_then(Task::into_unprocessed_try_send)
+                    {
+                        self.shared().add_outcome(outcome);
+                    }
+                    task_id
                 })
                 .collect()
         } else {
+            // if the hive is poisoned, convert all tasks into `Unprocessed` outcomes and try to
+            // send them to their outcome channels or store them in the hive
             self.shared().send_or_store_as_unprocessed(batch)
         }
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
-    /// `Outcome`s in the same order as the inputs.
+    /// [`Outcome`]s in the same order as the inputs.
     ///
-    /// Each item in the iterator will be an `Ok(Outcome)` or an `Err(index)` if the task with that
-    /// index was not processed due to the `Hive` being dropped or poisoned.
-    ///
-    /// This method is more efficient than `map_iter` when the input is an `ExactSizeIterator`.
+    /// This method is more efficient than [`map`](Self::map) when the input is an
+    /// [`ExactSizeIterator`].
     pub fn swarm<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = outcome_channel();
-        let indices = self.send_batch(batch, Some(tx));
-        rx.take_ordered(indices)
+        let task_ids = self.send_batch(batch, Some(tx));
+        rx.select_ordered(task_ids)
     }
 
-    /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
-    /// `Outcome`s.
+    /// Sends a `batch` of inputs to the `Hive` for processing, and returns an unordered iterator
+    /// over the [`Outcome`]s.
     ///
-    /// The `Outcome`s will be sent in the order they are completed; use `swarm` to instead receive
-    /// the `Outcome`s in the order they were submitted. The iterator may not yield `Outcome`s for
-    /// all tasks in the case that the `Hive` is dropped or poisoned.
-    ///
-    /// This method is more efficient than `map_unordered` when the input is an
-    /// `ExactSizeIterator`.
+    /// The `Outcome`s will be sent in the order they are completed; use [`swarm`](Self::swarm) to
+    /// instead receive the `Outcome`s in the order they were submitted. This method is more
+    /// efficient than [`map_unordered`](Self::map_unordered) when the input is an
+    /// [`ExactSizeIterator`].
     pub fn swarm_unordered<T>(&self, batch: T) -> impl Iterator<Item = Outcome<W>>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = outcome_channel();
-        let num_tasks = self.send_batch(batch, Some(tx)).len();
-        rx.into_iter().take(num_tasks)
+        let task_ids = self.send_batch(batch, Some(tx));
+        rx.select_unordered(task_ids)
     }
 
-    /// Sends a `batch`` of inputs to the `Hive` for processing, and returns a range of indices.
-    /// The `Outcome`s of the tasks will be sent to `tx` upon completion.
+    /// Sends a `batch` of inputs to the `Hive` for processing, and returns a [`Vec`] of task IDs.
+    /// The [`Outcome`]s of the tasks will be sent to `tx` upon completion.
     ///
-    /// This method is more efficient than `map_send` when the input is an `ExactSizeIterator`.
-    pub fn swarm_send<T>(&self, batch: T, outcome_tx: OutcomeSender<W>) -> Vec<usize>
+    /// This method is more efficient than [`map_send`](Self::map_send) when the input is an
+    /// [`ExactSizeIterator`].
+    pub fn swarm_send<T>(&self, batch: T, outcome_tx: OutcomeSender<W>) -> Vec<TaskId>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
@@ -278,11 +273,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.send_batch(batch, Some(outcome_tx))
     }
 
-    /// Sends a `batch` of inputs to the `Hive` for processing, and returns a `Vec` of indicies.
-    /// The `Outcome`s of the task are retained and available for later retrieval.
+    /// Sends a `batch` of inputs to the `Hive` for processing, and returns a [`Vec`] of task IDs.
+    /// The [`Outcome`]s of the task are retained and available for later retrieval.
     ///
-    /// This method is more efficient than `map_store` when the input is an `ExactSizeIterator`.
-    pub fn swarm_store<T>(&self, batch: T) -> Vec<usize>
+    /// This method is more efficient than `map_store` when the input is an [`ExactSizeIterator`].
+    pub fn swarm_store<T>(&self, batch: T) -> Vec<TaskId>
     where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
@@ -291,65 +286,61 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     }
 
     /// Iterates over `inputs` and sends each one to the `Hive` for processing and returns an
-    /// iterator over the `Outcome`s in the same order as the inputs.
+    /// iterator over the [`Outcome`]s in the same order as the inputs.
     ///
-    /// Each item in the iterator will be an `Ok(Outcome)` or an `Err(index)` if the task with that
-    /// index was not processed due to the `Hive` being dropped or poisoned.
-    ///
-    /// `swarm` should be preferred when `inputs` is an `ExactSizeIterator`.
+    /// [`swarm`](Self::swarm) should be preferred when `inputs` is an [`ExactSizeIterator`].
     pub fn map(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
     ) -> impl Iterator<Item = Outcome<W>> {
         let (tx, rx) = outcome_channel();
-        let indices: Vec<_> = inputs
+        let task_ids: Vec<_> = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
             .collect();
-        rx.take_ordered(indices)
+        rx.select_ordered(task_ids)
     }
 
     /// Iterates over `inputs`, sends each one to the `Hive` for processing, and returns an
-    /// iterator over the `Outcome`s in order they become available.
+    /// iterator over the [`Outcome`]s in order they become available.
     ///
-    /// The iterator may not yield `Outcome`s for all tasks in the case that the `Hive` is dropped
-    /// or poisoned.
-    ///
-    /// `swarm_unordered` should be preferred when `inputs` is an `ExactSizeIterator`.
+    /// [`swarm_unordered`](Self::swarm_unordered) should be preferred when `inputs` is an
+    /// [`ExactSizeIterator`].
     pub fn map_unordered(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
     ) -> impl Iterator<Item = Outcome<W>> {
         let (tx, rx) = outcome_channel();
         // `map` is required (rather than `inspect`) because we need owned items
-        #[allow(clippy::suspicious_map)]
-        let num_tasks = inputs
+        let task_ids: Vec<_> = inputs
             .into_iter()
             .map(|task| self.apply_send(task, tx.clone()))
-            .count();
-        rx.into_iter().take(num_tasks)
+            .collect();
+        rx.select_unordered(task_ids)
     }
 
-    /// Iterates over `inputs` and sends each one to the `Hive` for processing. Returns a `Vec` of
-    /// task indices. The `Outcome`s of the tasks will be sent to `tx` upon completion.
+    /// Iterates over `inputs` and sends each one to the `Hive` for processing. Returns a [`Vec`]
+    /// of task IDs. The [`Outcome`]s of the tasks will be sent to `tx` upon completion.
     ///
-    /// `swarm_send` should be preferred when `inputs` is an `ExactSizeIterator`.
+    /// [`swarm_send`](Self::swarm_send) should be preferred when `inputs` is an
+    /// [`ExactSizeIterator`].
     pub fn map_send(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
         tx: OutcomeSender<W>,
-    ) -> Vec<usize> {
+    ) -> Vec<TaskId> {
         inputs
             .into_iter()
             .map(|input| self.apply_send(input, tx.clone()))
             .collect()
     }
 
-    /// Iterates over `inputs` and sends each one to the `Hive` for processing. Returns a `Vec` of
-    /// task indices. The `Outcome`s of the task are retained and available for later retrieval.
+    /// Iterates over `inputs` and sends each one to the `Hive` for processing. Returns a [`Vec`]
+    /// of task IDs. The [`Outcome`]s of the task are retained and available for later retrieval.
     ///
-    /// `swarm_store` should be preferred when `inputs` is an `ExactSizeIterator`.
-    pub fn map_store(&self, inputs: impl IntoIterator<Item = W::Input>) -> Vec<usize> {
+    /// [`swarm_store`](Self::swarm_store) should be preferred when `inputs` is an
+    /// [`ExactSizeIterator`].
+    pub fn map_store(&self, inputs: impl IntoIterator<Item = W::Input>) -> Vec<TaskId> {
         inputs
             .into_iter()
             .map(|input| self.apply_store(input))
@@ -358,10 +349,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing.
-    ///
-    /// This function returns an `OutcomeBatch` of the outputs and the final state value. The
-    /// `OutcomeBatch` may not contain `Outcome`s for all items in the case that the `Hive` is
-    /// dropped or poisoned.
+    /// Returns an [`OutcomeBatch`] of the outputs and the final state value.
     pub fn scan<St, T, F>(
         &self,
         items: impl IntoIterator<Item = T>,
@@ -372,126 +360,135 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         F: FnMut(&mut St, T) -> W::Input,
     {
         let (tx, rx) = outcome_channel();
-        let (indices, fold_value) = self.scan_send(items, tx, init, f);
-        let outcomes = rx.into_iter().take(indices.len()).map(Outcome::into).into();
+        let (task_ids, fold_value) = self.scan_send(items, tx, init, f);
+        let outcomes = rx.select_unordered(task_ids).into();
         (outcomes, fold_value)
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
-    /// or an error.
-    ///
-    /// This function returns an `OutcomeBatch` of the outputs and the final state value, or an
-    /// error if any calls to `f` resulted in an error. The `OutcomeBatch` may not contain
-    /// `Outcome`s for all items in the case that the `Hive` is dropped or poisoned.
+    /// or an error. Returns an [`OutcomeBatch`] of the outputs, a [`Vec`] of errors, and the final
+    /// state value.
     pub fn try_scan<St, T, E, F>(
         &self,
         items: impl IntoIterator<Item = T>,
         init: St,
-        f: F,
-    ) -> Result<(OutcomeBatch<W>, St), E>
+        mut f: F,
+    ) -> (OutcomeBatch<W>, Vec<E>, St)
     where
         F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
         let (tx, rx) = outcome_channel();
-        let (indices, fold_value) = self.try_scan_send(items, tx, init, f)?;
-        let outcomes = rx.into_iter().take(indices.len()).map(Outcome::into).into();
-        Ok((outcomes, fold_value))
+        let (task_ids, errors, fold_value) = items.into_iter().fold(
+            (Vec::new(), Vec::new(), init),
+            |(mut task_ids, mut errors, mut acc), inp| {
+                match f(&mut acc, inp) {
+                    Ok(input) => task_ids.push(self.apply_send(input, tx.clone())),
+                    Err(err) => errors.push(err),
+                }
+                (task_ids, errors, acc)
+            },
+        );
+        let outcomes = rx.select_unordered(task_ids).into();
+        (outcomes, errors, fold_value)
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
-    /// The outputs are sent to `tx` in the order they become available. This function returns
-    /// a `Vec` of the task indices and the final state value.
+    /// The outputs are sent to `tx` in the order they become available. Returns a [`Vec`] of the
+    /// task IDs and the final state value.
     pub fn scan_send<St, T, F>(
         &self,
-        inputs: impl IntoIterator<Item = T>,
+        items: impl IntoIterator<Item = T>,
         tx: OutcomeSender<W>,
         init: St,
         mut f: F,
-    ) -> (Vec<usize>, St)
+    ) -> (Vec<TaskId>, St)
     where
         F: FnMut(&mut St, T) -> W::Input,
     {
-        inputs
+        items
             .into_iter()
-            .fold((Vec::new(), init), |(mut indices, mut acc), item| {
+            .fold((Vec::new(), init), |(mut task_ids, mut acc), item| {
                 let input = f(&mut acc, item);
-                indices.push(self.apply_send(input, tx.clone()));
-                (indices, acc)
+                task_ids.push(self.apply_send(input, tx.clone()));
+                (task_ids, acc)
             })
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing,
     /// or an error. The outputs are sent to `tx` in the order they become available. This
-    /// function returns a `Vec` of the task indicies and final state value, or an error if any
-    /// calls to `f` resulted in an error.
+    /// function returns the final state value and a [`Vec`] of results, where each result is
+    /// either a task ID or an error.
     pub fn try_scan_send<St, T, E, F>(
         &self,
-        inputs: impl IntoIterator<Item = T>,
+        items: impl IntoIterator<Item = T>,
         tx: OutcomeSender<W>,
         init: St,
         mut f: F,
-    ) -> Result<(Vec<usize>, St), E>
+    ) -> (Vec<Result<TaskId, E>>, St)
     where
         F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
-        inputs
+        items
             .into_iter()
-            .try_fold((Vec::new(), init), |(mut indicies, mut acc), inp| {
-                let input = f(&mut acc, inp)?;
-                indicies.push(self.apply_send(input, tx.clone()));
-                Ok((indicies, acc))
+            .fold((Vec::new(), init), |(mut results, mut acc), inp| {
+                results.push(f(&mut acc, inp).map(|input| self.apply_send(input, tx.clone())));
+                (results, acc)
             })
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
-    /// This function returns the final state value and a `Vec` of indices. The `Outcome`s of the
-    /// tasks are retained and available for later retrieval.
+    /// This function returns the final state value and a [`Vec`] of task IDs. The [`Outcome`]s of
+    /// the tasks are retained and available for later retrieval.
     pub fn scan_store<St, T, F>(
         &self,
         items: impl IntoIterator<Item = T>,
         init: St,
         mut f: F,
-    ) -> (Vec<usize>, St)
+    ) -> (Vec<TaskId>, St)
     where
         F: FnMut(&mut St, T) -> W::Input,
     {
         items
             .into_iter()
-            .fold((Vec::new(), init), |(mut indices, mut acc), item| {
+            .fold((Vec::new(), init), |(mut task_ids, mut acc), item| {
                 let input = f(&mut acc, item);
-                indices.push(self.apply_store(input));
-                (indices, acc)
+                task_ids.push(self.apply_store(input));
+                (task_ids, acc)
             })
     }
 
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing,
-    /// or an error. This function returns the final value of the state value and a `Vec` of
-    /// indices, or an error if any calls to `f` resulted in an error. The `Outcome`s of the tasks
-    /// are retained and available for later retrieval.
+    /// or an error. This function returns the final value of the state value and a [`Vec`] of
+    /// results, where each result is either a task ID or an error. The [`Outcome`]s of the
+    /// tasks are retained and available for later retrieval.
     pub fn try_scan_store<St, T, F, E>(
         &self,
         items: impl IntoIterator<Item = T>,
         init: St,
         mut f: F,
-    ) -> Result<(Vec<usize>, St), E>
+    ) -> (Vec<Result<TaskId, E>>, St)
     where
         F: FnMut(&mut St, T) -> Result<W::Input, E>,
     {
         items
             .into_iter()
-            .try_fold((Vec::new(), init), |(mut indices, mut acc), item| {
-                let input = f(&mut acc, item)?;
-                indices.push(self.apply_store(input));
-                Ok((indices, acc))
+            .fold((Vec::new(), init), |(mut results, mut acc), item| {
+                results.push(f(&mut acc, item).map(|input| self.apply_store(input)));
+                (results, acc)
             })
     }
 
-    /// Returns the `MutexGuard` for the `Queen`.
+    /// Blocks the calling thread until all tasks finish.
+    pub fn join(&self) {
+        self.shared().wait_on_done();
+    }
+
+    /// Returns the [`MutexGuard`](parking_lot::MutexGuard) for the [`Queen`].
     ///
     /// Note that the `Queen` will remain locked until the returned guard is dropped, and that
     /// locking the `Queen` prevents new worker threads from being started.
@@ -519,21 +516,22 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// corrupted such that it is no longer able to process tasks.
     ///
     /// Note that, when a `Hive` is poisoned, it is still possible to call methods that extract
-    /// its stored `Outcome`s (e.g., `take_stored()`) or consume it (e.g., `try_try_into_husk()`).
+    /// its stored [`Outcome`]s (e.g., [`take_stored`](Self::take_stored)) or consume it (e.g.,
+    /// [`try_into_husk`](Self::try_into_husk)).
     pub fn is_poisoned(&self) -> bool {
         self.shared().is_poisoned()
     }
 
-    /// Returns `true` if the cancelled flag is set.
+    /// Returns `true` if the suspended flag is set.
     pub fn is_suspended(&self) -> bool {
         self.shared().is_suspended()
     }
 
     /// Sets the suspended flag, which notifies worker threads that they a) MAY terminate their
-    /// current task early (returning an `Unprocessed` outcome), and b) MUST not accept new tasks,
-    /// and instead block until the suspended flag is cleared.
+    /// current task early (returning an [`Outcome::Unprocessed`]), and b) MUST not accept new
+    /// tasks, and instead block until the suspended flag is cleared.
     ///
-    /// Call `resume` to unset the suspended flag and continue processing tasks.
+    /// Call [`resume`](Self::resume) to unset the suspended flag and continue processing tasks.
     ///
     /// Note: this does *not* prevent new tasks from being queued, and there is a window of time
     /// (~1 second) after the suspended flag is set within which a worker thread may still accept a
@@ -566,7 +564,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// assert_eq!(hive.num_tasks(), (0, 0));
     /// # }
     /// ```
-    ///
     pub fn suspend(&self) {
         self.shared().set_suspended(true);
     }
@@ -576,49 +573,49 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.shared().set_suspended(false);
     }
 
+    /// Removes all `Unprocessed` outcomes from this `Hive` and returns them as an iterator over
+    /// the input values.
     fn take_unprocessed_inputs(&self) -> impl ExactSizeIterator<Item = W::Input> {
         self.shared()
             .take_unprocessed()
             .into_iter()
             .map(|outcome| match outcome {
-                Outcome::Unprocessed { input, index: _ } => input,
+                Outcome::Unprocessed { input, task_id: _ } => input,
                 _ => unreachable!(),
             })
     }
 
-    /// Resume this `Hive` and re-submit any unprocessed tasks for processing, with their results
-    /// to be sent to `tx`. Returns a `Vec` of task indices that were resumed.
-    pub fn resume_send(&self, outcome_tx: OutcomeSender<W>) -> Vec<usize> {
+    /// If this `Hive` is suspended, resumes this `Hive` and re-submits any unprocessed tasks for
+    /// processing, with their results to be sent to `tx`. Returns a [`Vec`] of task IDs that
+    /// were resumed.
+    pub fn resume_send(&self, outcome_tx: OutcomeSender<W>) -> Vec<TaskId> {
         self.shared()
             .set_suspended(false)
             .then(|| self.swarm_send(self.take_unprocessed_inputs(), outcome_tx))
             .unwrap_or_default()
     }
 
-    /// Resume this `Hive` and re-submit any unprocessed tasks for processing, with their results
-    /// to be stored in the queue. Returns a `Vec` of task indices that were resumed.
-    pub fn resume_store(&self) -> Vec<usize> {
+    /// If this `Hive` is suspended, resumes this `Hive` and re-submit any unprocessed tasks for
+    /// processing, with their results to be stored in the queue. Returns a [`Vec`] of task IDs
+    /// that were resumed.
+    pub fn resume_store(&self) -> Vec<TaskId> {
         self.shared()
             .set_suspended(false)
             .then(|| self.swarm_store(self.take_unprocessed_inputs()))
             .unwrap_or_default()
     }
 
-    /// Returns any stored `Outcome`s.
-    pub fn take_stored(&self) -> HashMap<usize, Outcome<W>> {
+    /// Returns all stored outcomes as a [`HashMap`] of task IDs to `Outcome`s.
+    pub fn take_stored(&self) -> HashMap<TaskId, Outcome<W>> {
         self.shared().take_outcomes()
     }
 
-    /// Blocks this thread until all tasks finish.
-    pub fn join(&self) {
-        self.shared().wait_on_done();
-    }
-
-    /// Consumes this `Hive` and attempts to return a `Husk` containing the remnants of this `Hive`,
-    /// including any stored task outcomes, and all the data necessary to create a new `Hive`.
+    /// Consumes this `Hive` and attempts to return a [`Husk`] containing the remnants of this
+    /// `Hive`, including any stored task outcomes, and all the data necessary to create a new
+    /// `Hive`.
     ///
-    /// If this `Hive` has been cloned, and those clones have not been dropped, this method will
-    /// return `None` since it cannot take exclusive ownership of the internal shared data.
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method
+    /// returns `None` since it cannot take exclusive ownership of the internal shared data.
     ///
     /// This method first joins on the `Hive` to wait for all tasks to finish.
     pub fn try_into_husk(mut self) -> Option<Husk<W, Q>> {
@@ -631,15 +628,30 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         inner.shared.wait_on_done();
         // drop the task sender so receivers will drop automatically
         drop(inner.task_tx);
-        // wait for worker threads to drop
+        // wait for worker threads to drop, then take ownership of the shared data and convert it
+        // into a Husk
+        let mut shared = inner.shared;
         let mut backoff = None::<Backoff>;
-        while Arc::strong_count(&inner.shared) > 1 {
-            backoff.get_or_insert_with(Backoff::new).spin();
+        loop {
+            // TODO: may want to have some timeout or other kind of limit to prevent this from
+            // looping forever if a worker thread somehow gets stuck, or if the `num_referrers`
+            // counter is corrupted
+            shared = match Arc::try_unwrap(shared) {
+                Ok(shared) => {
+                    return Some(shared.try_into_husk());
+                }
+                Err(shared) => {
+                    backoff.get_or_insert_with(Backoff::new).spin();
+                    shared
+                }
+            };
         }
-        // take the shared data out of the Arc
-        let shared = Arc::into_inner(inner.shared).expect("Arc::try_unwrap failed");
-        // convert the shared data into a Husk
-        Some(shared.try_into_husk())
+    }
+}
+
+impl<W: Worker + Send + Sync + Default> Default for Hive<W, DefaultQueen<W>> {
+    fn default() -> Self {
+        Builder::default().build_with_default::<W>().unwrap()
     }
 }
 
@@ -649,10 +661,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Clone for Hive<W, Q> {
     fn clone(&self) -> Self {
         let inner = self.0.as_ref().unwrap();
         self.shared().referrer_is_cloning();
-        Self(Some(HiveInner {
-            task_tx: inner.task_tx.clone(),
-            shared: Arc::clone(&inner.shared),
-        }))
+        Self(Some(inner.clone()))
+    }
+}
+
+impl<W: Worker, Q: Queen<Kind = W>> Clone for HiveInner<W, Q> {
+    fn clone(&self) -> Self {
+        HiveInner {
+            task_tx: self.task_tx.clone(),
+            shared: Arc::clone(&self.shared),
+        }
     }
 }
 
@@ -678,16 +696,16 @@ impl<W: Worker, Q: Queen<Kind = W>> PartialEq for Hive<W, Q> {
 impl<W: Worker, Q: Queen<Kind = W>> Eq for Hive<W, Q> {}
 
 impl<W: Worker, Q: Queen<Kind = W>> DerefOutcomes<W> for Hive<W, Q> {
-    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<usize, Outcome<W>>> {
+    #[inline]
+    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>> {
         self.shared().outcomes()
     }
 
-    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<usize, Outcome<W>>> {
+    #[inline]
+    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
         self.shared().outcomes()
     }
 }
-
-impl<W: Worker, Q: Queen<Kind = W>> OutcomeStore<W> for Hive<W, Q> {}
 
 impl<W: Worker, Q: Queen<Kind = W>> Drop for Hive<W, Q> {
     fn drop(&mut self) {
@@ -757,6 +775,7 @@ mod affinity {
     use crate::hive::{Hive, Shared};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
+        /// Tries to pin the worker thread to a specific CPU core.
         #[inline]
         pub(super) fn init_thread(thread_index: usize, shared: &Shared<W, Q>) {
             if let Some(core) = shared.get_core_affinity(thread_index) {
@@ -767,9 +786,9 @@ mod affinity {
         /// Increases the number of worker threads by `num_threads`.
         ///
         /// The provided `affinity` specifies additional CPU core indices to which the worker threads
-        /// may be pinned - these are added to the existing pool of core indicies (if any).
-        pub fn grow_with_affinity(&self, num_threads: usize, affinity: &Cores) {
-            self.shared().add_core_affinity(affinity);
+        /// may be pinned - these are added to the existing pool of core indices (if any).
+        pub fn grow_with_affinity<C: Into<Cores>>(&self, num_threads: usize, affinity: C) {
+            self.shared().add_core_affinity(affinity.into());
             self.grow(num_threads);
         }
 
@@ -778,7 +797,7 @@ mod affinity {
         ///
         /// Returns the number of new threads spun up (if any).
         pub fn use_all_cores_with_affinity(&self) -> usize {
-            self.shared().add_core_affinity(&Cores::all());
+            self.shared().add_core_affinity(Cores::all());
             self.use_all_cores()
         }
     }
@@ -794,7 +813,7 @@ mod no_retry {
         pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
-            let outcome = Outcome::from_worker_result(result, ctx.index());
+            let outcome = Outcome::from_worker_result(result, ctx.task_id());
             shared.send_or_store_outcome(outcome, outcome_tx);
         }
     }
@@ -815,38 +834,12 @@ mod retry {
                     shared.queue_retry(input, ctx, outcome_tx);
                 }
                 result => {
-                    let outcome = Outcome::from_worker_result(result, ctx.index());
+                    let outcome = Outcome::from_worker_result(result, ctx.task_id());
                     shared.send_or_store_outcome(outcome, outcome_tx);
                 }
             }
         }
     }
-
-    // #[inline]
-    // fn retry<W: Worker, Q: Queen<Kind = W>>(
-    //     mut input: W::Input,
-    //     ctx: &mut Context,
-    //     worker: &mut W,
-    //     shared: &Shared<W, Q>,
-    // ) -> Outcome<W> {
-    //     // Execute the task until it succeeds or we reach maximum retries
-    //     let max_retries = shared.max_retries();
-    //     debug_assert!(max_retries > 0);
-    //     loop {
-    //         ctx.inc_attempt();
-    //         input = match worker.apply(input, &ctx) {
-    //             Err(ApplyError::Retryable { input, .. }) if ctx.attempt() < max_retries => {
-    //                 if let Some(delay) = shared.get_delay(ctx.attempt()) {
-    //                     thread::sleep(delay);
-    //                 }
-    //                 input
-    //             }
-    //             result => {
-    //                 return Outcome::from_worker_result(result, ctx.index(), true);
-    //             }
-    //         }
-    //     }
-    // }
 }
 
 #[cfg(test)]

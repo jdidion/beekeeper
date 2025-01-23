@@ -322,6 +322,17 @@ where
         }
     }
 
+    /// If this is a `Sync` variant whose value is `Some`, updates the value to be the difference
+    /// of the current value and `value` and returns the previous value. Otherwise returns a
+    /// `MutError`.
+    pub fn sub(&self, rhs: P) -> Result<P, MutError> {
+        match self {
+            Self::Unsync(_) => Err(MutError::Unsync),
+            Self::Sync(None) => Err(MutError::Unset),
+            Self::Sync(Some(atomic)) => Ok(atomic.sub(rhs)),
+        }
+    }
+
     /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
     /// current value and `rhs` and returns the previous value. Otherwise returns a `MutError`.
     pub fn set_max(&self, rhs: P) -> Result<P, MutError> {

@@ -1,3 +1,4 @@
+//! Implementations of a `gate` that blocks threads waiting on a condition.
 use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

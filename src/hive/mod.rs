@@ -1,3 +1,335 @@
+//! A worker pool implementation.
+//!
+//! A [`Hive<W, Q>`](crate::hive::Hive) has a pool of worker threads that it uses to execute tasks.
+//!
+//! The `Hive` has a [`Queen`] of type `Q`, which it uses to create a [`Worker`] of type `W` for
+//! each thread it starts in the pool.
+//!
+//! Each task is submitted to the `Hive` as an input of type `W::Input`, and, optionally, a
+//! channel where the [`Outcome`] of processing the task will be sent upon completion. To these,
+//! the `Hive` adds additional context to create the task. It then adds the task to an internal
+//! queue that is shared with all the worker threads.
+//!
+//! Each worker thread executes a loop in which it receives a task, evaluates it with its `Worker`,
+//! and either sends the `Outcome` to the task's outcome channel if one was provided, or stores the
+//! `Outcome` in the `Hive` for later retrieval.
+//!
+//! When a `Hive` is no longer needed, it may be simply dropped, which will cause the worker
+//! threads to terminate automatically. Alternatively, a `Hive` may be turned into a `Husk`, which
+//! will preserve its internal state and enable later retrieval of stored outcomes.
+//!
+//! # Creating a `Hive`
+//!
+//! The typical way to create a `Hive` is using a [`Builder`]. Use
+//! [`Builder::new()`](crate::hive::builder::Builder::new) to create an empty (completely
+//! unconfigured) `Builder`, or [`Builder::default()`](crate::hive::builder::Builder::default) to
+//! create a `Builder` configured with the global default values (see below).
+//!
+//! See the [`Builder`] documentation for more details on the options that may be configured, and
+//! the `build*` methods available to create the `Hive`.
+//!
+//! Building a `Hive` consumes the `Builder`. To create multiple identical `Hive`s, you can `clone`
+//! the `Builder`.
+//!
+//! ```
+//! use beekeeper::hive::Builder;
+//! # type MyWorker1 = beekeeper::bee::stock::EchoWorker<usize>;
+//! # type MyWorker2 = beekeeper::bee::stock::EchoWorker<u32>;
+//!
+//! let builder1 = Builder::default();
+//! let builder2 = builder1.clone();
+//!
+//! let hive1 = builder1.build_with_default::<MyWorker1>();
+//! let hive2 = builder2.build_with_default::<MyWorker2>();
+//! ```
+//!
+//! If you want a `Hive` with the global defaults for a `Worker` type that implements `Default`,
+//! you can call [`Hive::default`](crate::hive::Hive::default) rather than use a `Builder`.
+//!
+//! ```
+//! # use beekeeper::hive::Hive;
+//! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
+//! let hive: Hive<MyWorker, _> = Hive::default();
+//! ```
+//!
+//! ## Global defaults
+//!
+//! The [`hive`](crate::hive) module has functions for setting the global default values for some
+//! of the `Builder` parameters (e.g., [`set_num_threads_default`], [`set_num_threads_default_all`]).
+//! These default values are used to pre-configure the `Builder` when using `Builder::default()`.
+//!
+//! The global defaults can be reset their original values using the [`reset_defaults`] function.
+//!
+//! ## Thread affinity (requires `feature = "affinity"`)
+//!
+//! Threads are a feature of modern operating systems that enable more processes to execute than
+//! there are available CPU cores. This requires the OS to "schedule" each process by moving its
+//! state into a CPU cache when it needs to run, and out of the cache when it is "interrupted" by
+//! another process. This overhead can be significant for CPU-bound processes.
+//!
+//! CPU "affinity" is a feature supported by most modern operating systems, in which a thread can
+//! be "pinned" to a specific CPU core such that its state is retained in that core's cache (even)
+//! if that thread is paused. For highly active threads, this has the advantage of reducing
+//! scheduling overhead. However, for threads that are only periodically active, this can lead to
+//! under-utlization of CPU cores as well as degredation of un-pinned processes.
+//!
+//! With the `affinity` feature enabled, several additional methods become available in `Builder`
+//! and `Hive` that enable pinning worker threads to specific CPU cores. You specify a CPU core in
+//! terms of its index, which is a value in the range `0..n`, where `n` is the number of available
+//! CPU cores. Internally, a mapping is maintained between the index and the OS-specific core ID.
+//!
+//! The [`Builder::core_affinity`](crate::hive::builder::Builder::core_affinity) method accepts a
+//! range of core task_IDs that are reserved as *available* for the `Hive` to use for thread-pinning,
+//! but they may or may not actually be used (depending on the number of worker threads and core
+//! availability). The number of available cores can be smaller or larger than the number of
+//! threads. Any thread that is spawned for which there is no corresponding core index is simply
+//! started with no core affinity.
+//!
+//! ```
+//! use beekeeper::hive::Builder;
+//! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
+//!
+//! let hive = Builder::new()
+//!     .num_threads(4)
+//!     // 16 cores will be available for pinning but only 4 will be used initially
+//!     .core_affinity(0..16)
+//!     .build_with_default::<MyWorker>()
+//!     .unwrap();
+//!
+//! // increase the number of threads by 12 - the new threads will use the additiona
+//! // 12 available cores for pinning
+//! hive.grow(12);
+//!
+//! // increase the number of threads and also provide additional cores for pinning
+//! // this requires the `affinity` feature
+//! // hive.grow_with_affinity(4, 16..20);
+//! ```
+//!
+//! As an application developer depending on `beekeeper`, you must ensure you assign each core
+//! index to at most a single thread (i.e., don't reuse indices for different co-existing `Hive`s).
+//! It is strongly suggested that you require the user of your application to specify the CPU
+//! indices available to your application for thread pinning; the user is required to ensure that
+//! they don't re-use CPU indices with different co-existing applications that support thread
+//! pinning.
+//!
+//! ## Retrying tasks (requires `feature = "retry"`)
+//!
+//! Some types of tasks (e.g., those requirng network I/O operations) may fail transiently but
+//! could be successful if retried at a later time. Such retry behavior is supported by the `retry`
+//! feature and only requires a) configuring the `Builder` by setting
+//! [`max_retries`](crate::hive::Builder::max_retries) and (optionally)
+//! [`retry_factor`](crate::hive::Builder::retry_factor); and b) implementing the `Worker`
+//! to return [`ApplyError::Retryable`](crate::bee::ApplyError::Retryable) for transient failures.
+//!
+//! When a `Retryable` error occurs, the following steps happen:
+//! * The `attempt` number in the task's [`Context`] is incremented.
+//! * If the `attempt` number exceeds `max_retries`, the error is converted to
+//!   `Outcome::MaxRetriesAttempted` and sent/stored.
+//! * Otherwise, the task is added to the `Hive`'s retry queue.
+//!     * If a `retry_factor` is configured, then the task is queued with a delay of at least
+//!       `2^(attempt - 1`) * retry_factor`.
+//!     * If a `retry_factor` is not configured, then the task is queued with no delay.
+//! * When a worker thread becomes available, it first checks the retry queue to see if there is
+//!   a task to retry before taking a new task from the input channel.
+//!
+//! Note that `ApplyError::Retryable` is not feature-gated - a `Worker` can be implemented to be
+//! retry-aware but used with a `Hive` for which retry is not enabled, or in an application where
+//! the `retry` feature is not enabled. In such cases, `Retryable` errors are automatically
+//! converted to `Fatal` errors by the worker thread.
+//!
+//! # Cloning a `Hive`
+//!
+//! A `Hive` is simply a wrapper around a data structure that is shared between the `Hive`, its
+//! worker threads, and any clones that have been made of the `Hive`. In other works, cloning a
+//! `Hive` simply creates another reference to the same shared data (similar to cloning an [`Arc`]).
+//! The worker threads and the shared data structure are dropped automatically when the last `Hive`
+//! referring to them is dropped (see "Disposing of a Hive" below).
+//!
+//! # Submitting tasks
+//!
+//! `Hive` has four groups of methods for submitting tasks:
+//! - `apply`: submits a single task to the hive.
+//! - `map`: submits an arbitrary-sized batch (an `Iterator`) of tasks to the hive.
+//! - `swarm`: submits a batch of tasks to the hive, where the size of the batch is known (i.e.,
+//!   it implements `IntoIterator<IntoIter = ExactSizeIterator>`).
+//! - `scan`: like map/swarm, but instead of a batch of inputs (of type `W::Input`), it takes a
+//!   batch of items (of type `T`), a state value (`St`), and a callable
+//!   (`FnMut(&mut St, T) -> W::Input`) that is called on each item and returns an input that is
+//!   sent to the hive for processing. The state value may be updated by the callable, and the
+//!   final value is returned.
+//!
+//! Each group of functions has multiple variants:
+//! * The methods that end with `_send` all take a channel sender as a second argument and will
+//!   deliver results to that channel as they become available.
+//! * The methods that end with `_store` are all non-blocking functions that return the task IDs
+//!   associated with the submitted tasks and will store the task results in the hive. The outcomes
+//!   can be retrieved from the hive later by their IDs, e.g., using `remove_success`.
+//! * For executing single tasks, there is `apply`, which submits the tasks and blocks waiting for
+//!   the result.
+//! * For executing batches of tasks, there are `map`/`swarm`/`scan`, which return an iterator that
+//!   yields outcomes in the same order they were submitted. There are `_unordered` versions of the
+//!   same functions that yield results as they become available.
+//! * There are also `try_scan` variants of the `scan*` methods, which take a callable that returns
+//!   `Result<W::Input, E>`.
+//!
+//! After submitting tasks, you can call [`Hive::join`](crate::hive::Hive::join) to block the
+//! calling thread until all tasks have completed. Note that this may be required when using
+//! non-blocking methods (such as those that end with `_store`).
+//!
+//! ## Outcome channels
+//!
+//! By default, [`std::sync::mpsc`] channels are used for sending task `Outcome`s.
+//! However, `beekeeper` supports several alternative channel implementations via feature flags:
+//! - [`crossbeam`](https://docs.rs/crossbeam/latest/crossbeam/channel/index.html)
+//! - [`flume`](https://docs.rs/flume/latest/flume/index.html)
+//! - [`loole`](https://docs.rs/loole/latest/loole/index.html)
+//!
+//! Note that only a single outcome channel implementation may be enabled at a time.
+//!
+//! You can create an instance of the enabled outcome channel type using the [`outcome_channel`]
+//! function.
+//!
+//! # Retrieving outcomes
+//!
+//! Each task that is successfully submitted to a `Hive` will have a corresponding `Outcome`.
+//! [`Outcome`] is similar to `Result`, except that the error variants are enumerated:
+//! * `Failure`: the task failed with an error of type `W::Error`. If possible, the input value is
+//!   also provided.
+//! * `Panic`: the `Worker` panicked while processing the task. The panic
+//!   [`payload`](crate::panic::Panic) is provided, and the unwinding can be
+//!   [`resume`d](crate::panic::Panic::resume) to panic the handling thread. The input is also
+//!   provided if possible.
+//! * `Unprocessed`: the input was not processed by the `Hive`, typically because the `Hive` was
+//!   dropped first. The input value is always provided.
+//! * `Missing`: an `Outcome` was requested by ID, but no `Outcome` with that ID was found.
+//!   This variant is only used when a list of outcomes is requested, such as when using one of the
+//!   `select_*` methods on an `Outcome` iterator (see below).
+//!
+//! An `Outcome` can be converted into a `Result` (using `into()`) or
+//! [`unwrap`ped](crate::hive::Outcome::unwrap) into an output value of type `W::Output`.
+//!
+//! ## Outcome iterators
+//!
+//! The `map` and `swarm` methods return an ordered iterator over the `Outcome`s, while
+//! `map_unordered` and `swarm_unordered` return unordered iterators. These methods create a
+//! dedicated outcome channel to use for each batch of tasks, and thus expect the channel receiver
+//! to receive exactly the outcomes with the task IDs of the submitted tasks. If, somehow, an
+//! unexpected `Outcome` is received, it is silently dropped. If any expected outcomes have not
+//! been received after the channel sender has disconnected, then those task IDs are yielded as
+//! `Outcome::Missing` results.
+//!
+//! When the [`OutcomeIteratorExt`] trait is in scope, then additional methods become available on
+//! any iterator over `Outcome`:
+//! * The methods with `_result` suffix convert the outcome iterator into an iterator over
+//!   `Result<W::Output, W::Error>`. Note that attempting to convert `Outcome`s other than
+//!   `Success`, `Failure`, and `MaxRetriesAttempted` causes a panic.
+//! * The methods with `_output` suffix convert the outcome iterator into an iterator over
+//!   `W::Output`. Note that attempting to convert a non-`Success` outcome causes a panic.
+//!
+//! ## Outcome channels
+//!
+//! Using one of the `*_send` methods with a channel enables the `Hive` to send you `Outcome`s
+//! asynchronously as they become available. This means that you will likely receive the outcomes
+//! out of order (i.e., not in the same order as the provided inputs).
+//!
+//! All channel `Receiver` types have a `recv()` method that blocks waiting for the next value to
+//! be received, or until the sending end of the channel is dropped (in which case an error is
+//! returned).
+//!
+//! Alternatively, a `Receiver` type can be converted into a blocking iterator using the `iter()`
+//! method. The iterator yields `Outcome` values until the sender is dropped. With
+//! `OutcomeIteratorExt` in scope, any of the methods mentioned in the previous section may be used
+//! to convert the outcomes. Notably, the `select_*` methods take a collection of task IDs and
+//! return an iterator that yields items (`Outcome`s, `Result`s, or outputs) that match those
+//! task IDs.
+//!
+//! ```
+//! use beekeeper::hive::{Hive, OutcomeIteratorExt, outcome_channel};
+//! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
+//!
+//! let hive: Hive<MyWorker, _> = Hive::default();
+//! let (tx, rx) = outcome_channel::<MyWorker>();
+//! let batch1 = hive.swarm_send(0..10, tx.clone());
+//! let batch2 = hive.swarm_send(10..20, tx.clone());
+//! let outputs: Vec<_> = rx.into_iter()
+//!     .select_ordered_outputs(batch1.into_iter().chain(batch2.into_iter()))
+//!     .collect();
+//! ```
+//!
+//! ## Outcome stores
+//!
+//! The `scan_*` methods return an [`OutcomeBatch`], which is a wrapper around a
+//! `HashMap<TaskId, Outcome>` that provides methods to access the desired outcomes.
+//!
+//! The [`OutcomeStore`] trait is implemented by `OutcomeBatch`, as well as `Hive` and `Husk`
+//! (see below), which provides a common interface for accessing stored `Outcome`s.
+//!
+//! ```
+//! use beekeeper::hive::{Hive, OutcomeStore};
+//! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
+//!
+//! let hive: Hive<MyWorker, _> = Hive::default();
+//! let (outcomes, sum) = hive.scan(0..10, 0, |sum, i| {
+//!     *sum += i;
+//!     i * 2
+//! });
+//! assert_eq!(sum, 45);
+//! assert_eq!(outcomes.num_successes(), 10);
+//! let mut outputs = outcomes.iter_successes().map(|(_, output)| *output).collect::<Vec<_>>();
+//! outputs.sort();
+//! assert_eq!(outputs, (0..10).map(|i| i * 2).collect::<Vec<_>>());
+//! ```
+//!
+//! # Suspend and resume
+//!
+//! Processing of tasks by a `Hive` can be temporarily suspended by calling the
+//! [`suspend`](crate::hive::Hive::suspend) method. This prevents worker threads from starting
+//! any new tasks, and it also notifies worker threads that they may (but are not required to)
+//! cancel processing of their current tasks. Cancelled tasks are sent/stored as `Unprocessed
+//! outcomes.
+//!
+//! Processing can be resumed by calling the [`resume`](crate::hive::Hive::resume) method.
+//! Alternatively, the [`resume_send`](crate::hive::Hive::resume_send) or
+//! [`resume_store`](crate::hive::Hive::resume_store) method can be used to both resume and
+//! submit any unprocessed tasks stored in the `Hive` for (re)processing.
+//!
+//! ## Hive poisoning
+//!
+//! The internal data structure shared between a `Hive`, its clones, and its worker threads is
+//! considered thread-safe. However, there is no formal proof that it is incorruptible. A `Hive`
+//! attempts to detect if it has become corrupted and, if so, sets the `poisoned` flag on the
+//! shared data. A poisoned `Hive` will not accept or process any new tasks, and all worker threads
+//! will terminate after finishing their current tasks. If a task is submitted to a poisoned `Hive`,
+//! it will immediately be converted to an `Unprocessed` outcome and sent/stored. The only thing
+//! that can be done with a poisoned `Hive` is to access its stored `Outcome`s or convert it to a
+//! `Husk` (see below).
+//!
+//! # Disposing of a `Hive`
+//!
+//! When a `Hive` is no longer needed, it may simply be dropped. If there are extant clones of the
+//! dropped `Hive`, then nothing further happens. When the last instance of a `Hive` referring to
+//! its shared data is dropped, then the following steps happen:
+//! * The `Hive` is poisoned to prevent any new tasks from being submitted or queued tasks from
+//!   being processed.
+//! * All of the `Hive`s queued tasks are coverted to `Unprocessed` outcomes and either sent to
+//!   their outcome channel or stored in the `Hive`.
+//! * If the `Hive` was in a suspended state, it is resumed. This is necessary to unblock the
+//!   worker threads and allow them to terminate.
+//! * Any worker thread that is actively processing a task will finish and send/store the outcome
+//!   before terminating.
+//! * The shared data structure is dropped.
+//!
+//! You may instead manually dispose of a `Hive` by converting it into a [`Husk`] using the
+//! [`try_into_husk`](crate::hive::Hive::try_into_husk) method. A `Husk` retains the core
+//! configuration of a `Hive`. This includes the queen, which means if your `Queen` type is
+//! stateful, you can access its final state.
+//!
+//! The `Husk` also retains any stored `Outcome`s from the `Hive`, which can be accessed using the
+//! `OutcomeStore` API.
+//!
+//! The `Husk` can be used to create a new `Builder`
+//! ([`Husk::as_builder`](crate::hive::husk::Husk::as_builder)) or a new `Hive`
+//! ([`Husk::into_hive`](crate::hive::husk::Husk::into_hive)).
 mod builder;
 mod config;
 mod counter;
@@ -16,17 +348,23 @@ pub mod cores;
 #[cfg(feature = "retry")]
 mod delay;
 
-pub use builder::Builder;
-pub use config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
+pub use self::builder::Builder;
+pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
 #[cfg(feature = "retry")]
-pub use config::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
-pub use hive::SpawnError;
-pub use husk::Husk;
-pub use outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
+pub use self::config::{
+    set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
+};
+pub use self::hive::SpawnError;
+pub use self::husk::Husk;
+pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
+/// Sender type for channel used to send task outcomes.
 pub type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
+/// Receiver type for channel used to receive task outcomes.
 pub type OutcomeReceiver<W> = crate::channel::Receiver<Outcome<W>>;
 
+/// Creates a channel (`Sender`, `Receiver`) pair for sending task outcomes from the `Hive` to the
+/// task submitter.
 #[inline]
 pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
     crate::channel::channel()
@@ -40,57 +378,35 @@ pub mod prelude {
 }
 
 use self::counter::DualCounter;
+use self::gate::{Gate, PhasedGate};
 use self::outcome::{DerefOutcomes, OwnedOutcomes};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
-use crate::bee::{Context, Queen, Worker};
-use gate::{Gate, PhasedGate};
+use crate::bee::{Context, Queen, TaskId, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
-type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
-type Usize = AtomicOption<usize, AtomicUsize>;
 type Any<T> = AtomicOption<T, AtomicAny<T>>;
-
+type Usize = AtomicOption<usize, AtomicUsize>;
 #[cfg(feature = "retry")]
-mod retry_prelude {
-    pub use parking_lot::RwLock;
-    pub use std::time::Instant;
-
-    use crate::atomic::{AtomicOption, AtomicU32, AtomicU64};
-
-    pub type U32 = AtomicOption<u32, AtomicU32>;
-    pub type U64 = AtomicOption<u64, AtomicU64>;
-}
+type U32 = AtomicOption<u32, crate::atomic::AtomicU32>;
 #[cfg(feature = "retry")]
-use retry_prelude::*;
+type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
-/// A pool of worker threads that each execute the same function. A `Hive` is created by a
-/// [`Builder`].
-///
-/// A `Hive` has a [`Queen`] that creates a [`Worker`] for each thread in the pool. The `Worker` has
-/// a [`apply`] method that is called to execute a task, which consists of an input value, a
-/// `Context`, and an optional output channel. If the `Worker` processes the task successfully, the
-/// output is sent to the output channel if one is provided, otherwise it is retained in the `Hive`
-/// for later retrieval. If the `Worker` encounters an error, then it will retry the task if the
-/// error is retryable and the `Hive` has been configured to retry tasks. If a task cannot be
-/// processed after the maximum number of retries, then an error is sent to the output channel or
-/// retained in the `Hive` for later retrieval.
-///
-/// A `Worker` should never panic, but if it does, the worker thread will terminate and the `Hive`
-/// will spawn a new worker thread with a new `Worker`.
-///
-/// When a `Hive` is dropped, all the worker threads are terminated automatically. Prior to
-/// dropping the `Hive`, the `try_into_husk()` method can be called to retrieve all of the `Hive` data
-/// necessary to build a new `Hive`, as well as any stored outcomes (those that were not sent to an
-/// output channel).
+/// A pool of worker threads that each execute the same function. See the
+/// [module documentation](crate::hive) for details.
 pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
 
+/// A `Hive`'s inner state. Wraps a) the `Hive`'s reference to the `Shared` data (which is shared
+/// with the worker threads) and b) the `Sender<Task<W>>`, which is the sending end of the channel
+/// used to send tasks to the worker threads.
 struct HiveInner<W: Worker, Q: Queen<Kind = W>> {
     task_tx: TaskSender<W>,
     shared: Arc<Shared<W, Q>>,
 }
+
+type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
+type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
 
 /// Internal representation of a task to be processed by a `Hive`.
 struct Task<W: Worker> {
@@ -123,36 +439,39 @@ struct Config {
 
 /// Data shared by all worker threads in a `Hive`.
 struct Shared<W: Worker, Q: Queen<Kind = W>> {
+    /// core configuration parameters
     config: Config,
+    /// the `Queen` used to create new workers
     queen: Mutex<Q>,
+    /// receiver for the channel used by the `Hive` to send tasks to the worker threads
     task_rx: Mutex<TaskReceiver<W>>,
-    // allows for 2^48 queued tasks and 2^16 active tasks
+    /// allows for 2^48 queued tasks and 2^16 active tasks
     num_tasks: DualCounter<48>,
-    // index that will be assigned to the next queued task
-    next_task_index: AtomicUsize,
-    // number of times a worker has panicked
+    /// ID that will be assigned to the next task submitted to the `Hive`
+    next_task_id: AtomicUsize,
+    /// number of times a worker has panicked
     num_panics: AtomicUsize,
-    // number of `Hive` clones with a reference to this shared data
+    /// number of `Hive` clones with a reference to this shared data
     num_referrers: AtomicUsize,
-    // whether the internal state of the hive is corrupted - if true, this prevents new tasks from
-    // processed (new tasks may be queued but they will never be processed); currently, this can
-    // only happen if the task counter somehow get corrupted
+    /// whether the internal state of the hive is corrupted - if true, this prevents new tasks from
+    /// processed (new tasks may be queued but they will never be processed); currently, this can
+    /// only happen if the task counter somehow get corrupted
     poisoned: AtomicBool,
-    // whether the hive is suspended - if true, active tasks may complete and new tasks may be
-    // queued, but new tasks will not be processed
+    /// whether the hive is suspended - if true, active tasks may complete and new tasks may be
+    /// queued, but new tasks will not be processed
     suspended: Arc<AtomicBool>,
-    // gate used by worker threads to wait until the hive is resumed
+    /// gate used by worker threads to wait until the hive is resumed
     resume_gate: Gate,
-    // gate used by client threads to wait until all tasks have completed
+    /// gate used by client threads to wait until all tasks have completed
     join_gate: PhasedGate,
-    // outcomes stored in the hive
-    outcomes: Mutex<HashMap<usize, Outcome<W>>>,
-    // queue used for tasks that are waiting to be retried after a failure
+    /// outcomes stored in the hive
+    outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
+    /// queue used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
-    // the next time at which a task will be ready to be retried
+    /// the next time at which a task will be ready to be retried
     #[cfg(feature = "retry")]
-    next_retry: RwLock<Option<Instant>>,
+    next_retry: parking_lot::RwLock<Option<std::time::Instant>>,
 }
 
 #[cfg(test)]
@@ -161,7 +480,7 @@ mod test {
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
         ApplyError, ApplyRefError, Context, DefaultQueen, Queen, RefWorker, RefWorkerResult,
-        Worker, WorkerResult,
+        TaskId, Worker, WorkerResult,
     };
     use crate::channel::{Message, ReceiverExt};
     use crate::hive::outcome::DerefOutcomes;
@@ -699,7 +1018,7 @@ mod test {
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
         let (tx, rx) = super::outcome_channel();
-        let mut indices = hive.map_send(
+        let mut task_ids = hive.map_send(
             (0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -708,17 +1027,17 @@ mod test {
             }),
             tx,
         );
-        let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = rx
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
             .map(|outcome| match outcome {
-                Outcome::Success { value, index } => (index, value),
+                Outcome::Success { value, task_id } => (task_id, value),
                 _ => panic!("unexpected error"),
             })
             .unzip();
         assert_eq!(values, (0..8).rev().collect::<Vec<_>>());
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -727,25 +1046,25 @@ mod test {
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
-        let mut indices = hive.map_store((0..8u8).map(|i| {
+        let mut task_ids = hive.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
             })
         }));
         hive.join();
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
-        let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = task_ids
             .clone()
             .into_iter()
             .map(|i| (i, hive.remove_success(i).unwrap()))
             .collect();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -791,7 +1110,7 @@ mod test {
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
         let (tx, rx) = super::outcome_channel();
-        let mut indices = hive.swarm_send(
+        let mut task_ids = hive.swarm_send(
             (0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -800,17 +1119,17 @@ mod test {
             }),
             tx,
         );
-        let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = rx
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
             .map(|outcome| match outcome {
-                Outcome::Success { value, index } => (index, value),
+                Outcome::Success { value, task_id } => (task_id, value),
                 _ => panic!("unexpected error"),
             })
             .unzip();
         assert_eq!(values, (0..8).rev().collect::<Vec<_>>());
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -819,25 +1138,25 @@ mod test {
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
-        let mut indices = hive.swarm_store((0..8u8).map(|i| {
+        let mut task_ids = hive.swarm_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
                 i
             })
         }));
         hive.join();
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
-        let (mut outcome_indices, values): (Vec<usize>, Vec<u8>) = indices
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = task_ids
             .clone()
             .into_iter()
             .map(|i| (i, hive.remove_success(i).unwrap()))
             .collect();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -873,16 +1192,16 @@ mod test {
             .build_with(Caller::of(|i| i * i))
             .unwrap();
         let (tx, rx) = super::outcome_channel();
-        let (mut indices, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
+        let (mut task_ids, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
             *acc += i;
             *acc
         });
-        assert_eq!(indices.len(), 10);
+        assert_eq!(task_ids.len(), 10);
         assert_eq!(state, 45);
-        let (mut outcome_indices, mut values): (Vec<usize>, Vec<i32>) = rx
+        let (mut outcome_task_ids, mut values): (Vec<TaskId>, Vec<i32>) = rx
             .iter()
             .map(|outcome| match outcome {
-                Outcome::Success { value, index } => (index, value),
+                Outcome::Success { value, task_id } => (task_id, value),
                 _ => panic!("unexpected error"),
             })
             .unzip();
@@ -897,9 +1216,9 @@ mod test {
                 .map(|i| i * i)
                 .collect::<Vec<_>>()
         );
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -909,18 +1228,17 @@ mod test {
             .build_with(Caller::of(|i| i * i))
             .unwrap();
         let (tx, rx) = super::outcome_channel();
-        let (mut indices, state) = hive
-            .try_scan_send(0..10, tx, 0, |acc, i| {
-                *acc += i;
-                Ok::<_, String>(*acc)
-            })
-            .unwrap();
-        assert_eq!(indices.len(), 10);
+        let (results, state) = hive.try_scan_send(0..10, tx, 0, |acc, i| {
+            *acc += i;
+            Ok::<_, String>(*acc)
+        });
+        let mut task_ids: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(task_ids.len(), 10);
         assert_eq!(state, 45);
-        let (mut outcome_indices, mut values): (Vec<usize>, Vec<i32>) = rx
+        let (mut outcome_task_ids, mut values): (Vec<TaskId>, Vec<i32>) = rx
             .iter()
             .map(|outcome| match outcome {
-                Outcome::Success { value, index } => (index, value),
+                Outcome::Success { value, task_id } => (task_id, value),
                 _ => panic!("unexpected error"),
             })
             .unzip();
@@ -935,9 +1253,9 @@ mod test {
                 .map(|i| i * i)
                 .collect::<Vec<_>>()
         );
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -948,8 +1266,12 @@ mod test {
             .build_with(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)))
             .unwrap();
         let (tx, _) = super::outcome_channel();
-        hive.try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
-            .unwrap();
+        let _ = hive
+            .try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
+            .0
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
     }
 
     #[test]
@@ -958,17 +1280,17 @@ mod test {
             .num_threads(4)
             .build_with(Caller::of(|i| i * i))
             .unwrap();
-        let (mut indices, state) = hive.scan_store(0..10, 0, |acc, i| {
+        let (mut task_ids, state) = hive.scan_store(0..10, 0, |acc, i| {
             *acc += i;
             *acc
         });
-        assert_eq!(indices.len(), 10);
+        assert_eq!(task_ids.len(), 10);
         assert_eq!(state, 45);
         hive.join();
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
-        let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<i32>) = task_ids
             .clone()
             .into_iter()
             .map(|i| (i, hive.remove_success(i).unwrap()))
@@ -983,9 +1305,9 @@ mod test {
                 .map(|i| i * i)
                 .collect::<Vec<_>>()
         );
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -994,19 +1316,18 @@ mod test {
             .num_threads(4)
             .build_with(Caller::of(|i| i * i))
             .unwrap();
-        let (mut indices, state) = hive
-            .try_scan_store(0..10, 0, |acc, i| {
-                *acc += i;
-                Ok::<i32, String>(*acc)
-            })
-            .unwrap();
-        assert_eq!(indices.len(), 10);
+        let (results, state) = hive.try_scan_store(0..10, 0, |acc, i| {
+            *acc += i;
+            Ok::<i32, String>(*acc)
+        });
+        let mut task_ids: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(task_ids.len(), 10);
         assert_eq!(state, 45);
         hive.join();
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(hive.outcomes_deref().get(i).unwrap().is_success());
         }
-        let (mut outcome_indices, values): (Vec<usize>, Vec<i32>) = indices
+        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<i32>) = task_ids
             .clone()
             .into_iter()
             .map(|i| (i, hive.remove_success(i).unwrap()))
@@ -1021,9 +1342,9 @@ mod test {
                 .map(|i| i * i)
                 .collect::<Vec<_>>()
         );
-        indices.sort();
-        outcome_indices.sort();
-        assert_eq!(indices, outcome_indices);
+        task_ids.sort();
+        outcome_task_ids.sort();
+        assert_eq!(task_ids, outcome_task_ids);
     }
 
     #[test]
@@ -1033,7 +1354,12 @@ mod test {
             .num_threads(4)
             .build_with(OnceCaller::of(|i: i32| Ok::<i32, String>(i * i)))
             .unwrap();
-        hive.try_scan_store(0..10, 0, |_, _| Err("fail")).unwrap();
+        let _ = hive
+            .try_scan_store(0..10, 0, |_, _| Err("fail"))
+            .0
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
     }
 
     #[test]
@@ -1042,10 +1368,10 @@ mod test {
             .num_threads(8)
             .build_with_default::<ThunkWorker<u8>>()
             .unwrap();
-        let indices = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
+        let task_ids = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
         let mut husk1 = hive1.try_into_husk().unwrap();
-        for i in indices.iter() {
+        for i in task_ids.iter() {
             assert!(husk1.outcomes_deref().get(i).unwrap().is_success());
             assert!(matches!(husk1.get(*i), Some(Outcome::Success { .. })));
         }
@@ -1284,8 +1610,8 @@ mod test {
 
         // return results to your own channel...
         let (tx, rx) = crate::hive::outcome_channel();
-        let indices = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
-        let outputs: Vec<_> = rx.take_outputs(indices).collect();
+        let task_ids = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
+        let outputs: Vec<_> = rx.select_unordered_outputs(task_ids).collect();
         assert_eq!(285, outputs.into_iter().sum());
 
         // return results as an iterator...
@@ -1437,7 +1763,7 @@ mod affinity_tests {
         let hive = Builder::new()
             .thread_name("affinity example")
             .num_threads(2)
-            .thread_affinity(0..2)
+            .core_affinity(0..2)
             .build_with_default::<ThunkWorker<()>>()
             .unwrap();
 
@@ -1455,7 +1781,7 @@ mod affinity_tests {
         let hive = Builder::new()
             .thread_name("affinity example")
             .with_thread_per_core()
-            .with_default_thread_affinity()
+            .with_default_core_affinity()
             .build_with_default::<ThunkWorker<()>>()
             .unwrap();
 

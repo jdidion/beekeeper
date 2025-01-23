@@ -46,57 +46,57 @@ pub type TaskResult<W> = HiveResult<<W as Worker>::Output, W>;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome<W: Worker> {
     /// The task was executed successfully.
-    Success { value: W::Output, index: usize },
+    Success { value: W::Output, task_id: TaskId },
     /// The task failed with an error that was not retryable.
-    Failure { error: W::Error, index: usize },
+    Failure { error: W::Error, task_id: TaskId },
     /// The task failed after retrying the maximum number of times.
-    MaxRetriesAttempted { error: W::Error, index: usize },
+    MaxRetriesAttempted { error: W::Error, task_id: TaskId },
     /// The task was not executed before the Hive was closed.
-    Unprocessed { value: W::Input, index: usize },
+    Unprocessed { value: W::Input, task_id: TaskId },
     /// The task panicked.
     Panic {
         payload: Panic<String>,
-        index: usize,
+        task_id: TaskId,
     },
 }
 
 impl<W: Worker> Outcome<W> {
-    /// Returns the index of the task that produced this outcome.
-    pub fn index(&self) -> usize {
+    /// Returns the ID of the task that produced this outcome.
+    pub fn task_id(&self) -> TaskId {
         match self {
-            Outcome::Success { index, .. }
-            | Outcome::Failure { index, .. }
-            | Outcome::MaxRetriesAttempted { index, .. }
-            | Outcome::Unprocessed { index, .. }
-            | Outcome::Panic { index, .. } => *index,
+            Outcome::Success { task_id, .. }
+            | Outcome::Failure { task_id, .. }
+            | Outcome::MaxRetriesAttempted { task_id, .. }
+            | Outcome::Unprocessed { task_id, .. }
+            | Outcome::Panic { task_id, .. } => *task_id,
         }
     }
 
     /// Creates a new `Outcome` from a `Panic`.
-    pub fn from_panic(payload: Panic<String>, index: usize) -> Outcome<W> {
-        Outcome::Panic { payload, index }
+    pub fn from_panic(payload: Panic<String>, task_id: TaskId) -> Outcome<W> {
+        Outcome::Panic { payload, task_id }
     }
 
     pub(crate) fn from_panic_result(
         result: Result<WorkerResult<W>, Panic<String>>,
-        index: usize,
+        task_id: TaskId,
     ) -> Outcome<W> {
         match result {
-            Ok(result) => Outcome::from_worker_result(result, index),
-            Err(panic) => Outcome::from_panic(panic, index),
+            Ok(result) => Outcome::from_worker_result(result, task_id),
+            Err(panic) => Outcome::from_panic(panic, task_id),
         }
     }
 
-    pub(crate) fn from_worker_result(result: WorkerResult<W>, index: usize) -> Outcome<W> {
+    pub(crate) fn from_worker_result(result: WorkerResult<W>, task_id: TaskId) -> Outcome<W> {
         match result {
-            Ok(value) => Self::Success { index, value },
+            Ok(value) => Self::Success { task_id, value },
             Err(ApplyError::Cancelled { input } | ApplyError::Retryable { input, .. }) => {
                 Self::Unprocessed {
                     value: input,
-                    index,
+                    task_id,
                 }
             }
-            Err(ApplyError::Fatal(error)) => Self::Failure { error, index },
+            Err(ApplyError::Fatal(error)) => Self::Failure { error, task_id },
         }
     }
 }
@@ -104,13 +104,16 @@ impl<W: Worker> Outcome<W> {
 /// Context for a task.
 #[derive(Debug, Default)]
 pub struct Context {
-    index: usize,
+    task_id: TaskId,
     attempt: u32,
 }
 
 impl Context {
-    fn new(index: usize) -> Self {
-        Self { index, attempt: 0 }
+    fn new(task_id: TaskId) -> Self {
+        Self {
+            task_id,
+            attempt: 0,
+        }
     }
 }
 
@@ -122,16 +125,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         let (outcome_tx, outcome_rx) = crate::outcome_channel();
         thread::scope(|scope| {
             let join_handles = (0..self.num_threads)
-                .map(|index| {
+                .map(|task_id| {
                     let task_rx = task_rx.clone();
                     let outcome_tx = outcome_tx.clone();
                     scope.spawn(move || loop {
                         let mut worker = self.queen.lock().create();
                         if let Ok(input) = task_rx.lock().recv() {
-                            let ctx = Context::new(index);
+                            let ctx = Context::new(task_id);
                             let result: Result<WorkerResult<W>, Panic<String>> =
                                 Panic::try_call(None, || worker.apply(input, &ctx));
-                            let outcome: Outcome<W> = Outcome::from_panic_result(result, index);
+                            let outcome: Outcome<W> = Outcome::from_panic_result(result, task_id);
                             outcome_tx.send(outcome);
                         } else {
                             break;

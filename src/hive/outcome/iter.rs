@@ -1,84 +1,154 @@
 use super::Outcome;
-use crate::bee::Worker;
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::bee::{TaskId, Worker};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 pub type TaskResult<W> = Result<<W as Worker>::Output, <W as Worker>::Error>;
 
 /// Consumes this `Outcome` and depending on the variant:
 /// * Returns `Ok(W::Input)` if this is a `Success` outcome,
 /// * Returns `Err(W::Error)` if this is a `Failure` or `MaxRetriesAttempted` outcome,
-/// * Panics if this is an `Unprocessed` outcome
-/// * Resumes unwinding if this is a `Panic` outcome
+/// * Resumes unwinding if this is a `Panic` outcome,
+/// * Panics otherwise (e.g. `Unprocessed`, `Missing`).
 impl<W: Worker> From<Outcome<W>> for TaskResult<W> {
     fn from(value: Outcome<W>) -> TaskResult<W> {
         if let Outcome::Success { value, .. } = value {
             Ok(value)
         } else {
-            Err(value.into_error())
+            Err(value.try_into_error().expect("not an error outcome"))
         }
     }
 }
 
-/// An iterator that returns outcomes in `index` order.
-pub struct OutcomeIterator<W: Worker> {
+/// Wraps an outcome iterator and yields the outcomes with specified task IDs in the order they are
+/// yielded by the underlying iterator. When the underlying iterator is exhausted, if there are
+/// remaining task IDs, they will be yielded as `Missing` outcomes.
+pub struct UnorderedOutcomeIterator<W: Worker> {
     inner: Box<dyn Iterator<Item = Outcome<W>>>,
-    indices: VecDeque<usize>,
-    buf: HashMap<usize, Outcome<W>>,
+    task_ids: BTreeSet<TaskId>,
 }
 
-impl<W: Worker> OutcomeIterator<W> {
-    /// Creates a new `OutcomeIterator` that will return outcomes from the given iterator in the
-    /// index order specified in `indices`. Items are buffered until the next index is available.
-    /// This iterator continues until the limit is reached or the underlying iterator is exhausted
-    /// and the next index is not in the buffer.
-    pub fn new<T>(inner: T, indices: Vec<usize>) -> Self
+impl<W: Worker> UnorderedOutcomeIterator<W> {
+    /// Creates a new `UnorderedOutcomeIterator` that will yield the outcomes from the given
+    /// iterator with the specified `task_ids`.
+    pub fn new<T, I: IntoIterator<Item = TaskId>>(inner: T, task_ids: I) -> Self
     where
         T: IntoIterator<Item = Outcome<W>>,
         T::IntoIter: 'static,
     {
+        let task_ids: BTreeSet<_> = task_ids.into_iter().collect();
         Self {
-            inner: Box::new(inner.into_iter().take(indices.len())),
-            buf: HashMap::with_capacity(indices.len()),
-            indices: indices.into(),
+            inner: Box::new(inner.into_iter().take(task_ids.len())),
+            task_ids: task_ids,
         }
     }
 }
 
-impl<W: Worker> Iterator for OutcomeIterator<W> {
+impl<W: Worker> Iterator for UnorderedOutcomeIterator<W> {
     type Item = Outcome<W>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(next) = self.indices.front() {
+            match self.inner.next() {
+                Some(outcome) if self.task_ids.remove(outcome.task_id()) => break Some(outcome),
+                Some(_) => continue, // drop unrequested outcomes
+                None if !self.task_ids.is_empty() => {
+                    // convert extra task_ids to Missing outcomes
+                    break Some(Outcome::Missing {
+                        task_id: self.task_ids.pop_first().unwrap(),
+                    });
+                }
+                None => break None,
+            }
+        }
+    }
+}
+
+/// Wraps an outcome iterator and yields the outcomes with specified task IDs in order.
+/// Items are buffered until the `Outcome` with the next ID is available. This iterator
+/// continues until outcomes are yielded for all task IDs or the underlying iterator is exhausted
+/// and the next ID is not in the buffer. If there are remaining task IDs, they will be yielded
+/// as [`Outcome::Missing`].
+pub struct OrderedOutcomeIterator<W: Worker> {
+    inner: Box<dyn Iterator<Item = Outcome<W>>>,
+    task_ids: VecDeque<TaskId>,
+    buf: HashMap<TaskId, Outcome<W>>,
+}
+
+impl<W: Worker> OrderedOutcomeIterator<W> {
+    /// Creates a new `OrderedOutcomeIterator` that will yield outcomes from the given iterator in
+    /// the order specified in `task_ids`.
+    pub fn new<T, I: IntoIterator<Item = TaskId>>(inner: T, task_ids: I) -> Self
+    where
+        T: IntoIterator<Item = Outcome<W>>,
+        T::IntoIter: 'static,
+    {
+        let task_ids: VecDeque<TaskId> = task_ids.into_iter().collect();
+        Self {
+            inner: Box::new(inner.into_iter().take(task_ids.len())),
+            buf: HashMap::with_capacity(task_ids.len()),
+            task_ids,
+        }
+    }
+}
+
+impl<W: Worker> Iterator for OrderedOutcomeIterator<W> {
+    type Item = Outcome<W>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(next) = self.task_ids.front() {
+                // if the outcome with the next ID is buffered, remove it from the buffer,
+                // otherwise take the next outcome from the underlying iterator
                 if let Some(outcome) = self.buf.remove(next).or_else(|| self.inner.next()) {
-                    let index = outcome.index();
-                    if index == next {
-                        self.indices.pop_front();
+                    let task_id = outcome.task_id();
+                    if task_id == next {
+                        // this is the next outcome expected
+                        self.task_ids.pop_front();
                         return Some(outcome);
                     } else {
-                        if self.indices.contains(index) {
-                            self.buf.insert(*index, outcome);
-                        }
+                        // this is an outcome for a future or unspecified ID
+                        self.buf.insert(*task_id, outcome);
                         continue;
                     }
                 } else {
-                    return Some(Outcome::Missing { index: *next });
+                    // the underlying iterator is exhausted and we still have unsatisfied task_ids;
+                    // convert them to `Missing` outcomes
+                    return Some(Outcome::Missing { task_id: *next });
                 }
             }
+            // drop outcomes for task_ids that were not requested
+            //if !self.buf.is_empty() { .. }
             return None;
         }
     }
 }
 
 pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized {
-    /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
-    /// Each item in the iterator is either an `Ok(Outcome)` or an `Err(index)` of a task that was
-    /// not processed (e.g., because the hive was dropped or poisoned).
-    fn take_ordered(self, indices: Vec<usize>) -> impl Iterator<Item = Outcome<W>>
+    /// Consumes this iterator and returns an unordered iterator over the `Outcome`s with the
+    /// specified `task_ids`.
+    ///
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_ids` are silently
+    /// dropped. Any remaining task IDs after the iterator is exhausted are yielded as `Missing` outcomes.
+    fn select_unordered<I>(self, task_ids: I) -> impl Iterator<Item = Outcome<W>>
     where
+        I: IntoIterator<Item = TaskId>,
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices)
+        UnorderedOutcomeIterator::new(self, task_ids)
+    }
+
+    /// Consumes this iterator and returns an ordered iterator over the `Outcome`s with the
+    /// specified `task_ids`.
+    ///
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_ids` are silently
+    /// dropped. Any remaining task IDs after the iterator is exhausted are yielded as `Missing`
+    /// outcomes.
+    fn select_ordered<I>(self, task_ids: I) -> impl Iterator<Item = Outcome<W>>
+    where
+        I: IntoIterator<Item = TaskId>,
+        <Self as IntoIterator>::IntoIter: 'static,
+    {
+        OrderedOutcomeIterator::new(self, task_ids)
     }
 
     /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
@@ -91,33 +161,34 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
         self.into_iter().map(Outcome::into)
     }
 
-    /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
-    /// `TaskResult`s.
+    /// Consumes this iterator and returns an unordered iterator over the `Result`s with the
+    /// specified `task_ids`.
     ///
-    /// This method panics if any of the outcomes represent unprocessed or panicked tasks.
-    fn take_results(self, indices: Vec<usize>) -> impl Iterator<Item = TaskResult<W>>
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_ids` are silently
+    /// dropped. This method panics if any of the outcomes represent unprocessed, missing, or
+    /// panicked tasks.
+    fn select_unordered_results<I>(self, task_ids: I) -> impl Iterator<Item = TaskResult<W>>
     where
+        I: IntoIterator<Item = TaskId>,
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        let indices: HashSet<usize> = indices.into_iter().collect();
-        let n = indices.len();
-        self.into_iter()
-            .filter_map(move |outcome| indices.contains(outcome.index()).then_some(outcome))
-            .map(Outcome::into)
-            .take(n)
+        UnorderedOutcomeIterator::new(self, task_ids).map(Outcome::into)
     }
 
-    /// Consumes this iterator and returns an ordered iterator over a maximum of `n` `TaskResult`s.
+    /// Consumes this iterator and returns an ordered iterator over the `Result`s with the
+    /// specified `task_ids`.
     ///
-    /// This method panics if any of the outcomes represent unprocessed or panicked tasks.
-    fn take_ordered_results(self, indices: Vec<usize>) -> impl Iterator<Item = TaskResult<W>>
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_id` are silently
+    /// dropped. This method panics if any of the outcomes represent unprocessed or panicked tasks.
+    fn select_ordered_results<I>(self, task_ids: I) -> impl Iterator<Item = TaskResult<W>>
     where
+        I: IntoIterator<Item = TaskId>,
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(Outcome::into)
+        OrderedOutcomeIterator::new(self, task_ids).map(Outcome::into)
     }
 
-    /// Consumes this iterator and returns an unordered iterator over `TaskResult`s.
+    /// Consumes this iterator and returns an unordered iterator over task outputs.
     ///
     /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
     fn into_outputs(self) -> impl Iterator<Item = W::Output>
@@ -127,30 +198,32 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
         self.into_iter().map(Outcome::unwrap)
     }
 
-    /// Consumes this iterator and returns an unordered iterator over a maximum of `n`
-    /// output values.
+    /// Consumes this iterator and returns an unordered iterator over the outputs with the
+    /// specified `task_ids`.
     ///
-    /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
-    fn take_outputs(self, indices: Vec<usize>) -> impl Iterator<Item = W::Output>
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_ids` are silently
+    /// dropped. This method panics if any of the outcomes represent failed, unprocessed, or
+    /// panicked tasks.
+    fn select_unordered_outputs<I>(self, task_ids: I) -> impl Iterator<Item = W::Output>
     where
+        I: IntoIterator<Item = TaskId>,
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        let indices: HashSet<usize> = indices.into_iter().collect();
-        let n = indices.len();
-        self.into_iter()
-            .filter_map(move |outcome| indices.contains(outcome.index()).then_some(outcome))
-            .map(Outcome::unwrap)
-            .take(n)
+        UnorderedOutcomeIterator::new(self, task_ids).map(Outcome::unwrap)
     }
 
-    /// Consumes this iterator and returns an ordered iterator over a maximum of `n` output values.
+    /// Consumes this iterator and returns an ordered iterator over the outputs with the
+    /// specified `task_ids`.
     ///
-    /// This method panics if any of the outcomes represent failed, unprocessed, or panicked tasks.
-    fn take_ordered_outputs(self, indices: Vec<usize>) -> impl Iterator<Item = W::Output>
+    /// `Outcome`s yielded by the iterator whose task IDs are not in `task_ids` are silently
+    /// dropped. This method panics if any of the outcomes represent failed, unprocessed, or
+    /// panicked tasks.
+    fn select_ordered_outputs<I>(self, task_ids: I) -> impl Iterator<Item = W::Output>
     where
+        I: IntoIterator<Item = TaskId>,
         <Self as IntoIterator>::IntoIter: 'static,
     {
-        OutcomeIterator::new(self, indices).map(Outcome::unwrap)
+        OrderedOutcomeIterator::new(self, task_ids).map(Outcome::unwrap)
     }
 }
 

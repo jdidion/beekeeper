@@ -1,8 +1,9 @@
 use super::{Outcome, OutcomeSender, Task};
-use crate::bee::{Context, Worker};
+use crate::bee::{Context, TaskId, Worker};
 use crate::channel::SenderExt;
 
 impl<W: Worker> Task<W> {
+    /// Creates a new `Task`.
     pub fn new(input: W::Input, ctx: Context, outcome_tx: Option<OutcomeSender<W>>) -> Self {
         Task {
             input,
@@ -11,9 +12,9 @@ impl<W: Worker> Task<W> {
         }
     }
 
-    /// Returns the index of this task.
-    pub fn index(&self) -> usize {
-        self.ctx.index()
+    /// Returns the ID of this task.
+    pub fn id(&self) -> TaskId {
+        self.ctx.task_id()
     }
 
     /// Consumes this `Task` and returns a tuple `(input, context, outcome_tx)`.
@@ -21,13 +22,13 @@ impl<W: Worker> Task<W> {
         (self.input, self.ctx, self.outcome_tx)
     }
 
-    /// Consumes this `Task` and returns a `Outcome::Unprocessed` outcome with the input and index,
+    /// Consumes this `Task` and returns a `Outcome::Unprocessed` outcome with the input and ID,
     /// and the outcome sender.
     pub fn into_unprocessed(self) -> (Outcome<W>, Option<OutcomeSender<W>>) {
         let (input, ctx, outcome_tx) = self.into_parts();
         let outcome = Outcome::Unprocessed {
             input,
-            index: ctx.index(),
+            task_id: ctx.task_id(),
         };
         (outcome, outcome_tx)
     }

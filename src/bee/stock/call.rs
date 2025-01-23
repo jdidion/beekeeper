@@ -193,6 +193,8 @@ where
     }
 }
 
+/// A `Caller` that returns a `Result<O, ApplyError>`. A result of `Err(ApplyError::Retryable)`
+/// can be returned to indicate the task should be retried.
 pub struct RetryCaller<I, O, E, F>(Callable<I, O, E, F>);
 
 impl<I, O, E, F> RetryCaller<I, O, E, F> {

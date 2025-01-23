@@ -31,9 +31,9 @@ pub enum CounterError {
 /// * decrement the right counter (`R`)
 /// * transfer an amount `N` from `L` to `R` (i.e., a simultaneous decrement of `L` and
 ///   increment of `R` by the same amount)
-pub struct DualCounter<const L: usize>(AtomicU64);
+pub struct DualCounter<const L: u32>(AtomicU64);
 
-impl<const L: usize> DualCounter<L> {
+impl<const L: u32> DualCounter<L> {
     // validate that L is > 0
     const L_BITS: u32 = L.checked_sub(1).expect("L must be > 0") as u32 + 1;
     // validate that L is < 64
@@ -117,7 +117,7 @@ impl<const L: usize> DualCounter<L> {
     }
 }
 
-impl<const L: usize> Default for DualCounter<L> {
+impl<const L: u32> Default for DualCounter<L> {
     fn default() -> Self {
         DualCounter(AtomicU64::with_orderings(0, SEQCST_ORDERING))
     }
