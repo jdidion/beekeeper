@@ -47,8 +47,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build-all-features
-          args: --no-default-features -F ${{ matrix.channel }} --all-targets
+          args: -F ${{ matrix.channel }} --all-targets
       - uses: actions-rs/cargo@v1
         with:
           command: test-all-features
-          args: --no-default-features -F ${{ matrix.channel }} --lib
+          args: -F ${{ matrix.channel }} --lib
