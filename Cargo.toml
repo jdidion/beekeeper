@@ -37,3 +37,7 @@ loole = ["dep:loole"]
 
 [package.metadata.cargo-all-features]
 allowlist = ["affinity", "retry"]
+
+[profile.release]
+lto = true
+codegen-units = 1
