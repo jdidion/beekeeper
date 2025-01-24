@@ -904,45 +904,37 @@ mod test {
         let hive1 = Builder::new()
             .thread_name("multi join pool1")
             .num_threads(4)
-            .build_with_default::<ThunkWorker<u32>>()
+            .build_with_default::<ThunkWorker<()>>()
             .unwrap();
-        let (tx, rx) = super::outcome_channel();
+        let (tx, rx) = crate::channel::channel();
 
         for i in 0..8 {
             let hive1_clone = hive1.clone();
             let hive0_clone = hive0.clone();
             let tx = tx.clone();
             hive0.apply_store(Thunk::of(move || {
-                hive1_clone.apply_send(
-                    Thunk::of(move || {
-                        //error(format!("p1: {} -=- {:?}\n", i, hive0_clone));
-                        hive0_clone.join();
-                        //error(format!("p1: send({})\n", i));
-                        i
-                    }),
-                    tx,
-                );
+                hive1_clone.apply_store(Thunk::of(move || {
+                    //error(format!("p1: {} -=- {:?}\n", i, hive0_clone));
+                    hive0_clone.join();
+                    // ensure that the main thread has a chance to execute
+                    thread::sleep(Duration::from_millis(10));
+                    //error(format!("p1: send({})\n", i));
+                    tx.send(i).expect("send failed from hive1_clone to main");
+                }));
                 //error(format!("p0: {}\n", i));
             }));
         }
         drop(tx);
 
-        let msg = rx.try_recv_msg();
-        // match msg {
-        //     Message::Received(_) => dbg!("received"),
-        //     Message::ChannelEmpty => dbg!("channel empty"),
-        //     Message::ChannelDisconnected => dbg!("channel disconnected"),
-        // };
-        assert!(matches!(msg, Message::ChannelEmpty));
+        // no hive1 task should be completed yet, so the channel should be empty
+        let before_any_send = rx.try_recv_msg();
+        assert!(matches!(before_any_send, Message::ChannelEmpty));
         //error(format!("{:?}\n{:?}\n", hive0, hive1));
         hive0.join();
         //error(format!("pool0.join() complete =-= {:?}", hive1));
         hive1.join();
         //error("pool1.join() complete\n".into());
-        assert_eq!(
-            rx.into_iter().map(Outcome::unwrap).sum::<u32>(),
-            (0..8).sum()
-        );
+        assert_eq!(rx.into_iter().sum::<u32>(), (0..8).sum());
     }
 
     #[test]
