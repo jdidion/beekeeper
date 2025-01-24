@@ -333,6 +333,12 @@ if !exec_err_codes.is_empty() {
 
 <!-- cargo-rdme end -->
 
+## Status
+
+The `beekeeper` API is generally considered to be stable, but additional real-world battle-testing
+is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for
+improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
+
 ## Similar libraries
 
 * [workerpool](https://docs.rs/workerpool/latest/workerpool/)
