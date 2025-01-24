@@ -19,6 +19,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo clippy --all-targets -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
       - run: cargo fmt -- --check
+      - run: cargo test -F affinity,retry --doc
 
   build_and_test:
     name: Build and test all combinations features
@@ -45,8 +46,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build-all-features
-          args: -F ${{ matrix.channel }} --all-targets
+          args: --no-default-features -F ${{ matrix.channel }} --all-targets
       - uses: actions-rs/cargo@v1
         with:
           command: test-all-features
-          args: -F ${{ matrix.channel }}
+          args: --no-default-features -F ${{ matrix.channel }} --lib
