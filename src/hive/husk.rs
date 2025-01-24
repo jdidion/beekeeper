@@ -93,7 +93,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_unprocessed_store(self) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
+    pub fn into_hive_swarm_unprocessed_store(
+        self,
+    ) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
         let hive = self.as_builder().build(self.queen)?;
         let unprocessed = Self::collect_unprocessed(self.outcomes);
         let task_ids = hive.swarm_store(unprocessed);
