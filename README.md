@@ -290,7 +290,7 @@ let hive = Builder::new()
     .unwrap();
 
 // prepare inputs
-let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
+let inputs: Vec<u8> = (0..8).map(|i| 97 + i);
 
 // execute tasks and collect outputs
 let output = hive
