@@ -20,7 +20,7 @@ is sometimes called a "worker pool").
 * The `Hive` creates a `Worker` instance for each thread in the pool.
 * Each thread in the pool continually:
     * Recieves a task from an input [`channel`](https://doc.rust-lang.org/stable/std/sync/mpsc/fn.channel.html),
-    * Calls its `Worker`'s [`apply`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html#apply) method on the input, and
+    * Calls its `Worker`'s [`apply`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html#method.apply) method on the input, and
     * Produces an [`Outcome`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/outcome/enum.Outcome.html).
 * Depending on which of `Hive`'s methods are called to submit a task (or batch of tasks), the
   `Outcome`(s) may be returned as an `Iterator`, sent to an output `channel`, or stored in the
@@ -30,14 +30,14 @@ is sometimes called a "worker pool").
       [`Default`](std::default::Default)
     * Clone an instance of a `Worker` that implements
       [`Clone`](std::clone::Clone)
-    * Call the [`create()`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html#create) method on a worker factory that
+    * Call the [`create()`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html#method.create) method on a worker factory that
       implements the [`Queen`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html) trait.
 * Both `Worker`s and `Queen`s may be stateful, i.e., `Worker::apply()` and `Queen::create()`
   both take `&mut self`.
 * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
-* A `Hive` may be [`suspend`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#suspend)ed and
-  [`resume`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#resume)d at any time. When a `Hive` is suspended, worker threads
+* A `Hive` may be [`suspend`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.suspend)ed and
+  [`resume`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.resume)d at any time. When a `Hive` is suspended, worker threads
   do no work and tasks accumulate in the input `channel`.
 * Several utility functions are provided in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module. Notably, the `map`
   and `try_map` functions enable simple parallel processing of a single batch of tasks.
@@ -87,7 +87,7 @@ To parallelize a task, you'll need two things:
               `Default`, otherwise use [`build(MyQueen::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build)
         * Note that [`Builder::num_threads()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.num_threads) must be set
           to a non-zero value, otherwise the built `Hive` will not start any worker threads
-          until you call the [`Hive::grow()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#grow) method.
+          until you call the [`Hive::grow()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.grow) method.
 
 Once you've created a `Hive`, use its methods to submit tasks for processing. There are
 four groups of methods available:
@@ -108,11 +108,11 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
   channel as they are completed
 * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
-  retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#take_stored) method, using
+  retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.take_stored) method, using
   one of the `remove*` methods (which requires
   [`OutcomeStore`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/store/trait.OutcomeStore.html) to be in scope), or by
   using one of the methods on `Husk` after shutting down the `Hive` using
-  [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#try_into_husk).
+  [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.try_into_husk).
 
 When using one of the `_send` methods, you should ensure that the `Sender` is dropped after
 all tasks have been submitted, otherwise calling `recv()` on (or iterating over) the `Receiver`
@@ -120,9 +120,9 @@ will block indefinitely.
 
 Within a `Hive`, each submitted task is assinged a unique ID. The `_send` and `_store`
 methods return the task_ids of the submitted tasks, which can be used to retrieve them later
-(e.g., using [`Hive::remove()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#remove)).
+(e.g., using [`Hive::remove()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.remove)).
 
-After submitting tasks, you may use the [`Hive::join()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#join) method to wait
+After submitting tasks, you may use the [`Hive::join()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.join) method to wait
 for all tasks to complete. Using `join` is strongly recommended when using one of the `_store`
 methods, otherwise you'll need to continually poll the `Hive` to check for completed tasks.
 
@@ -130,7 +130,7 @@ When you are finished with a `Hive`, you may simply drop it (either explicitly, 
 it go out of scope) - the worker threads will be terminated automatically. If you used the
 `_store` methods and would like to have access to the stored task `Outcome`s after the `Hive`
 has been dropped, and/or you'd like to re-use the `Hive's` `Queen` or other configuration
-parameters, you can use the [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#try_into_husk) method to extract
+parameters, you can use the [`Hive::try_into_husk()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.try_into_husk) method to extract
 the relevant data from the `Hive` into a [`Husk`](https://docs.rs/beekeeper/latest/beekeeper/hive/husk/struct.Husk.html) object.
 
 ### Examples
