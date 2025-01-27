@@ -21,6 +21,15 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo doc -F affinity,retry
       - run: cargo test -F affinity,retry --doc
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate code coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info -F affinity,retry
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
 
   build_and_test:
     name: Build and test all combinations features
