@@ -1,6 +1,7 @@
 <img src="assets/logo.png" alt="logo" width="200"/>
 
 [![CI](https://github.com/jdidion/beekeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/jdidion/beekeeper/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/github/jdidion/beekeeper/graph/badge.svg?token=GKFXRVO6WS)](https://codecov.io/github/jdidion/beekeeper)
 [![crates.io](https://img.shields.io/crates/v/beekeeper.svg)](https://crates.io/crates/beekeeper)
 [![docs.rs](https://docs.rs/beekeeper/badge.svg)](https://docs.rs/beekeeper)
 
