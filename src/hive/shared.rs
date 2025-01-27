@@ -149,9 +149,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
+    #[inline]
     pub fn finish_task(&self, panicking: bool) {
+        self.finish_tasks(1, panicking);
+    }
+
+    pub fn finish_tasks(&self, n: u64, panicking: bool) {
         self.num_tasks
-            .decrement_right(1)
+            .decrement_right(n)
             .expect("active task counter was smaller than expected");
         if panicking {
             self.num_panics.add(1);

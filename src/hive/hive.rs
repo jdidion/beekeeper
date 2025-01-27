@@ -154,6 +154,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         } else {
             self.task_tx().send(task).err().map(|err| err.0)
         }
+        .inspect(|_| self.shared().finish_task(false))
         .and_then(Task::into_unprocessed_try_send)
         {
             self.shared().add_outcome(outcome);
@@ -203,29 +204,42 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         let iter = batch.into_iter();
         let (batch_size, _) = iter.size_hint();
         let batch = self.shared().prepare_batch(batch_size, iter, outcome_tx);
-        if !self.is_poisoned() {
-            batch
+        let (task_ids, num_failed) = if !self.is_poisoned() {
+            let (task_ids, failed): (Vec<_>, Vec<_>) = batch
                 .map(|task| {
                     let task_id = task.id();
                     // try to send the task to the hive; if sending fails, convert the task into an
                     // `Unprocessed` outcome and try to send it to the outcome channel; if that
                     // fails, store the outcome in the hive
-                    if let Some(outcome) = task_tx
+                    let failed = task_tx
                         .send(task)
                         .err()
-                        .map(|err| err.0)
-                        .and_then(Task::into_unprocessed_try_send)
-                    {
-                        self.shared().add_outcome(outcome);
-                    }
-                    task_id
+                        .map(|err| {
+                            let task = err.0;
+                            if let Some(outcome) = Task::into_unprocessed_try_send(task) {
+                                self.shared().add_outcome(outcome);
+                            }
+                            true
+                        })
+                        .unwrap_or(false);
+                    (task_id, failed)
                 })
-                .collect()
+                .unzip();
+            (
+                task_ids,
+                failed.into_iter().filter(|&failed| failed).count(),
+            )
         } else {
             // if the hive is poisoned, convert all tasks into `Unprocessed` outcomes and try to
             // send them to their outcome channels or store them in the hive
-            self.shared().send_or_store_as_unprocessed(batch)
+            let task_ids = self.shared().send_or_store_as_unprocessed(batch);
+            let num_failed = task_ids.len();
+            (task_ids, num_failed)
+        };
+        if num_failed > 0 {
+            self.shared().finish_tasks(num_failed as u64, false);
         }
+        task_ids
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns an iterator over the
