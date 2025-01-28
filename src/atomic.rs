@@ -18,11 +18,6 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
     /// Sets the value of this `Atomic` and returns the previous value.
     fn set(&self, value: T) -> T;
 
-    /// Loads the current value of this `Atomic` and calls `f`. If `f` returns `Some`, this atomic
-    /// is updated with the new value and the previous value is returned. Otherwise the current
-    /// value is returned.
-    fn set_with<F: FnMut(T) -> Option<T>>(&self, f: F) -> T;
-
     /// Consumes this `Atomic` and returns the inner value.
     fn into_inner(self) -> T;
 }
@@ -80,6 +75,7 @@ macro_rules! atomic {
                 }
             }
 
+
             impl Atomic<$type> for [<Atomic $type:camel>] {
                 fn get(&self) -> $type {
                     self.inner.load(self.orderings.load)
@@ -87,16 +83,6 @@ macro_rules! atomic {
 
                 fn set(&self, value: $type) -> $type {
                     self.inner.swap(value, self.orderings.swap)
-                }
-
-                fn set_with<F: FnMut($type) -> Option<$type>>(&self, f: F) -> $type {
-                    match self.inner.fetch_update(
-                        self.orderings.fetch_update_set,
-                        self.orderings.fetch_update_fetch,
-                        f
-                    ) {
-                        Ok(prev) | Err(prev) => prev,
-                    }
                 }
 
                 fn into_inner(self) -> $type {
@@ -179,15 +165,6 @@ impl<T: Clone + Debug + Default + Sync + Send + PartialEq> Atomic<T> for AtomicA
         let old_val = val.clone();
         *val = value;
         old_val
-    }
-
-    fn set_with<F: FnMut(T) -> Option<T>>(&self, mut f: F) -> T {
-        let mut val = self.0.write();
-        let cur_val = val.clone();
-        if let Some(new_val) = f(cur_val.clone()) {
-            *val = new_val;
-        }
-        cur_val
     }
 
     fn into_inner(self) -> T {
@@ -349,18 +326,36 @@ where
 
 #[cfg(feature = "affinity")]
 mod affinity {
-    use super::{Atomic, AtomicOption, MutError};
+    use super::{AtomicAny, AtomicOption, MutError};
     use std::fmt::Debug;
 
-    impl<P, A> AtomicOption<P, A>
+    trait AffinityAtomicExt<T> {
+        /// Loads the current value of this `Atomic` and calls `f`. If `f` returns `Some`, this atomic
+        /// is updated with the new value and the previous value is returned. Otherwise the current
+        /// value is returned.
+        #[allow(dead_code)]
+        fn set_with<F: FnMut(T) -> Option<T>>(&self, f: F) -> T;
+    }
+
+    impl<T: Clone + Debug + Default + Sync + Send> AffinityAtomicExt<T> for AtomicAny<T> {
+        fn set_with<F: FnMut(T) -> Option<T>>(&self, mut f: F) -> T {
+            let mut val = self.0.write();
+            let cur_val = val.clone();
+            if let Some(new_val) = f(cur_val.clone()) {
+                *val = new_val;
+            }
+            cur_val
+        }
+    }
+
+    impl<T> AtomicOption<T, AtomicAny<T>>
     where
-        P: Clone + Debug + Default,
-        A: Atomic<P>,
+        T: Clone + Debug + Default + Sync + Send + PartialEq,
     {
         /// Sets the value to the result of applying `f` to the current value using interior
         /// mutability. If `f` returns `Some(new_value)`, the value is updated and the previous
         /// value is returned, otherwise the value is not updated and an error is returned.
-        pub fn try_update_with<F: FnMut(P) -> Option<P>>(&self, f: F) -> Result<P, MutError> {
+        pub fn try_update_with<F: FnMut(T) -> Option<T>>(&self, f: F) -> Result<T, MutError> {
             match self {
                 Self::Unsync(_) => Err(MutError::Unsync),
                 Self::Sync(None) => Err(MutError::Unset),
@@ -411,16 +406,12 @@ mod tests {
                     assert_eq!(a.get(), 42);
                     assert_eq!(a.set(44), 42);
                     assert_eq!(a.get(), 44);
-                    assert_eq!(a.set_with(|val| Some(val + 1)), 44);
+                    assert_eq!(a.add(1), 44);
                     assert_eq!(a.get(), 45);
-                    assert_eq!(a.set_with(|_| None), 45);
-                    assert_eq!(a.get(), 45);
-                    assert_eq!(a.add(1), 45);
-                    assert_eq!(a.get(), 46);
-                    assert_eq!(a.sub(1), 46);
-                    assert_eq!(a.get(), 45);
+                    assert_eq!(a.sub(1), 45);
+                    assert_eq!(a.get(), 44);
                     let b = a.clone();
-                    assert_eq!(b.into_inner(), 45);
+                    assert_eq!(b.into_inner(), 44);
                 }
             }
         };
@@ -435,12 +426,9 @@ mod tests {
         let a = AtomicAny::from("hello".to_string());
         assert_eq!(a.get(), "hello");
         assert_eq!(a.set("world".into()), "hello");
-        assert_eq!(a.set_with(|val| Some(val.to_uppercase())), "world");
-        assert_eq!(a.get(), "WORLD");
-        assert_eq!(a.set_with(|_| None), "WORLD");
-        assert_eq!(a.get(), "WORLD");
+        assert_eq!(a.get(), "world");
         let b = a.clone();
-        assert_eq!(b.into_inner(), "WORLD");
+        assert_eq!(b.into_inner(), "world");
     }
 
     #[test]

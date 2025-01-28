@@ -98,7 +98,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// of new threads that were successfully started (which may be `0`), or a `Poisoned` error if
     /// the hive has been poisoned.
     pub fn use_all_cores(&self) -> Result<usize, Poisoned> {
-        let num_threads = num_cpus::get().checked_sub(self.num_threads()).unwrap_or(0);
+        let num_threads = num_cpus::get().saturating_sub(self.num_threads());
         self.grow(num_threads)
     }
 
