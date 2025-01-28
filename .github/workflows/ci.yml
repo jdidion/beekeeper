@@ -18,7 +18,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo clippy --all-targets -F affinity,retry -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
-      - run: cargo fmt -F affinity,retry -- --check
+      - run: cargo fmt -- --check
       - run: cargo doc -F affinity,retry
       - run: cargo test -F affinity,retry --doc
       - name: Install cargo-llvm-cov

@@ -229,3 +229,11 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 }
 
 impl<W: Worker, T: IntoIterator<Item = Outcome<W>>> OutcomeIteratorExt<W> for T {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_unordered_missing() {
+        
+    }
+}
