@@ -1,5 +1,6 @@
 use super::{
-    Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OwnedOutcomes,
+    Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore,
+    OwnedOutcomes,
 };
 use crate::bee::{Queen, TaskId, Worker};
 use std::collections::HashMap;
@@ -59,29 +60,21 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
         self.as_builder().build(self.queen)
     }
 
-    /// Extracts all the `Outcome::Unprocessed` values from the provided map and returns them as a
-    /// `Vec` of input values.
-    fn collect_unprocessed(outcomes: HashMap<TaskId, Outcome<W>>) -> Vec<W::Input> {
-        outcomes
-            .into_values()
-            .filter_map(|outcome| match outcome {
-                Outcome::Unprocessed { input: value, .. } => Some(value),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
     /// produced this `Husk`, and queues all the `Outcome::Unprocessed` values. The results will
     /// be sent to `tx`. Returns the new `Hive` and the IDs of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_unprocessed_to(
-        self,
+    pub fn into_hive_swarm_send_unprocessed(
+        mut self,
         tx: OutcomeSender<W>,
     ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
+        let unprocessed: Vec<_> = self
+            .remove_all_unprocessed()
+            .into_iter()
+            .map(|(_, input)| input)
+            .collect();
         let hive = self.as_builder().build(self.queen)?;
-        let unprocessed = Self::collect_unprocessed(self.outcomes);
         let task_ids = hive.swarm_send(unprocessed, tx);
         Ok((hive, task_ids))
     }
@@ -92,11 +85,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_unprocessed_store(
-        self,
+    pub fn into_hive_swarm_store_unprocessed(
+        mut self,
     ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
+        let unprocessed: Vec<_> = self
+            .remove_all_unprocessed()
+            .into_iter()
+            .map(|(_, input)| input)
+            .collect();
         let hive = self.as_builder().build(self.queen)?;
-        let unprocessed = Self::collect_unprocessed(self.outcomes);
         let task_ids = hive.swarm_store(unprocessed);
         Ok((hive, task_ids))
     }
@@ -168,7 +165,7 @@ mod tests {
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
-        let (hive2, _) = husk1.into_hive_swarm_unprocessed_store().unwrap();
+        let (hive2, _) = husk1.into_hive_swarm_store_unprocessed().unwrap();
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
@@ -190,7 +187,7 @@ mod tests {
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
-        let (hive2, task_ids) = husk1.into_hive_swarm_unprocessed_to(tx).unwrap();
+        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(tx).unwrap();
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
