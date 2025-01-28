@@ -185,3 +185,8 @@ impl<W: Worker> Ord for Outcome<W> {
         self.task_id().cmp(other.task_id())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    
+}

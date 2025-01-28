@@ -114,6 +114,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
 
     /// Attempts to respawn any threads that are currently dead using the provided spawning
     /// function. Returns the number of threads that were successfully respawned.
+    //#[cfg_attr(coverage(off)] // no idea how to test this
     pub fn respawn_dead_threads<F>(&self, f: F) -> usize
     where
         F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,

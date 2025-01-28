@@ -103,7 +103,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if self.max_workers() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
-        let task = self.shared().prepare_task(input, outcome_tx);
+        let shared = self.shared();
+        let task = shared.prepare_task(input, outcome_tx);
         let task_id = task.id();
         // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
         // the task into an `Unprocessed` outcome and try to send it to the outcome channel; if
@@ -113,10 +114,10 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         } else {
             self.task_tx().send(task).err().map(|err| err.0)
         }
-        .inspect(|_| self.shared().finish_task(false))
+        .inspect(|_| shared.finish_task(false))
         .and_then(Task::into_unprocessed_try_send)
         {
-            self.shared().add_outcome(outcome);
+            shared.add_outcome(outcome);
         }
         task_id
     }
@@ -857,6 +858,7 @@ mod tests {
     use super::Poisoned;
     use crate::bee::stock::{Caller, Thunk, ThunkWorker};
     use crate::hive::{outcome_channel, Builder, Outcome, OutcomeIteratorExt};
+    use std::collections::HashMap;
     use std::thread;
     use std::time::Duration;
 
@@ -900,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn test_submit_after_poison() {
+    fn test_apply_after_poison() {
         let hive = Builder::new()
             .num_threads(4)
             .build_with(Caller::of(|i: usize| i * 2));
@@ -909,7 +911,7 @@ mod tests {
         // submit a task, check that it comes back unprocessed
         let (tx, rx) = outcome_channel();
         let sent_input = 1;
-        let sent_task_id = hive.apply_send(sent_input, tx);
+        let sent_task_id = hive.apply_send(sent_input, tx.clone());
         let outcome = rx.recv().unwrap();
         match outcome {
             Outcome::Unprocessed { input, task_id } => {
@@ -917,6 +919,33 @@ mod tests {
                 assert_eq!(task_id, sent_task_id);
             }
             _ => panic!("Expected unprocessed outcome"),
+        }
+    }
+
+    #[test]
+    fn test_swarm_after_poison() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i: usize| i * 2));
+        // poison hive using private method
+        hive.shared().poison();
+        // submit a task, check that it comes back unprocessed
+        let (tx, rx) = outcome_channel();
+        let inputs = 0..10;
+        let task_ids: HashMap<usize, usize> = hive
+            .swarm_send(inputs.clone(), tx)
+            .into_iter()
+            .zip(inputs)
+            .collect();
+        for outcome in rx.into_iter().take(10) {
+            match outcome {
+                Outcome::Unprocessed { input, task_id } => {
+                    let expected_input = task_ids.get(&task_id);
+                    assert!(expected_input.is_some());
+                    assert_eq!(input, *expected_input.unwrap());
+                }
+                _ => panic!("Expected unprocessed outcome"),
+            }
         }
     }
 }
