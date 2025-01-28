@@ -581,16 +581,16 @@ mod retry_tests {
 
         assert!(store.has_unprocessed());
         assert!(store.get(1).unwrap().is_unprocessed());
-        for task_id in vec![0, 2, 3, 4] {
+        for task_id in [0, 2, 3, 4] {
             assert!(!store.get(task_id).unwrap().is_unprocessed());
         }
-        assert_eq!(store.unprocessed_task_ids(), vec![1]);
+        assert_eq!(store.unprocessed_task_ids(), [1]);
 
         assert!(store.has_failures());
         for task_id in 2..=4 {
             assert!(store.get(task_id).unwrap().is_failure())
         }
-        for task_id in vec![0, 1] {
+        for task_id in [0, 1] {
             assert!(!store.get(task_id).unwrap().is_failure());
         }
         let mut failure_task_ids = store.failure_task_ids();

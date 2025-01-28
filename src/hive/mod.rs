@@ -1837,6 +1837,6 @@ mod retry_tests {
             .with_no_retries()
             .build_with(RetryCaller::of(echo_time));
         let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
-        assert!(matches!(v, Err(_)));
+        assert!(v.is_err());
     }
 }
