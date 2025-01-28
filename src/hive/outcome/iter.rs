@@ -104,7 +104,7 @@ impl<W: Worker> Iterator for OrderedOutcomeIterator<W> {
                     if task_id == next {
                         // this is the next outcome expected
                         self.task_ids.pop_front();
-                        return Some(outcome);
+                        break Some(outcome);
                     } else {
                         // this is an outcome for a future or unspecified ID
                         self.buf.insert(*task_id, outcome);
@@ -113,12 +113,14 @@ impl<W: Worker> Iterator for OrderedOutcomeIterator<W> {
                 } else {
                     // the underlying iterator is exhausted and we still have unsatisfied task_ids;
                     // convert them to `Missing` outcomes
-                    return Some(Outcome::Missing { task_id: *next });
+                    break Some(Outcome::Missing {
+                        task_id: self.task_ids.pop_front().unwrap(),
+                    });
                 }
             }
             // drop outcomes for task_ids that were not requested
             //if !self.buf.is_empty() { .. }
-            return None;
+            break None;
         }
     }
 }
@@ -229,3 +231,74 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 }
 
 impl<W: Worker, T: IntoIterator<Item = Outcome<W>>> OutcomeIteratorExt<W> for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::{OrderedOutcomeIterator, UnorderedOutcomeIterator};
+    use crate::bee::stock::EchoWorker;
+    use crate::hive::Outcome;
+
+    type Worker = EchoWorker<usize>;
+    type WorkerOutcome = Outcome<Worker>;
+
+    #[test]
+    fn test_unordered_missing() {
+        let outcomes = vec![
+            WorkerOutcome::Success {
+                value: 2,
+                task_id: 2,
+            },
+            WorkerOutcome::Success {
+                value: 1,
+                task_id: 1,
+            },
+        ];
+        let unordered_outcomes: Vec<_> = UnorderedOutcomeIterator::new(outcomes, 0..3).collect();
+        assert_eq!(unordered_outcomes.len(), 3);
+        assert_eq!(
+            unordered_outcomes,
+            vec![
+                WorkerOutcome::Success {
+                    value: 2,
+                    task_id: 2
+                },
+                WorkerOutcome::Success {
+                    value: 1,
+                    task_id: 1
+                },
+                WorkerOutcome::Missing { task_id: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ordered_missing() {
+        let outcomes = vec![
+            WorkerOutcome::Success {
+                value: 2,
+                task_id: 2,
+            },
+            WorkerOutcome::Success {
+                value: 1,
+                task_id: 1,
+            },
+        ];
+        let ordered_outcomes: Vec<_> = OrderedOutcomeIterator::new(outcomes, 0..3).collect();
+        assert_eq!(ordered_outcomes.len(), 3);
+
+        assert_eq!(
+            ordered_outcomes,
+            vec![
+                WorkerOutcome::Missing { task_id: 0 },
+                WorkerOutcome::Success {
+                    value: 1,
+                    task_id: 1
+                },
+                WorkerOutcome::Success {
+                    value: 2,
+                    task_id: 2
+                },
+            ]
+        );
+    }
+}

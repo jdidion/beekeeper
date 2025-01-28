@@ -1,4 +1,4 @@
-use super::{Config, Hive, SpawnError};
+use super::{Config, Hive};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 
 /// A `Builder` for a [`Hive`](crate::hive::Hive).
@@ -76,8 +76,7 @@ impl Builder {
     /// # fn main() {
     /// let hive = Builder::new()
     ///     .num_threads(8)
-    ///     .build_with_default::<ThunkWorker<()>>()
-    ///     .unwrap();
+    ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
     ///     hive.apply_store(Thunk::of(|| {
@@ -113,8 +112,7 @@ impl Builder {
     /// # fn main() {
     /// let hive = Builder::new()
     ///     .with_thread_per_core()
-    ///     .build_with_default::<ThunkWorker<()>>()
-    ///     .unwrap();
+    ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
     ///     hive.apply_store(Thunk::of(|| {
@@ -143,8 +141,7 @@ impl Builder {
     /// # fn main() {
     /// let hive = Builder::default()
     ///     .thread_name("foo")
-    ///     .build_with_default::<ThunkWorker<()>>()
-    ///     .unwrap();
+    ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
     ///     hive.apply_store(Thunk::of(|| {
@@ -176,8 +173,7 @@ impl Builder {
     /// # fn main() {
     /// let hive = Builder::default()
     ///     .thread_stack_size(4_000_000)
-    ///     .build_with_default::<ThunkWorker<()>>()
-    ///     .unwrap();
+    ///     .build_with_default::<ThunkWorker<()>>();
     ///
     /// for _ in 0..100 {
     ///     hive.apply_store(Thunk::of(|| {
@@ -195,8 +191,7 @@ impl Builder {
     /// Consumes this `Builder` and returns a new [`Hive`] using the given [`Queen`] to create
     /// [`Worker`]s.
     ///
-    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
-    /// worker threads.
+    /// Returns an error if there was an error spawning the worker threads.
     ///
     /// # Examples
     ///
@@ -255,8 +250,7 @@ impl Builder {
     /// let hive = Builder::new()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build(CounterQueen::default())
-    ///     .unwrap();
+    ///     .build(CounterQueen::default());
     ///
     /// for i in 0..100 {
     ///     hive.apply_store(i);
@@ -265,21 +259,22 @@ impl Builder {
     /// assert_eq!(husk.queen().num_workers, 8);
     /// # }
     /// ```
-    pub fn build<Q: Queen>(self, queen: Q) -> Result<Hive<Q::Kind, Q>, SpawnError> {
+    pub fn build<Q: Queen>(self, queen: Q) -> Hive<Q::Kind, Q> {
         Hive::new(self.0, queen)
     }
 
     /// Consumes this `Builder` and returns a new [`Hive`] using a [`Queen`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
-    pub fn build_default<Q: Queen + Default>(self) -> Result<Hive<Q::Kind, Q>, SpawnError> {
+    ///
+    /// Returns an error if there was an error spawning the worker threads.
+    pub fn build_default<Q: Queen + Default>(self) -> Hive<Q::Kind, Q> {
         Hive::new(self.0, Q::default())
     }
 
     /// Consumes this `Builder` and returns a new [`Hive`] with [`Worker`]s created by cloning
     /// `worker`.
     ///
-    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
-    /// worker threads.
+    /// Returns an error if there was an error spawning the worker threads.
     ///
     /// # Examples
     ///
@@ -319,8 +314,7 @@ impl Builder {
     /// let hive = Builder::new()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build_with(MathWorker(5isize))
-    ///     .unwrap();
+    ///     .build_with(MathWorker(5isize));
     ///
     /// let sum: isize = hive
     ///     .map((0..100).zip((0..4).cycle()))
@@ -329,7 +323,7 @@ impl Builder {
     /// assert_eq!(sum, 8920);
     /// # }
     /// ```
-    pub fn build_with<W>(self, worker: W) -> Result<Hive<W, CloneQueen<W>>, SpawnError>
+    pub fn build_with<W>(self, worker: W) -> Hive<W, CloneQueen<W>>
     where
         W: Worker + Send + Sync + Clone,
     {
@@ -374,8 +368,7 @@ impl Builder {
     /// let hive = Builder::new()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build_with_default::<MathWorker>()
-    ///     .unwrap();
+    ///     .build_with_default::<MathWorker>();
     ///
     /// let sum: isize = hive
     ///     .map((1..=100).map(|i| NonZeroIsize::new(i).unwrap()).zip((0..4).cycle()))
@@ -384,7 +377,7 @@ impl Builder {
     /// assert_eq!(sum, -25);
     /// # }
     /// ```
-    pub fn build_with_default<W>(self) -> Result<Hive<W, DefaultQueen<W>>, SpawnError>
+    pub fn build_with_default<W>(self) -> Hive<W, DefaultQueen<W>>
     where
         W: Worker + Send + Sync + Default,
     {
@@ -439,8 +432,7 @@ mod affinity {
         /// let hive = Builder::new()
         ///     .num_threads(4)
         ///     .core_affinity(0..4)
-        ///     .build_with_default::<ThunkWorker<()>>()
-        ///     .unwrap();
+        ///     .build_with_default::<ThunkWorker<()>>();
         ///
         /// for _ in 0..100 {
         ///     hive.apply_store(Thunk::of(|| {
@@ -516,8 +508,7 @@ mod retry {
         /// # fn main() {
         /// let hive = Builder::default()
         ///     .max_retries(3)
-        ///     .build_with(RetryCaller::of(sometimes_fail))
-        ///     .unwrap();
+        ///     .build_with(RetryCaller::of(sometimes_fail));
         ///
         /// for i in 0..10 {
         ///     hive.apply_store(i);
@@ -562,8 +553,7 @@ mod retry {
         /// let hive = Builder::default()
         ///     .max_retries(3)
         ///     .retry_factor(time::Duration::from_secs(1))
-        ///     .build_with(RetryCaller::of(echo_time))
-        ///     .unwrap();
+        ///     .build_with(RetryCaller::of(echo_time));
         ///
         /// for i in 0..10 {
         ///     hive.apply_store(i);

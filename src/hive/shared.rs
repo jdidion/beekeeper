@@ -1,12 +1,12 @@
-use super::counter::{self, DualCounter};
-use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
+use super::counter::CounterError;
+use super::{Config, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::thread::Builder;
+use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 use std::{fmt, iter, mem};
 
@@ -18,7 +18,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
-            num_tasks: DualCounter::default(),
+            spawn_results: Default::default(),
+            num_tasks: Default::default(),
             next_task_id: Default::default(),
             num_panics: Default::default(),
             num_referrers: AtomicUsize::new(1),
@@ -46,21 +47,91 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         builder
     }
 
-    /// Increases the maximum number of threads allowed in the `Hive` by `num_threads` and returns
-    /// the previous value.
-    pub fn add_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.add(num_threads).unwrap()
+    /// Spawns the initial set of `self.config.num_threads` worker threads using the provided
+    /// spawning function. Returns the number of worker threads that were successfully started.
+    pub fn init_threads<F>(&self, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let num_threads = self.config.num_threads.get_or_default();
+        if num_threads == 0 {
+            return 0;
+        }
+        let results: Vec<_> = (0..num_threads).map(f).collect();
+        let mut spawn_results = self.spawn_results.lock();
+        assert_eq!(spawn_results.len(), 0);
+        spawn_results.reserve(num_threads);
+        results
+            .into_iter()
+            .map(|result| {
+                let started = result.is_ok();
+                spawn_results.push(result);
+                started
+            })
+            .filter(|started| *started)
+            .count()
     }
 
-    /// Ensures that the number of threads is at least `num_threads`. Returns the previous value.
-    pub fn ensure_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.set_max(num_threads).unwrap()
+    /// Increases the maximum number of threads allowed in the `Hive` by `num_threads`, and
+    /// attempts to spawn threads with indices in `range = cur_index..cur_index + num_threads`
+    /// using the provided spawning function. The results are stored in `self.spawn_results[range]`.
+    /// Returns the number of new worker threads that were successfully started.
+    pub fn grow_threads<F>(&self, num_threads: usize, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let mut spawn_results = self.spawn_results.lock();
+        let start_index = self.config.num_threads.add(num_threads).unwrap();
+        assert_eq!(spawn_results.len(), start_index);
+        let end_index = start_index + num_threads;
+        let results: Vec<_> = (start_index..end_index).map(f).collect();
+        spawn_results.reserve(num_threads);
+        results
+            .into_iter()
+            .map(|result| {
+                let started = result.is_ok();
+                spawn_results.push(result);
+                started
+            })
+            .filter(|started| *started)
+            .count()
     }
 
-    /// Reduces `self.num_threads` by `num_threads`. This is used to adjust the number of threads
-    /// after calling `add_threads` if any of the threads could not be started successfully.
-    pub fn adjust_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.sub(num_threads).unwrap()
+    /// Attempts to spawn a thread to replace the one at the specified `index` using the provided
+    /// spawning function. The result is stored in `self.spawn_results[index]`. Returns the
+    /// spawn result for the previous thread at the same index.
+    pub fn respawn_thread<F>(&self, index: usize, f: F) -> Result<JoinHandle<()>, SpawnError>
+    where
+        F: FnOnce(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let result = f(index);
+        let mut spawn_results = self.spawn_results.lock();
+        assert!(spawn_results.len() > index);
+        // Note: we do *not* want to wait on the `JoinHandle` for the previous thread as it may
+        // still be processing a task
+        std::mem::replace(&mut spawn_results[index], result)
+    }
+
+    /// Attempts to respawn any threads that are currently dead using the provided spawning
+    /// function. Returns the number of threads that were successfully respawned.
+    //#[cfg_attr(coverage(off)] // no idea how to test this
+    pub fn respawn_dead_threads<F>(&self, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        self.spawn_results
+            .lock()
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, result)| result.is_err())
+            .map(|(i, result)| {
+                let new_result = f(i);
+                let started = new_result.is_ok();
+                *result = new_result;
+                started
+            })
+            .filter(|started| *started)
+            .count()
     }
 
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
@@ -125,33 +196,55 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         }
     }
 
+    pub fn abandon_task(&self, task: Task<W>) {
+        let (outcome, outcome_tx) = task.into_unprocessed();
+        self.send_or_store_outcome(outcome, outcome_tx);
+        // decrement the queued counter since it was incremented but the task was never queued
+        let _ = self.num_tasks.decrement_left(1);
+        self.no_work_notify_all();
+    }
+
     /// Converts each `Task` in the iterator into `Outcome::Unprocessed` and attempts to send it
     /// to its `OutcomeSender` if there is one, or stores it if there is no sender or the send
     /// fails. Returns a vector of task_ids of the tasks.
-    pub fn send_or_store_as_unprocessed<I>(&self, tasks: I) -> Vec<TaskId>
+    pub fn abandon_batch<I>(&self, tasks: I) -> Vec<TaskId>
     where
         I: Iterator<Item = Task<W>>,
     {
         // don't unlock outcomes unless we have to
         let mut outcomes = Option::None;
-        tasks
+        let task_ids: Vec<_> = tasks
             .map(|task| {
                 let task_id = task.id();
-                if let Some(outcome) = task.into_unprocessed_try_send() {
+                let (outcome, outcome_tx) = task.into_unprocessed();
+                if let Some(outcome) = if let Some(tx) = outcome_tx {
+                    tx.try_send_msg(outcome)
+                } else {
+                    Some(outcome)
+                } {
                     outcomes
                         .get_or_insert_with(|| self.outcomes.lock())
                         .insert(task_id, outcome);
                 }
                 task_id
             })
-            .collect()
+            .collect();
+        // decrement the queued counter since it was incremented but the tasks were never queued
+        let _ = self.num_tasks.decrement_left(task_ids.len() as u64);
+        self.no_work_notify_all();
+        task_ids
     }
 
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
+    #[inline]
     pub fn finish_task(&self, panicking: bool) {
+        self.finish_tasks(1, panicking);
+    }
+
+    pub fn finish_tasks(&self, n: u64, panicking: bool) {
         self.num_tasks
-            .decrement_right(1)
+            .decrement_right(n)
             .expect("active task counter was smaller than expected");
         if panicking {
             self.num_panics.add(1);
@@ -320,7 +413,12 @@ fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
     outcomes: &mut HashMap<TaskId, Outcome<W>>,
 ) {
     tasks.for_each(|task| {
-        if let Some(outcome) = task.into_unprocessed_try_send() {
+        let (outcome, outcome_tx) = task.into_unprocessed();
+        if let Some(outcome) = if let Some(tx) = outcome_tx {
+            tx.try_send_msg(outcome)
+        } else {
+            Some(outcome)
+        } {
             outcomes.insert(*outcome.task_id(), outcome);
         }
     });
@@ -333,7 +431,7 @@ pub enum NextTaskError {
     #[error("The hive has been poisoned")]
     Poisoned,
     #[error("Task counter has invalid state")]
-    InvalidCounter(counter::CounterError),
+    InvalidCounter(CounterError),
 }
 
 #[cfg(not(feature = "retry"))]

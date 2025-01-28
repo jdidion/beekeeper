@@ -185,3 +185,157 @@ impl<W: Worker> Ord for Outcome<W> {
         self.task_id().cmp(other.task_id())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Outcome;
+    use crate::bee::stock::EchoWorker;
+    use crate::panic::Panic;
+
+    type Worker = EchoWorker<usize>;
+    type WorkerOutcome = Outcome<Worker>;
+
+    #[test]
+    fn test_try_into_input() {
+        let outcome = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        assert_eq!(outcome.try_into_input(), None);
+
+        let outcome = WorkerOutcome::Failure {
+            input: None,
+            error: (),
+            task_id: 2,
+        };
+        assert_eq!(outcome.try_into_input(), None);
+
+        let outcome = WorkerOutcome::Failure {
+            input: Some(42),
+            error: (),
+            task_id: 2,
+        };
+        assert_eq!(outcome.try_into_input(), Some(42));
+
+        let outcome = WorkerOutcome::Unprocessed {
+            input: 42,
+            task_id: 3,
+        };
+        assert_eq!(outcome.try_into_input(), Some(42));
+
+        let outcome = WorkerOutcome::Missing { task_id: 4 };
+        assert_eq!(outcome.try_into_input(), None);
+
+        let outcome = WorkerOutcome::Panic {
+            input: None,
+            payload: Panic::try_call(None, || panic!()).unwrap_err(),
+            task_id: 5,
+        };
+        assert_eq!(outcome.try_into_input(), None);
+
+        let outcome = WorkerOutcome::Panic {
+            input: Some(42),
+            payload: Panic::try_call(None, || panic!()).unwrap_err(),
+            task_id: 5,
+        };
+        assert_eq!(outcome.try_into_input(), Some(42));
+    }
+
+    #[test]
+    fn test_try_into_error() {
+        let outcome = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        assert_eq!(outcome.try_into_error(), None);
+
+        let outcome = WorkerOutcome::Failure {
+            input: None,
+            error: (),
+            task_id: 2,
+        };
+        assert_eq!(outcome.try_into_error(), Some(()));
+
+        let outcome = WorkerOutcome::Failure {
+            input: Some(42),
+            error: (),
+            task_id: 2,
+        };
+        assert_eq!(outcome.try_into_error(), Some(()));
+
+        let outcome = WorkerOutcome::Unprocessed {
+            input: 42,
+            task_id: 3,
+        };
+        assert_eq!(outcome.try_into_error(), None);
+
+        let outcome = WorkerOutcome::Missing { task_id: 4 };
+        assert_eq!(outcome.try_into_error(), None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_try_into_error_panic() {
+        WorkerOutcome::Panic {
+            input: None,
+            payload: Panic::try_call(None, || panic!()).unwrap_err(),
+            task_id: 5,
+        }
+        .try_into_error();
+    }
+
+    #[test]
+    fn test_eq() {
+        let outcome1 = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        let outcome2 = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        assert_eq!(outcome1, outcome2);
+
+        let outcome3 = WorkerOutcome::Success {
+            value: 42,
+            task_id: 2,
+        };
+        assert_ne!(outcome1, outcome3);
+
+        let outcome4 = WorkerOutcome::Failure {
+            input: None,
+            error: (),
+            task_id: 1,
+        };
+        assert_ne!(outcome1, outcome4);
+    }
+}
+
+#[cfg(all(test, feature = "retry"))]
+mod retry_tests {
+    use super::Outcome;
+    use crate::bee::stock::EchoWorker;
+
+    type Worker = EchoWorker<usize>;
+    type WorkerOutcome = Outcome<Worker>;
+
+    #[test]
+    fn test_try_into_input() {
+        let outcome = WorkerOutcome::MaxRetriesAttempted {
+            input: 42,
+            error: (),
+            task_id: 1,
+        };
+        assert_eq!(outcome.try_into_input(), Some(42));
+    }
+
+    #[test]
+    fn test_try_into_error() {
+        let outcome = WorkerOutcome::MaxRetriesAttempted {
+            input: 42,
+            error: (),
+            task_id: 1,
+        };
+        assert_eq!(outcome.try_into_error(), Some(()));
+    }
+}
