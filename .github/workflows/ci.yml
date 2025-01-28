@@ -21,6 +21,14 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo doc -F affinity,retry
       - run: cargo test -F affinity,retry --doc
+
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
