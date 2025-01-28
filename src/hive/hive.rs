@@ -1,7 +1,5 @@
 use super::prelude::*;
-use super::{
-    Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, SpawnError, TaskSender,
-};
+use super::{Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, SpawnError, TaskSender};
 use crate::atomic::Atomic;
 use crate::bee::{DefaultQueen, Queen, TaskId, Worker};
 use crossbeam_utils::Backoff;
