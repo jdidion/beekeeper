@@ -13,7 +13,6 @@
     * `Hive::has_dead_workers` returns `true` if the `Hive` has encountered any errors spawing worker threads
     * `Hive::revive_workers` attempts to re-spawn any dead worker threads
 * Bugfixes
-  * The task counter was not properly decremented when a task failed to be submitted to the hive, which could lead to corrupted Hive state
   * Ordered iterators would enter an infinite loop if there were missing indicies
 
 ## 0.1.0
