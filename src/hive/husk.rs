@@ -1,6 +1,5 @@
 use super::{
     Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OwnedOutcomes,
-    SpawnError,
 };
 use crate::bee::{Queen, TaskId, Worker};
 use std::collections::HashMap;
@@ -56,7 +55,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Consumes this `Husk` and returns a new `Hive` with the same configuration and `Queen` as
     /// the one that produced this `Husk`.
-    pub fn into_hive(self) -> Result<Hive<W, Q>, SpawnError> {
+    pub fn into_hive(self) -> Result<Hive<W, Q>, std::io::Error> {
         self.as_builder().build(self.queen)
     }
 
@@ -80,7 +79,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     pub fn into_hive_swarm_unprocessed_to(
         self,
         tx: OutcomeSender<W>,
-    ) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
+    ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
         let hive = self.as_builder().build(self.queen)?;
         let unprocessed = Self::collect_unprocessed(self.outcomes);
         let task_ids = hive.swarm_send(unprocessed, tx);
@@ -95,7 +94,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
     pub fn into_hive_swarm_unprocessed_store(
         self,
-    ) -> Result<(Hive<W, Q>, Vec<TaskId>), SpawnError> {
+    ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
         let hive = self.as_builder().build(self.queen)?;
         let unprocessed = Self::collect_unprocessed(self.outcomes);
         let task_ids = hive.swarm_store(unprocessed);
@@ -171,7 +170,7 @@ mod tests {
         let husk1 = hive1.try_into_husk().unwrap();
         let (hive2, _) = husk1.into_hive_swarm_unprocessed_store().unwrap();
         // now spin up worker threads to process the tasks
-        hive2.grow(8);
+        hive2.grow(8).expect("error spawning threads");
         hive2.join();
         let husk2 = hive2.try_into_husk().unwrap();
         assert!(!husk2.has_unprocessed());
@@ -193,7 +192,7 @@ mod tests {
         let (tx, rx) = outcome_channel();
         let (hive2, task_ids) = husk1.into_hive_swarm_unprocessed_to(tx).unwrap();
         // now spin up worker threads to process the tasks
-        hive2.grow(8);
+        hive2.grow(8).expect("error spawning threads");
         hive2.join();
         let husk2 = hive2.try_into_husk().unwrap();
         assert!(husk2.is_empty());

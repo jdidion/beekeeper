@@ -321,29 +321,6 @@ where
             Self::Sync(Some(atomic)) => Ok(atomic.add(rhs)),
         }
     }
-
-    /// If this is a `Sync` variant whose value is `Some`, updates the value to be the difference
-    /// of the current value and `value` and returns the previous value. Otherwise returns a
-    /// `MutError`.
-    pub fn sub(&self, rhs: P) -> Result<P, MutError> {
-        match self {
-            Self::Unsync(_) => Err(MutError::Unsync),
-            Self::Sync(None) => Err(MutError::Unset),
-            Self::Sync(Some(atomic)) => Ok(atomic.sub(rhs)),
-        }
-    }
-
-    /// If this is a `Sync` variant whose value is `Some`, sets the value to the maximum of the
-    /// current value and `rhs` and returns the previous value. Otherwise returns a `MutError`.
-    pub fn set_max(&self, rhs: P) -> Result<P, MutError> {
-        match self {
-            Self::Unsync(_) => Err(MutError::Unsync),
-            Self::Sync(None) => Err(MutError::Unset),
-            Self::Sync(Some(atomic)) => {
-                Ok(atomic.set_with(move |current| (current < rhs).then_some(rhs)))
-            }
-        }
-    }
 }
 
 impl<P, A> Default for AtomicOption<P, A>
@@ -541,15 +518,12 @@ mod tests {
         let b = a.into_sync();
         assert!(matches!(b.add(1), Ok(42)));
         assert_eq!(b.get(), Some(43));
-        assert!(matches!(b.set_max(44), Ok(43)));
-        assert_eq!(b.get(), Some(44));
     }
 
     #[test]
     fn test_atomic_option_unsync() {
         let a: AtomicOption<u32, AtomicU32> = AtomicOption::default();
         assert!(matches!(a.add(1), Err(MutError::Unsync)));
-        assert!(matches!(a.set_max(1), Err(MutError::Unsync)));
     }
 
     #[test]
@@ -557,6 +531,5 @@ mod tests {
         let a: AtomicOption<u32, AtomicU32> = AtomicOption::default();
         let b = a.into_sync();
         assert!(matches!(b.add(1), Err(MutError::Unset)));
-        assert!(matches!(b.set_max(1), Err(MutError::Unset)));
     }
 }

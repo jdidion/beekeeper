@@ -1,4 +1,4 @@
-use super::{Config, Hive, SpawnError};
+use super::{Config, Hive};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 
 /// A `Builder` for a [`Hive`](crate::hive::Hive).
@@ -195,8 +195,7 @@ impl Builder {
     /// Consumes this `Builder` and returns a new [`Hive`] using the given [`Queen`] to create
     /// [`Worker`]s.
     ///
-    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
-    /// worker threads.
+    /// Returns an error if there was an error spawning the worker threads.
     ///
     /// # Examples
     ///
@@ -265,21 +264,22 @@ impl Builder {
     /// assert_eq!(husk.queen().num_workers, 8);
     /// # }
     /// ```
-    pub fn build<Q: Queen>(self, queen: Q) -> Result<Hive<Q::Kind, Q>, SpawnError> {
+    pub fn build<Q: Queen>(self, queen: Q) -> Result<Hive<Q::Kind, Q>, std::io::Error> {
         Hive::new(self.0, queen)
     }
 
     /// Consumes this `Builder` and returns a new [`Hive`] using a [`Queen`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
-    pub fn build_default<Q: Queen + Default>(self) -> Result<Hive<Q::Kind, Q>, SpawnError> {
+    ///
+    /// Returns an error if there was an error spawning the worker threads.
+    pub fn build_default<Q: Queen + Default>(self) -> Result<Hive<Q::Kind, Q>, std::io::Error> {
         Hive::new(self.0, Q::default())
     }
 
     /// Consumes this `Builder` and returns a new [`Hive`] with [`Worker`]s created by cloning
     /// `worker`.
     ///
-    /// Returns a [`SpawnError`](crate::hive::SpawnError) if there was an error spawning the
-    /// worker threads.
+    /// Returns an error if there was an error spawning the worker threads.
     ///
     /// # Examples
     ///
@@ -329,7 +329,7 @@ impl Builder {
     /// assert_eq!(sum, 8920);
     /// # }
     /// ```
-    pub fn build_with<W>(self, worker: W) -> Result<Hive<W, CloneQueen<W>>, SpawnError>
+    pub fn build_with<W>(self, worker: W) -> Result<Hive<W, CloneQueen<W>>, std::io::Error>
     where
         W: Worker + Send + Sync + Clone,
     {
@@ -384,7 +384,7 @@ impl Builder {
     /// assert_eq!(sum, -25);
     /// # }
     /// ```
-    pub fn build_with_default<W>(self) -> Result<Hive<W, DefaultQueen<W>>, SpawnError>
+    pub fn build_with_default<W>(self) -> Result<Hive<W, DefaultQueen<W>>, std::io::Error>
     where
         W: Worker + Send + Sync + Default,
     {

@@ -358,7 +358,7 @@ pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_
 pub use self::config::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
 };
-pub use self::hive::SpawnError;
+pub use self::hive::Poisoned;
 pub use self::husk::Husk;
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
@@ -377,7 +377,7 @@ pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
 pub mod prelude {
     pub use super::{
         outcome_channel, Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt,
-        OutcomeStore, SpawnError,
+        OutcomeStore, Poisoned,
     };
 }
 
@@ -450,6 +450,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     queen: Mutex<Q>,
     /// receiver for the channel used by the `Hive` to send tasks to the worker threads
     task_rx: Mutex<TaskReceiver<W>>,
+    /// the index that will be assigned to the next worker thread that is spawned
+    next_thread_index: AtomicUsize,
     /// allows for 2^48 queued tasks and 2^16 active tasks
     num_tasks: DualCounter<48>,
     /// ID that will be assigned to the next task submitted to the `Hive`
@@ -537,7 +539,7 @@ mod test {
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().0, 1);
         assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
-        hive.grow(1);
+        hive.grow(1).expect("error spawning threads");
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().0, 0);
         assert!(matches!(
@@ -558,7 +560,7 @@ mod test {
         // increase the number of threads
         let new_threads = 4;
         let total_threads = new_threads + TEST_TASKS;
-        hive.grow(new_threads);
+        hive.grow(new_threads).expect("error spawning threads");
         // queue some more long-running tasks
         for _ in 0..new_threads {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -789,7 +791,7 @@ mod test {
         }
 
         // new spawn thread should share the name "test" too.
-        hive.grow(3);
+        hive.grow(3).expect("error spawning threads");
         let tx_clone = tx.clone();
         hive.apply_store(Thunk::of(move || {
             let name = thread::current().name().unwrap().to_owned();
@@ -1358,6 +1360,12 @@ mod test {
             .map(Result::unwrap)
             .collect::<Vec<_>>();
     }
+
+    #[test]
+    fn test_spawn_after_poison() {}
+
+    #[test]
+    fn test_submit_after_poison() {}
 
     #[test]
     fn test_husk() {

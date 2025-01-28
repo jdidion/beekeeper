@@ -5,7 +5,7 @@ use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Range};
 use std::thread::Builder;
 use std::time::Duration;
 use std::{fmt, iter, mem};
@@ -18,6 +18,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
+            next_thread_index: Default::default(),
             num_tasks: DualCounter::default(),
             next_task_id: Default::default(),
             num_panics: Default::default(),
@@ -46,21 +47,18 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         builder
     }
 
+    /// Reserves `num_threads` unique thread indices and returns the range of indices reserved.
+    /// After a `Hive` tries to spawn worker threads with indices in this range, it must update
+    /// the actual number of threads by calling `add_threads`.
+    pub fn reserve_thread_indices(&self, num_threads: usize) -> Range<usize> {
+        let start_index = self.next_thread_index.add(num_threads);
+        start_index..start_index + num_threads
+    }
+
     /// Increases the maximum number of threads allowed in the `Hive` by `num_threads` and returns
     /// the previous value.
     pub fn add_threads(&self, num_threads: usize) -> usize {
         self.config.num_threads.add(num_threads).unwrap()
-    }
-
-    /// Ensures that the number of threads is at least `num_threads`. Returns the previous value.
-    pub fn ensure_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.set_max(num_threads).unwrap()
-    }
-
-    /// Reduces `self.num_threads` by `num_threads`. This is used to adjust the number of threads
-    /// after calling `add_threads` if any of the threads could not be started successfully.
-    pub fn adjust_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.sub(num_threads).unwrap()
     }
 
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
