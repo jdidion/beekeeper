@@ -31,7 +31,6 @@ where
     Builder::default()
         .num_threads(num_threads)
         .build_with(Caller::of(f))
-        .unwrap()
         .map(inputs)
         .map(Outcome::unwrap)
         .collect()
@@ -71,7 +70,6 @@ where
     Builder::default()
         .num_threads(num_threads)
         .build_with(OnceCaller::of(f))
-        .unwrap()
         .map(inputs)
         .into()
 }
@@ -162,7 +160,6 @@ mod retry {
             .num_threads(num_threads)
             .max_retries(max_retries)
             .build_with(RetryCaller::of(f))
-            .unwrap()
             .map(inputs)
             .into()
     }

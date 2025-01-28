@@ -1,5 +1,7 @@
 use super::prelude::*;
-use super::{Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, Task, TaskSender};
+use super::{
+    Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, SpawnError, Task, TaskSender,
+};
 use crate::atomic::Atomic;
 use crate::bee::{DefaultQueen, Queen, TaskId, Worker};
 use crossbeam_utils::Backoff;
@@ -18,7 +20,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     fn try_spawn(
         thread_index: usize,
         shared: Arc<Shared<W, Q>>,
-    ) -> Result<JoinHandle<()>, std::io::Error> {
+    ) -> Result<JoinHandle<()>, SpawnError> {
         // spawn a thread that executes the worker loop
         shared.thread_builder().spawn(move || {
             // perform one-time initialization of the worker thread
@@ -43,21 +45,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         })
     }
 
-    /// Creates a new `Hive`. This should only be called from `Builder`. If any of the threads
-    /// fail to spawn, this returns an error and any threads that were successfully spawned
-    /// are dropped.
-    pub(super) fn new(config: Config, queen: Q) -> Result<Self, std::io::Error> {
-        let num_threads = config.num_threads.get().unwrap_or(0);
+    /// Creates a new `Hive`. This should only be called from `Builder`.
+    ///
+    /// The `Hive` will attempt to spawn the configured number of worker threads
+    /// (`config.num_threads`) but the actual number of threads available may be lower if there
+    /// are any errors during spawning.
+    pub(super) fn new(config: Config, queen: Q) -> Self {
         let (task_tx, task_rx) = mpsc::channel();
         let shared = Arc::new(Shared::new(config.into_sync(), queen, task_rx));
-        if num_threads > 0 {
-            // spawn the worker threads
-            for thread_index in 0..num_threads {
-                // TODO: do something with worker thread join handles?
-                let _ = Self::try_spawn(thread_index, Arc::clone(&shared))?;
-            }
-        }
-        Ok(Self(Some(HiveInner { task_tx, shared })))
+        shared.init_threads(|thread_index| Self::try_spawn(thread_index, Arc::clone(&shared)));
+        Self(Some(HiveInner { task_tx, shared }))
     }
 
     #[inline]
@@ -82,15 +79,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if shared.is_poisoned() {
             return Err(Poisoned);
         }
-        // try to spawn each thread and count the number that were successfully started
-        // TODO: do something with worker thread join handles?
-        let num_started = shared
-            .reserve_thread_indices(num_threads)
-            .map(|thread_index| Self::try_spawn(thread_index, Arc::clone(shared)))
-            .filter(Result::is_ok)
-            .count();
-        // increment the thread count by the number of worker threads that were successfully started
-        shared.add_threads(num_started);
+        let num_started = shared.grow_threads(num_threads, |thread_index| {
+            Self::try_spawn(thread_index, Arc::clone(shared))
+        });
         Ok(num_started)
     }
 
@@ -98,7 +89,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// of new threads that were successfully started (which may be `0`), or a `Poisoned` error if
     /// the hive has been poisoned.
     pub fn use_all_cores(&self) -> Result<usize, Poisoned> {
-        let num_threads = num_cpus::get().saturating_sub(self.num_threads());
+        let num_threads = num_cpus::get().saturating_sub(self.max_workers());
         self.grow(num_threads)
     }
 
@@ -109,7 +100,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// This method is called by all the `*apply*` methods.
     fn send_one(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> TaskId {
         #[cfg(debug_assertions)]
-        if self.num_threads() == 0 {
+        if self.max_workers() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task = self.shared().prepare_task(input, outcome_tx);
@@ -165,7 +156,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         T::IntoIter: ExactSizeIterator,
     {
         #[cfg(debug_assertions)]
-        if self.num_threads() == 0 {
+        if self.max_workers() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task_tx = self.task_tx();
@@ -475,10 +466,39 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         self.shared().queen.lock()
     }
 
-    /// Returns the number of worker threads, i.e., the maximum number of tasks that can be
-    /// processed concurrently.
-    pub fn num_threads(&self) -> usize {
+    /// Returns the number of worker threads that have been requested, i.e., the maximum number of
+    /// tasks that could be processed concurrently. This may be greater than
+    /// [`active_workers`](Self::active_workers) if any of the worker threads failed to start.
+    pub fn max_workers(&self) -> usize {
         self.shared().config.num_threads.get_or_default()
+    }
+
+    /// Returns the number of worker threads that have been successfully started. This may be
+    /// fewer than [`max_workers`](Self::max_workers) if any of the worker threads failed to start.
+    pub fn alive_workers(&self) -> usize {
+        self.shared()
+            .spawn_results
+            .lock()
+            .iter()
+            .filter(|result| result.is_ok())
+            .count()
+    }
+
+    /// Returns `true` if there are any "dead" worker threads that failed to spawn.
+    pub fn has_dead_workers(&self) -> bool {
+        self.shared()
+            .spawn_results
+            .lock()
+            .iter()
+            .any(|result| result.is_err())
+    }
+
+    /// Attempts to respawn any dead worker threads. Returns the number of worker threads that were
+    /// successfully respawned.
+    pub fn revive_workers(&self) -> usize {
+        let shared = self.shared();
+        shared
+            .respawn_dead_threads(|thread_index| Self::try_spawn(thread_index, Arc::clone(shared)))
     }
 
     /// Returns the number of tasks currently (queued for processing, being processed).
@@ -527,8 +547,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// # fn main() {
     /// let hive = Builder::new()
     ///     .num_threads(4)
-    ///     .build_with_default::<ThunkWorker<()>>()
-    ///     .unwrap();
+    ///     .build_with_default::<ThunkWorker<()>>();
     /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be started.
     /// // There should be 4 active tasks and 6 queued tasks.
@@ -630,7 +649,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
 impl<W: Worker + Send + Sync + Default> Default for Hive<W, DefaultQueen<W>> {
     fn default() -> Self {
-        Builder::default().build_with_default::<W>().unwrap()
+        Builder::default().build_with_default::<W>()
     }
 }
 
@@ -730,8 +749,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
         self.shared.finish_task(thread::panicking());
         // the thread is only respawned if the sentinel is active
         if self.active && !self.shared.is_poisoned() {
-            // nothing we can do if we fail to re-spawn the thread
-            let _ = Hive::try_spawn(self.thread_index, Arc::clone(&self.shared));
+            // can't do anything with the previous result
+            let _ = self
+                .shared
+                .respawn_thread(self.thread_index, |thread_index| {
+                    Hive::try_spawn(thread_index, Arc::clone(&self.shared))
+                });
         }
     }
 }
@@ -831,8 +854,9 @@ mod retry {
 
 #[cfg(test)]
 mod tests {
-    use crate::bee::stock::{Thunk, ThunkWorker};
-    use crate::hive::{Builder, OutcomeIteratorExt};
+    use super::Poisoned;
+    use crate::bee::stock::{Caller, Thunk, ThunkWorker};
+    use crate::hive::{outcome_channel, Builder, Outcome, OutcomeIteratorExt};
     use std::thread;
     use std::time::Duration;
 
@@ -840,8 +864,7 @@ mod tests {
     fn test_suspend() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let outcome_iter =
             hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
         // Allow first set of tasks to be started.
@@ -858,5 +881,42 @@ mod tests {
         assert_eq!(hive.num_tasks(), (0, 0));
         let outputs: Vec<_> = outcome_iter.into_outputs().collect();
         assert_eq!(outputs.len(), 10);
+    }
+
+    #[test]
+    fn test_spawn_after_poison() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with_default::<ThunkWorker<()>>();
+        assert_eq!(hive.max_workers(), 4);
+        assert_eq!(hive.alive_workers(), 4);
+        // poison hive using private method
+        hive.shared().poison();
+        // attempt to spawn a new task
+        assert!(matches!(hive.grow(1), Err(Poisoned)));
+        // make sure the worker count wasn't increased
+        assert_eq!(hive.max_workers(), 4);
+        assert_eq!(hive.alive_workers(), 4);
+    }
+
+    #[test]
+    fn test_submit_after_poison() {
+        let hive = Builder::new()
+            .num_threads(4)
+            .build_with(Caller::of(|i: usize| i * 2));
+        // poison hive using private method
+        hive.shared().poison();
+        // submit a task, check that it comes back unprocessed
+        let (tx, rx) = outcome_channel();
+        let sent_input = 1;
+        let sent_task_id = hive.apply_send(sent_input, tx);
+        let outcome = rx.recv().unwrap();
+        match outcome {
+            Outcome::Unprocessed { input, task_id } => {
+                assert_eq!(input, sent_input);
+                assert_eq!(task_id, sent_task_id);
+            }
+            _ => panic!("Expected unprocessed outcome"),
+        }
     }
 }

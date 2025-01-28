@@ -56,7 +56,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Consumes this `Husk` and returns a new `Hive` with the same configuration and `Queen` as
     /// the one that produced this `Husk`.
-    pub fn into_hive(self) -> Result<Hive<W, Q>, std::io::Error> {
+    pub fn into_hive(self) -> Hive<W, Q> {
         self.as_builder().build(self.queen)
     }
 
@@ -68,15 +68,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     pub fn into_hive_swarm_send_unprocessed(
         mut self,
         tx: OutcomeSender<W>,
-    ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
+    ) -> (Hive<W, Q>, Vec<TaskId>) {
         let unprocessed: Vec<_> = self
             .remove_all_unprocessed()
             .into_iter()
             .map(|(_, input)| input)
             .collect();
-        let hive = self.as_builder().build(self.queen)?;
+        let hive = self.as_builder().build(self.queen);
         let task_ids = hive.swarm_send(unprocessed, tx);
-        Ok((hive, task_ids))
+        (hive, task_ids)
     }
 
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
@@ -85,17 +85,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_store_unprocessed(
-        mut self,
-    ) -> Result<(Hive<W, Q>, Vec<TaskId>), std::io::Error> {
+    pub fn into_hive_swarm_store_unprocessed(mut self) -> (Hive<W, Q>, Vec<TaskId>) {
         let unprocessed: Vec<_> = self
             .remove_all_unprocessed()
             .into_iter()
             .map(|(_, input)| input)
             .collect();
-        let hive = self.as_builder().build(self.queen)?;
+        let hive = self.as_builder().build(self.queen);
         let task_ids = hive.swarm_store(unprocessed);
-        Ok((hive, task_ids))
+        (hive, task_ids)
     }
 }
 
@@ -133,8 +131,7 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let mut task_ids = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
@@ -159,13 +156,12 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
-        let (hive2, _) = husk1.into_hive_swarm_store_unprocessed().unwrap();
+        let (hive2, _) = husk1.into_hive_swarm_store_unprocessed();
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
@@ -180,14 +176,13 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
-        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(tx).unwrap();
+        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
@@ -205,8 +200,7 @@ mod tests {
     fn test_into_result() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
         let mut outputs = hive.try_into_husk().unwrap().into_parts().1.unwrap();
@@ -219,8 +213,7 @@ mod tests {
     fn test_into_result_panic() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<PunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<PunkWorker<u8>>();
         hive.map_store(
             (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );

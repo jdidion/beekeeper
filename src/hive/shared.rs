@@ -1,12 +1,12 @@
-use super::counter::{self, DualCounter};
-use super::{Config, Outcome, OutcomeSender, Shared, Task, TaskReceiver};
+use super::counter::CounterError;
+use super::{Config, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::ops::{DerefMut, Range};
-use std::thread::Builder;
+use std::ops::DerefMut;
+use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 use std::{fmt, iter, mem};
 
@@ -18,8 +18,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             config,
             queen: Mutex::new(queen),
             task_rx: Mutex::new(task_rx),
-            next_thread_index: Default::default(),
-            num_tasks: DualCounter::default(),
+            spawn_results: Default::default(),
+            num_tasks: Default::default(),
             next_task_id: Default::default(),
             num_panics: Default::default(),
             num_referrers: AtomicUsize::new(1),
@@ -47,18 +47,91 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         builder
     }
 
-    /// Reserves `num_threads` unique thread indices and returns the range of indices reserved.
-    /// After a `Hive` tries to spawn worker threads with indices in this range, it must update
-    /// the actual number of threads by calling `add_threads`.
-    pub fn reserve_thread_indices(&self, num_threads: usize) -> Range<usize> {
-        let start_index = self.next_thread_index.add(num_threads);
-        start_index..start_index + num_threads
+    /// Spawns the initial set of `self.config.num_threads` worker threads using the provided
+    /// spawning function. Returns the number of worker threads that were successfully started.
+    pub fn init_threads<F>(&self, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let num_threads = self.config.num_threads.get_or_default();
+        if num_threads == 0 {
+            return 0;
+        }
+        let results: Vec<_> = (0..num_threads).map(f).collect();
+        let mut spawn_results = self.spawn_results.lock();
+        assert_eq!(spawn_results.len(), 0);
+        spawn_results.reserve(num_threads);
+        results
+            .into_iter()
+            .map(|result| {
+                let started = result.is_ok();
+                spawn_results.push(result);
+                started
+            })
+            .filter(|started| *started)
+            .count()
     }
 
-    /// Increases the maximum number of threads allowed in the `Hive` by `num_threads` and returns
-    /// the previous value.
-    pub fn add_threads(&self, num_threads: usize) -> usize {
-        self.config.num_threads.add(num_threads).unwrap()
+    /// Increases the maximum number of threads allowed in the `Hive` by `num_threads`, and
+    /// attempts to spawn threads with indices in `range = cur_index..cur_index + num_threads`
+    /// using the provided spawning function. The results are stored in `self.spawn_results[range]`.
+    /// Returns the number of new worker threads that were successfully started.
+    pub fn grow_threads<F>(&self, num_threads: usize, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let mut spawn_results = self.spawn_results.lock();
+        let start_index = self.config.num_threads.add(num_threads).unwrap();
+        assert_eq!(spawn_results.len(), start_index);
+        let end_index = start_index + num_threads;
+        let results: Vec<_> = (start_index..end_index).map(f).collect();
+        spawn_results.reserve(num_threads);
+        results
+            .into_iter()
+            .map(|result| {
+                let started = result.is_ok();
+                spawn_results.push(result);
+                started
+            })
+            .filter(|started| *started)
+            .count()
+    }
+
+    /// Attempts to spawn a thread to replace the one at the specified `index` using the provided
+    /// spawning function. The result is stored in `self.spawn_results[index]`. Returns the
+    /// spawn result for the previous thread at the same index.
+    pub fn respawn_thread<F>(&self, index: usize, f: F) -> Result<JoinHandle<()>, SpawnError>
+    where
+        F: FnOnce(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        let result = f(index);
+        let mut spawn_results = self.spawn_results.lock();
+        assert!(spawn_results.len() > index);
+        let prev_result = std::mem::replace(&mut spawn_results[index], result);
+        // Note: we do *not* want to wait on the `JoinHandle` for the previous thread as it may
+        // still be processing a task
+        prev_result
+    }
+
+    /// Attempts to respawn any threads that are currently dead using the provided spawning
+    /// function. Returns the number of threads that were successfully respawned.
+    pub fn respawn_dead_threads<F>(&self, f: F) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
+        self.spawn_results
+            .lock()
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, result)| result.is_err())
+            .map(|(i, result)| {
+                let new_result = f(i);
+                let started = new_result.is_ok();
+                *result = new_result;
+                started
+            })
+            .filter(|started| *started)
+            .count()
     }
 
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
@@ -336,7 +409,7 @@ pub enum NextTaskError {
     #[error("The hive has been poisoned")]
     Poisoned,
     #[error("Task counter has invalid state")]
-    InvalidCounter(counter::CounterError),
+    InvalidCounter(CounterError),
 }
 
 #[cfg(not(feature = "retry"))]

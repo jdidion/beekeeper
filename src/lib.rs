@@ -154,8 +154,7 @@
 //! let hive = Builder::new()
 //!     .num_threads(4)
 //!     .thread_name("thunk_hive")
-//!     .build_with_default::<ThunkWorker<i32>>()
-//!     .unwrap();
+//!     .build_with_default::<ThunkWorker<i32>>();
 //!
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
@@ -280,8 +279,7 @@
 //! // build the Hive
 //! let hive = Builder::new()
 //!     .num_threads(4)
-//!     .build_default::<CatQueen>()
-//!     .unwrap();
+//!     .build_default::<CatQueen>();
 //!
 //! // prepare inputs
 //! let inputs = (0..8).map(|i| 97 + i);

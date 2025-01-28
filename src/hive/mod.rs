@@ -93,8 +93,7 @@
 //!     .num_threads(4)
 //!     // 16 cores will be available for pinning but only 4 will be used initially
 //!     .core_affinity(0..16)
-//!     .build_with_default::<MyWorker>()
-//!     .unwrap();
+//!     .build_with_default::<MyWorker>();
 //!
 //! // increase the number of threads by 12 - the new threads will use the additiona
 //! // 12 available cores for pinning
@@ -388,7 +387,9 @@ use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::io::Error as SpawnError;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 type Any<T> = AtomicOption<T, AtomicAny<T>>;
 type Usize = AtomicOption<usize, AtomicUsize>;
@@ -450,8 +451,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     queen: Mutex<Q>,
     /// receiver for the channel used by the `Hive` to send tasks to the worker threads
     task_rx: Mutex<TaskReceiver<W>>,
-    /// the index that will be assigned to the next worker thread that is spawned
-    next_thread_index: AtomicUsize,
+    /// The results of spawning each worker
+    spawn_results: Mutex<Vec<Result<JoinHandle<()>, SpawnError>>>,
     /// allows for 2^48 queued tasks and 2^16 active tasks
     num_tasks: DualCounter<48>,
     /// ID that will be assigned to the next task submitted to the `Hive`
@@ -482,7 +483,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::{Builder, Hive, Outcome, OutcomeIteratorExt, OutcomeStore};
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
@@ -514,13 +515,15 @@ mod test {
         Builder::default()
             .num_threads(num_threads)
             .build_with_default()
-            .unwrap()
     }
 
     #[test]
     fn test_works() {
         let hive = thunk_hive(TEST_TASKS);
         let (tx, rx) = mpsc::channel();
+        assert_eq!(hive.max_workers(), TEST_TASKS);
+        assert_eq!(hive.alive_workers(), TEST_TASKS);
+        assert!(!hive.has_dead_workers());
         for _ in 0..TEST_TASKS {
             let tx = tx.clone();
             hive.apply_store(Thunk::of(move || {
@@ -619,8 +622,7 @@ mod test {
     fn test_suspend_with_cancelled_tasks() {
         let hive = Builder::new()
             .num_threads(TEST_TASKS)
-            .build_with_default::<MyRefWorker>()
-            .unwrap();
+            .build_with_default::<MyRefWorker>();
         hive.swarm_store(0..TEST_TASKS as u8);
         hive.suspend();
         // wait for tasks to be cancelled
@@ -643,7 +645,7 @@ mod test {
         }
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().1, TEST_TASKS as u64);
-        let num_threads = hive.num_threads();
+        let num_threads = hive.max_workers();
         assert_eq!(num_threads, TEST_TASKS);
     }
 
@@ -651,8 +653,7 @@ mod test {
     fn test_all_threads() {
         let hive = Builder::new()
             .with_thread_per_core()
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let num_threads = num_cpus::get();
         for _ in 0..num_threads {
             hive.apply_store(Thunk::of(|| loop {
@@ -661,7 +662,7 @@ mod test {
         }
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().1, num_threads as u64);
-        let num_threads = hive.num_threads();
+        let num_threads = hive.max_workers();
         assert_eq!(num_threads, num_threads);
     }
 
@@ -686,8 +687,7 @@ mod test {
             .num_threads(TEST_TASKS)
             .build_with(RefCaller::of(|_: &u8| -> Result<u8, String> {
                 panic!("intentional panic")
-            }))
-            .unwrap();
+            }));
         let (tx, rx) = super::outcome_channel();
         // Panic all the existing threads.
         for i in 0..TEST_TASKS {
@@ -777,8 +777,7 @@ mod test {
         let hive = Builder::new()
             .thread_name(name.to_owned())
             .num_threads(2)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let (tx, rx) = mpsc::channel();
 
         // initial thread should share the name "test"
@@ -810,8 +809,7 @@ mod test {
         let hive = Builder::new()
             .num_threads(1)
             .thread_stack_size(stack_size)
-            .build_with_default::<ThunkWorker<usize>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<usize>>();
 
         let actual_stack_size = hive
             .apply(Thunk::of(|| {
@@ -837,8 +835,7 @@ mod test {
         let hive = Builder::new()
             .thread_name("hello")
             .num_threads(4)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let debug = format!("{:?}", hive);
         assert_eq!(
             debug,
@@ -860,8 +857,7 @@ mod test {
         let hive = Builder::new()
             .thread_name("repeated join test")
             .num_threads(8)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let test_count = Arc::new(AtomicUsize::new(0));
 
         for _ in 0..42 {
@@ -901,13 +897,11 @@ mod test {
         let hive0 = Builder::new()
             .thread_name("multi join pool0")
             .num_threads(4)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let hive1 = Builder::new()
             .thread_name("multi join pool1")
             .num_threads(4)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
         let (tx, rx) = crate::channel::channel();
 
         for i in 0..8 {
@@ -957,8 +951,7 @@ mod test {
         let hive = Builder::new()
             .thread_name("no fun or joy")
             .num_threads(8)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
 
         hive.apply_store(Thunk::of(sleepy_function));
 
@@ -978,8 +971,7 @@ mod test {
     fn test_map() {
         let hive = Builder::new()
             .num_threads(2)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
             .map((0..10u8).map(|i| {
                 Thunk::of(move || {
@@ -996,8 +988,7 @@ mod test {
     fn test_map_unordered() {
         let hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
             .map_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
@@ -1014,8 +1005,7 @@ mod test {
     fn test_map_send() {
         let hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.map_send(
             (0..8u8).map(|i| {
@@ -1043,8 +1033,7 @@ mod test {
     fn test_map_store() {
         let mut hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let mut task_ids = hive.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1070,8 +1059,7 @@ mod test {
     fn test_swarm() {
         let hive = Builder::new()
             .num_threads(2)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
             .swarm((0..10u8).map(|i| {
                 Thunk::of(move || {
@@ -1088,8 +1076,7 @@ mod test {
     fn test_swarm_unordered() {
         let hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let outputs: Vec<_> = hive
             .swarm_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
@@ -1106,8 +1093,7 @@ mod test {
     fn test_swarm_send() {
         let hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.swarm_send(
             (0..8u8).map(|i| {
@@ -1135,8 +1121,7 @@ mod test {
     fn test_swarm_store() {
         let mut hive = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let mut task_ids = hive.swarm_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1162,8 +1147,7 @@ mod test {
     fn test_scan() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(Caller::of(|i| i * i))
-            .unwrap();
+            .build_with(Caller::of(|i| i * i));
         let (outputs, state) = hive.scan(0..10, 0, |acc, i| {
             *acc += i;
             *acc
@@ -1188,8 +1172,7 @@ mod test {
     fn test_scan_send() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(Caller::of(|i| i * i))
-            .unwrap();
+            .build_with(Caller::of(|i| i * i));
         let (tx, rx) = super::outcome_channel();
         let (mut task_ids, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
             *acc += i;
@@ -1224,8 +1207,7 @@ mod test {
     fn test_try_scan_send() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(Caller::of(|i| i * i))
-            .unwrap();
+            .build_with(Caller::of(|i| i * i));
         let (tx, rx) = super::outcome_channel();
         let (results, state) = hive.try_scan_send(0..10, tx, 0, |acc, i| {
             *acc += i;
@@ -1262,8 +1244,7 @@ mod test {
     fn test_try_scan_send_fail() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)))
-            .unwrap();
+            .build_with(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)));
         let (tx, _) = super::outcome_channel();
         let _ = hive
             .try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
@@ -1277,8 +1258,7 @@ mod test {
     fn test_scan_store() {
         let mut hive = Builder::new()
             .num_threads(4)
-            .build_with(Caller::of(|i| i * i))
-            .unwrap();
+            .build_with(Caller::of(|i| i * i));
         let (mut task_ids, state) = hive.scan_store(0..10, 0, |acc, i| {
             *acc += i;
             *acc
@@ -1313,8 +1293,7 @@ mod test {
     fn test_try_scan_store() {
         let mut hive = Builder::new()
             .num_threads(4)
-            .build_with(Caller::of(|i| i * i))
-            .unwrap();
+            .build_with(Caller::of(|i| i * i));
         let (results, state) = hive.try_scan_store(0..10, 0, |acc, i| {
             *acc += i;
             Ok::<i32, String>(*acc)
@@ -1351,8 +1330,7 @@ mod test {
     fn test_try_scan_store_fail() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with(OnceCaller::of(|i: i32| Ok::<i32, String>(i * i)))
-            .unwrap();
+            .build_with(OnceCaller::of(|i: i32| Ok::<i32, String>(i * i)));
         let _ = hive
             .try_scan_store(0..10, 0, |_, _| Err("fail"))
             .0
@@ -1362,17 +1340,10 @@ mod test {
     }
 
     #[test]
-    fn test_spawn_after_poison() {}
-
-    #[test]
-    fn test_submit_after_poison() {}
-
-    #[test]
     fn test_husk() {
         let hive1 = Builder::new()
             .num_threads(8)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         let task_ids = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
         let mut husk1 = hive1.try_into_husk().unwrap();
@@ -1384,8 +1355,7 @@ mod test {
         let builder = husk1.as_builder();
         let hive2 = builder
             .num_threads(4)
-            .build_with_default::<ThunkWorker<u8>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<u8>>();
         hive2.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1409,7 +1379,7 @@ mod test {
         outputs2.sort();
         assert_eq!(outputs1, outputs2);
 
-        let hive3 = husk1.into_hive().unwrap();
+        let hive3 = husk1.into_hive();
         hive3.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1432,8 +1402,7 @@ mod test {
         let hive = Builder::new()
             .thread_name("clone example")
             .num_threads(2)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
 
         // This batch of tasks will occupy the pool for some time
         for _ in 0..6 {
@@ -1522,11 +1491,8 @@ mod test {
         let builder = Builder::new()
             .num_threads(n_workers)
             .thread_name("join wavesurfer");
-        let waiter_hive = builder
-            .clone()
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
-        let clock_hive = builder.build_with_default::<ThunkWorker<()>>().unwrap();
+        let waiter_hive = builder.clone().build_with_default::<ThunkWorker<()>>();
+        let clock_hive = builder.build_with_default::<ThunkWorker<()>>();
 
         let barrier = Arc::new(Barrier::new(3));
         let wave_counter = Arc::new(AtomicUsize::new(0));
@@ -1610,8 +1576,7 @@ mod test {
         let hive = Builder::new()
             .num_threads(4)
             .thread_name("thunk_hive")
-            .build_with_default::<ThunkWorker<i32>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<i32>>();
 
         // return results to your own channel...
         let (tx, rx) = crate::hive::outcome_channel();
@@ -1711,10 +1676,7 @@ mod test {
         }
 
         // build the Hive
-        let hive = Builder::new()
-            .num_threads(4)
-            .build_default::<CatQueen>()
-            .unwrap();
+        let hive = Builder::new().num_threads(4).build_default::<CatQueen>();
 
         // prepare inputs
         let inputs: Vec<u8> = (0..8).map(|i| 97 + i).collect();
@@ -1769,8 +1731,7 @@ mod affinity_tests {
             .thread_name("affinity example")
             .num_threads(2)
             .core_affinity(0..2)
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
 
         hive.map_store((0..10).map(move |i| {
             Thunk::of(move || {
@@ -1787,8 +1748,7 @@ mod affinity_tests {
             .thread_name("affinity example")
             .with_thread_per_core()
             .with_default_core_affinity()
-            .build_with_default::<ThunkWorker<()>>()
-            .unwrap();
+            .build_with_default::<ThunkWorker<()>>();
 
         hive.map_store((0..num_cpus::get()).map(move |i| {
             Thunk::of(move || {
@@ -1827,8 +1787,7 @@ mod retry_tests {
             .with_thread_per_core()
             .max_retries(3)
             .retry_factor(Duration::from_secs(1))
-            .build_with(RetryCaller::of(echo_time))
-            .unwrap();
+            .build_with(RetryCaller::of(echo_time));
 
         let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert_eq!(v.unwrap().len(), 10);
@@ -1854,8 +1813,7 @@ mod retry_tests {
         let hive = Builder::new()
             .with_thread_per_core()
             .max_retries(3)
-            .build_with(RetryCaller::of(sometimes_fail))
-            .unwrap();
+            .build_with(RetryCaller::of(sometimes_fail));
 
         let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
             (0, 0, 0),
@@ -1877,8 +1835,7 @@ mod retry_tests {
         let hive = Builder::new()
             .with_thread_per_core()
             .with_no_retries()
-            .build_with(RetryCaller::of(echo_time))
-            .unwrap();
+            .build_with(RetryCaller::of(echo_time));
         let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
         assert!(matches!(v, Err(_)));
     }
