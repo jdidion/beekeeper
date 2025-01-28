@@ -253,8 +253,7 @@ mod tests {
                 task_id: 1,
             },
         ];
-        let unordered_outcomes: Vec<_> =
-            UnorderedOutcomeIterator::new(outcomes.into_iter(), 0..3).collect();
+        let unordered_outcomes: Vec<_> = UnorderedOutcomeIterator::new(outcomes, 0..3).collect();
         assert_eq!(unordered_outcomes.len(), 3);
         assert_eq!(
             unordered_outcomes,
@@ -284,8 +283,7 @@ mod tests {
                 task_id: 1,
             },
         ];
-        let ordered_outcomes: Vec<_> =
-            OrderedOutcomeIterator::new(outcomes.into_iter(), 0..3).collect();
+        let ordered_outcomes: Vec<_> = OrderedOutcomeIterator::new(outcomes, 0..3).collect();
         assert_eq!(ordered_outcomes.len(), 3);
 
         assert_eq!(

@@ -28,7 +28,7 @@ serial_test = "3.2.0"
 stacker = "0.1.17"
 
 [features]
-default = ["retry"]
+default = []
 affinity = ["dep:core_affinity"]
 retry = []
 crossbeam = ["dep:crossbeam-channel"]
