@@ -107,10 +107,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         let result = f(index);
         let mut spawn_results = self.spawn_results.lock();
         assert!(spawn_results.len() > index);
-        let prev_result = std::mem::replace(&mut spawn_results[index], result);
         // Note: we do *not* want to wait on the `JoinHandle` for the previous thread as it may
         // still be processing a task
-        prev_result
+        std::mem::replace(&mut spawn_results[index], result)
     }
 
     /// Attempts to respawn any threads that are currently dead using the provided spawning
