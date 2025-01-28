@@ -196,26 +196,43 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         }
     }
 
+    pub fn abandon_task(&self, task: Task<W>) {
+        let (outcome, outcome_tx) = task.into_unprocessed();
+        self.send_or_store_outcome(outcome, outcome_tx);
+        // decrement the queued counter since it was incremented but the task was never queued
+        let _ = self.num_tasks.decrement_left(1);
+        self.no_work_notify_all();
+    }
+
     /// Converts each `Task` in the iterator into `Outcome::Unprocessed` and attempts to send it
     /// to its `OutcomeSender` if there is one, or stores it if there is no sender or the send
     /// fails. Returns a vector of task_ids of the tasks.
-    pub fn send_or_store_as_unprocessed<I>(&self, tasks: I) -> Vec<TaskId>
+    pub fn abandon_batch<I>(&self, tasks: I) -> Vec<TaskId>
     where
         I: Iterator<Item = Task<W>>,
     {
         // don't unlock outcomes unless we have to
         let mut outcomes = Option::None;
-        tasks
+        let task_ids: Vec<_> = tasks
             .map(|task| {
                 let task_id = task.id();
-                if let Some(outcome) = task.into_unprocessed_try_send() {
+                let (outcome, outcome_tx) = task.into_unprocessed();
+                if let Some(outcome) = if let Some(tx) = outcome_tx {
+                    tx.try_send_msg(outcome)
+                } else {
+                    Some(outcome)
+                } {
                     outcomes
                         .get_or_insert_with(|| self.outcomes.lock())
                         .insert(task_id, outcome);
                 }
                 task_id
             })
-            .collect()
+            .collect();
+        // decrement the queued counter since it was incremented but the tasks were never queued
+        let _ = self.num_tasks.decrement_left(task_ids.len() as u64);
+        self.no_work_notify_all();
+        task_ids
     }
 
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
@@ -396,7 +413,12 @@ fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
     outcomes: &mut HashMap<TaskId, Outcome<W>>,
 ) {
     tasks.for_each(|task| {
-        if let Some(outcome) = task.into_unprocessed_try_send() {
+        let (outcome, outcome_tx) = task.into_unprocessed();
+        if let Some(outcome) = if let Some(tx) = outcome_tx {
+            tx.try_send_msg(outcome)
+        } else {
+            Some(outcome)
+        } {
             outcomes.insert(*outcome.task_id(), outcome);
         }
     });

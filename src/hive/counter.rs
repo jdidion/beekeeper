@@ -73,6 +73,22 @@ impl<const L: u32> DualCounter<L> {
         }
     }
 
+    /// Decrements the left counter by `n` and returns the previous value.
+    ///
+    /// Returns an error if `n` is greater than the maximum value (2^L - 1) or if the left counter
+    /// underflows when decremented by `n`.
+    pub fn decrement_left(&self, n: u64) -> Result<u64, CounterError> {
+        if n > Self::L_MAX {
+            return Err(CounterError::LeftUnderflow);
+        }
+        let prev_val = self.0.sub(n) & Self::L_MAX;
+        if prev_val >= n {
+            Ok(prev_val)
+        } else {
+            Err(CounterError::LeftUnderflow)
+        }
+    }
+
     /// Decrements the right counter by `n` and returns the previous value.
     ///
     /// Returns an error  if `n` is greater than the maximum value (2^(64-L) - 1) or if the right
