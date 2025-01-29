@@ -1,5 +1,12 @@
 # Beekeeper changelog
 
+## 0.2.1
+
+* Bugfixes
+  * Panics during drop of worker threads
+* Other
+  * Added initial performance benchmarks
+
 ## 0.2.0
 
 * **Breaking**
