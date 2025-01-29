@@ -334,6 +334,10 @@ if !exec_err_codes.is_empty() {
 
 <!-- cargo-rdme end -->
 
+## Performance
+
+Based on current [benchmarks](benches/perf.rs), `beekeeper` does encounter serious [thread contention issues](https://github.com/jdidion/beekeeper/issues/4) with very short-duration tasks (<1ms). Therefore, unless/until this issue is addressed, we recommend only using `beekeeper` to parallelize longer-running tasks.
+
 ## Status
 
 The `beekeeper` API is generally considered to be stable, but additional real-world battle-testing
