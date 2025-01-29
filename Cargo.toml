@@ -1,7 +1,7 @@
 [package]
 name = "beekeeper"
 description = "A full-featured worker pool library for parallelizing tasks"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.80"
 authors = ["John Didion <github@didion.net>"]
@@ -23,12 +23,18 @@ flume = { version = "0.11.1", optional = true }
 loole = { version = "0.4.0", optional = true }
 
 [dev-dependencies]
+divan = "0.1.17"
+itertools = "0.14.0"
 serial_test = "3.2.0"
 #rstest = "0.22.0"
 stacker = "0.1.17"
 
+[[bench]]
+name = "perf"
+harness = false
+
 [features]
-default = ["retry", "affinity"]
+default = []
 affinity = ["dep:core_affinity"]
 retry = []
 crossbeam = ["dep:crossbeam-channel"]

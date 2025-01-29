@@ -1,5 +1,13 @@
 # Beekeeper changelog
 
+## 0.2.1
+
+* Bugfixes
+  * Reverted accidental change to default features in Cargo.toml
+  * Panics during drop of worker threads
+* Other
+  * Added initial performance benchmarks
+
 ## 0.2.0
 
 * **Breaking**

@@ -728,15 +728,19 @@ impl<W: Worker, Q: Queen<Kind = W>> Sentinel<W, Q> {
 
 impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
     fn drop(&mut self) {
-        self.shared.finish_task(thread::panicking());
-        // the thread is only respawned if the sentinel is active
-        if self.active && !self.shared.is_poisoned() {
-            // can't do anything with the previous result
-            let _ = self
-                .shared
-                .respawn_thread(self.thread_index, |thread_index| {
-                    Hive::try_spawn(thread_index, Arc::clone(&self.shared))
-                });
+        if self.active {
+            // if the sentinel is active, that means the thread panicked during task execution, so
+            // we have to finish the task here before respawning
+            self.shared.finish_task(thread::panicking());
+            // only respawn if the sentinel is active and the hive has not been poisoned
+            if !self.shared.is_poisoned() {
+                // can't do anything with the previous result
+                let _ = self
+                    .shared
+                    .respawn_thread(self.thread_index, |thread_index| {
+                        Hive::try_spawn(thread_index, Arc::clone(&self.shared))
+                    });
+            }
         }
     }
 }
