@@ -20,9 +20,7 @@ fn bench_apply_short_task(bencher: Bencher, (num_threads, num_tasks): (&usize, &
             hive.apply_send(i, tx.clone());
         }
         hive.join();
-        rx.into_iter()
-            .take(*num_tasks)
-            .for_each(|outcome| black_box_drop(outcome));
+        rx.into_iter().take(*num_tasks).for_each(black_box_drop);
     })
 }
 

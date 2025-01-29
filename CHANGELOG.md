@@ -3,6 +3,7 @@
 ## 0.2.1
 
 * Bugfixes
+  * Reverted accidental change to default features in Cargo.toml
   * Panics during drop of worker threads
 * Other
   * Added initial performance benchmarks
