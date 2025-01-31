@@ -30,7 +30,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             // execute the main loop
             // get the next task to process - this decrements the queued counter and increments
             // the active counter
-            while let Ok(task) = shared.next_task() {
+            while let Ok(task) = shared.next_task(thread_index) {
                 // execute the task until it succeeds or we reach maximum retries - this should
                 // be the only place where a panic can occur
                 Self::execute(task, &mut worker, &shared);
@@ -795,6 +795,25 @@ mod affinity {
         pub fn use_all_cores_with_affinity(&self) -> Result<usize, Poisoned> {
             self.shared().add_core_affinity(Cores::all());
             self.use_all_cores()
+        }
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use crate::bee::{Queen, Worker};
+    use crate::hive::Hive;
+
+    impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
+        /// Returns the batch size for worker threads.
+        pub fn worker_batch_size(&self) -> usize {
+            self.shared().batch_size()
+        }
+
+        /// Sets the batch size for worker threads. This will block the current thread until all
+        /// worker thread queues can be resized.
+        pub fn set_worker_batch_size(&self, batch_size: usize) {
+            self.shared().set_batch_size(batch_size);
         }
     }
 }

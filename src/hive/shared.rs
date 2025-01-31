@@ -6,6 +6,7 @@ use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 use std::{fmt, iter, mem};
@@ -28,6 +29,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             resume_gate: Default::default(),
             join_gate: Default::default(),
             outcomes: Default::default(),
+            #[cfg(feature = "batching")]
+            local_queues: Default::default(),
             #[cfg(feature = "retry")]
             retry_queue: Default::default(),
             #[cfg(feature = "retry")]
@@ -57,19 +60,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         if num_threads == 0 {
             return 0;
         }
-        let results: Vec<_> = (0..num_threads).map(f).collect();
         let mut spawn_results = self.spawn_results.lock();
-        assert_eq!(spawn_results.len(), 0);
-        spawn_results.reserve(num_threads);
-        results
-            .into_iter()
-            .map(|result| {
-                let started = result.is_ok();
-                spawn_results.push(result);
-                started
-            })
-            .filter(|started| *started)
-            .count()
+        self.spawn_threads(0, num_threads, f, &mut spawn_results)
     }
 
     /// Increases the maximum number of threads allowed in the `Hive` by `num_threads`, and
@@ -82,8 +74,25 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     {
         let mut spawn_results = self.spawn_results.lock();
         let start_index = self.config.num_threads.add(num_threads).unwrap();
+        self.spawn_threads(start_index, num_threads, f, &mut spawn_results)
+    }
+
+    fn spawn_threads<F>(
+        &self,
+        start_index: usize,
+        num_threads: usize,
+        f: F,
+        spawn_results: &mut Vec<Result<JoinHandle<()>, SpawnError>>,
+    ) -> usize
+    where
+        F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
+    {
         assert_eq!(spawn_results.len(), start_index);
         let end_index = start_index + num_threads;
+        // if worker threads need a local queue, initialize them before spawning
+        #[cfg(feature = "batching")]
+        self.init_local_queues(start_index, end_index);
+        // spawn the worker threads and return the results
         let results: Vec<_> = (start_index..end_index).map(f).collect();
         spawn_results.reserve(num_threads);
         results
@@ -401,8 +410,164 @@ mod affinity {
     }
 }
 
-// time to wait in between polling the retry queue and then the task receiver
-const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+#[inline]
+fn task_recv_timeout<W: Worker>(rx: &TaskReceiver<W>) -> Option<Result<Task<W>, NextTaskError>> {
+    // time to wait in between polling the retry queue and then the task receiver
+    const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+    match rx.recv_timeout(RECV_TIMEOUT) {
+        Ok(task) => Some(Ok(task)),
+        Err(RecvTimeoutError::Disconnected) => Some(Err(NextTaskError::Disconnected)),
+        Err(RecvTimeoutError::Timeout) => None,
+    }
+}
+
+#[cfg(not(feature = "batching"))]
+mod no_batching {
+    use super::{NextTaskError, Shared, Task};
+    use crate::bee::{Queen, Worker};
+
+    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+        /// Tries to receive a task from the input channel.
+        ///
+        /// Returns an error if the channel has disconnected. Returns `None` if a task is not
+        /// received within the timeout period (currently hard-coded to 1 second).
+        #[inline]
+        pub(super) fn get_task(&self, _: usize) -> Option<Result<Task<W>, NextTaskError>> {
+            super::task_recv_timeout(&self.task_rx.lock())
+        }
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use super::{NextTaskError, Shared, Task};
+    use crate::bee::{Queen, Worker};
+    use crossbeam_queue::ArrayQueue;
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+        pub(super) fn init_local_queues(&self, start_index: usize, end_index: usize) {
+            let mut local_queues = self.local_queues.write();
+            assert_eq!(local_queues.len(), start_index);
+            let batch_size = self.batch_size();
+            (start_index..end_index).for_each(|_| local_queues.push(ArrayQueue::new(batch_size)))
+        }
+
+        /// Returns the local queue batch size.
+        pub fn batch_size(&self) -> usize {
+            self.config.batch_size.get().unwrap_or_default()
+        }
+
+        /// Changes the local queue batch size. This requires allocating a new queue for each
+        /// worker thread.
+        ///
+        /// Note: this method will block the current thread waiting for all local queues to become
+        /// writable; if `batch_size` is less than the current batch size, this method will also
+        /// block while any thread's queue length is > `batch_size` before moving the elements.
+        pub fn set_batch_size(&self, batch_size: usize) -> usize {
+            // update the batch size first so any new threads spawned won't need to have their
+            // queues resized
+            let prev_batch_size = self
+                .config
+                .batch_size
+                .try_set(batch_size)
+                .unwrap_or_default();
+            if prev_batch_size == batch_size {
+                return prev_batch_size;
+            }
+            let num_threads = self.config.num_threads.get_or_default();
+            if num_threads == 0 {
+                return prev_batch_size;
+            }
+            // keep track of which queues need to be resized
+            // TODO: this method could cause a hang if one of the worker threads is stuck - we
+            // might want to keep track of each queue's size and if we don't see it shrink within
+            // a certain amount of time, we give up on that thread and leave it with a wrong-sized
+            // queue (which should never cause a panic)
+            let mut to_resize: HashSet<usize> = (0..num_threads).collect();
+            // iterate until we've resized them all
+            loop {
+                // scope the mutable access to local_queues
+                {
+                    let mut local_queues = self.local_queues.write();
+                    to_resize.retain(|thread_index| {
+                        let queue = if let Some(queue) = local_queues.get_mut(*thread_index) {
+                            queue
+                        } else {
+                            return false;
+                        };
+                        if queue.len() > batch_size {
+                            return true;
+                        }
+                        let new_queue = ArrayQueue::new(batch_size);
+                        while let Some(task) = queue.pop() {
+                            if let Err(task) = new_queue.push(task) {
+                                // for some reason we can't push the task to the new queue
+                                // this should never happen, but just in case we turn it into
+                                // an unprocessed outcome
+                                self.abandon_task(task);
+                            }
+                        }
+                        // this is safe because the worker threads can't get readable access to the
+                        // queue while this thread holds the lock
+                        let old_queue = std::mem::replace(queue, new_queue);
+                        assert!(old_queue.is_empty());
+                        false
+                    });
+                }
+                if to_resize.is_empty() {
+                    return prev_batch_size;
+                } else {
+                    // short sleep to give worker threads the chance to pull from their queues
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+
+        /// Returns the next task from the local queue if there are any, otherwise attempts to
+        /// fetch at least 1 and up to `batch_size + 1` tasks from the input channel and puts all
+        /// but the first one into the local queue.
+        #[inline]
+        pub(super) fn get_task(
+            &self,
+            thread_index: usize,
+        ) -> Option<Result<Task<W>, NextTaskError>> {
+            let local_queue = &self.local_queues.read()[thread_index];
+            if !local_queue.is_empty() {
+                Some(Ok(local_queue.pop().unwrap()))
+            } else {
+                let task_rx = self.task_rx.lock();
+                // wait for the next task from the receiver
+                let first = super::task_recv_timeout(&task_rx);
+                // if we fail after trying to get one, don't keep trying to fill the queue
+                if first.as_ref().map(|result| result.is_ok()).unwrap_or(false) {
+                    let batch_size = self.batch_size();
+                    // batch size 0 means batching is disabled
+                    if batch_size > 0 {
+                        // otherwise try to take up to `batch_size` tasks from the input channel
+                        // and add them to the local queue, but don't block if the input channel
+                        // is empty
+                        for result in task_rx
+                            .try_iter()
+                            .take(batch_size)
+                            .map(|task| local_queue.push(task))
+                        {
+                            if let Err(task) = result {
+                                // for some reason we can't push the task to the local queue;
+                                // this should never happen, but just in case we turn it into an
+                                // unprocessed outcome and stop iterating
+                                self.abandon_task(task);
+                                break;
+                            }
+                        }
+                    }
+                }
+                first
+            }
+        }
+    }
+}
 
 /// Sends each `Task` to its associated outcome sender (if any) or stores it in `outcomes`.
 /// TODO: if `outcomes` were `DerefMut` then the argument could either be a mutable referece or
@@ -436,18 +601,17 @@ pub enum NextTaskError {
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use super::{send_or_store, NextTaskError};
+    use super::{NextTaskError, Task};
     use crate::atomic::Atomic;
     use crate::bee::{Queen, Worker};
-    use crate::hive::{Husk, Shared, Task};
-    use std::sync::mpsc::RecvTimeoutError;
+    use crate::hive::{Husk, Shared};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
         /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
-        pub fn next_task(&self) -> Result<Task<W>, NextTaskError> {
+        pub fn next_task(&self, thread_index: usize) -> Result<Task<W>, NextTaskError> {
             loop {
                 self.resume_gate.wait_while(|| self.is_suspended());
 
@@ -455,10 +619,8 @@ mod no_retry {
                     return Err(NextTaskError::Poisoned);
                 }
 
-                match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
-                    Ok(task) => break Ok(task),
-                    Err(RecvTimeoutError::Disconnected) => break Err(NextTaskError::Disconnected),
-                    Err(RecvTimeoutError::Timeout) => continue,
+                if let Some(result) = self.get_task(thread_index) {
+                    break result;
                 }
             }
             .and_then(|task| match self.num_tasks.transfer(1) {
@@ -477,7 +639,7 @@ mod no_retry {
         pub fn drain_tasks_into_unprocessed(&self) {
             let task_rx = self.task_rx.lock();
             let mut outcomes = self.outcomes.lock();
-            send_or_store(task_rx.try_iter(), &mut outcomes);
+            super::send_or_store(task_rx.try_iter(), &mut outcomes);
         }
 
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
@@ -487,7 +649,7 @@ mod no_retry {
         pub fn try_into_husk(self) -> Husk<W, Q> {
             let task_rx = self.task_rx.into_inner();
             let mut outcomes = self.outcomes.into_inner();
-            send_or_store(task_rx.try_iter(), &mut outcomes);
+            super::send_or_store(task_rx.try_iter(), &mut outcomes);
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),
@@ -504,7 +666,6 @@ mod retry {
     use crate::atomic::Atomic;
     use crate::bee::{Context, Queen, Worker};
     use crate::hive::{Husk, OutcomeSender, Shared, Task};
-    use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
@@ -518,7 +679,7 @@ mod retry {
         }
 
         /// Updates the `next_retry` field if `instant` is earlier than the current value.
-        fn update_next_retry(&self, instant: Option<Instant>) {
+        pub(super) fn update_next_retry(&self, instant: Option<Instant>) {
             let mut next_retry = self.next_retry.write();
             if let Some(new_val) = instant {
                 if next_retry.map(|cur_val| new_val < cur_val).unwrap_or(true) {
@@ -564,7 +725,7 @@ mod retry {
         /// and since this requires holding a lock on the task `Reciever`, this also blocks any
         /// other threads that call this method. Returns an error if the task `Sender` has hung up
         /// and there are no tasks queued for retry.
-        pub fn next_task(&self) -> Result<Task<W>, NextTaskError> {
+        pub fn next_task(&self, thread_index: usize) -> Result<Task<W>, NextTaskError> {
             loop {
                 self.resume_gate.wait_while(|| self.is_suspended());
 
@@ -584,10 +745,8 @@ mod retry {
                     }
                 }
 
-                match self.task_rx.lock().recv_timeout(super::RECV_TIMEOUT) {
-                    Ok(task) => break Ok(task),
-                    Err(RecvTimeoutError::Disconnected) => break Err(NextTaskError::Disconnected),
-                    Err(RecvTimeoutError::Timeout) => continue,
+                if let Some(result) = self.get_task(thread_index) {
+                    break result;
                 }
             }
             .and_then(|task| match self.num_tasks.transfer(1) {

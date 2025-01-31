@@ -330,9 +330,9 @@ mod affinity {
     use std::fmt::Debug;
 
     trait AffinityAtomicExt<T> {
-        /// Loads the current value of this `Atomic` and calls `f`. If `f` returns `Some`, this atomic
-        /// is updated with the new value and the previous value is returned. Otherwise the current
-        /// value is returned.
+        /// Loads the current value of this `Atomic` and calls `f`. If `f` returns `Some`, this
+        /// atomic is updated with the new value and the previous value is returned. Otherwise the
+        /// current value is returned.
         #[allow(dead_code)]
         fn set_with<F: FnMut(T) -> Option<T>>(&self, f: F) -> T;
     }
@@ -388,6 +388,29 @@ mod affinity {
             assert!(matches!(a.try_update_with(|_| None), Err(MutError::Unsync)));
             let b = a.into_sync();
             assert!(matches!(b.try_update_with(|_| None), Err(MutError::Unset)));
+        }
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use super::{Atomic, AtomicOption, MutError};
+    use std::fmt::Debug;
+
+    impl<P, A> AtomicOption<P, A>
+    where
+        P: Clone + Debug + Default,
+        A: Atomic<P>,
+    {
+        /// Attempts to set the value to `value` using interior mutability. Returns the previous value.
+        /// Returns an error if the value cannot be updated, either because this option is `Unsync` or
+        /// because the value was not previously set.
+        pub fn try_set(&self, value: P) -> Result<P, MutError> {
+            match self {
+                Self::Unsync(_) => Err(MutError::Unsync),
+                Self::Sync(None) => Err(MutError::Unset),
+                Self::Sync(Some(atomic)) => Ok(atomic.set(value)),
+            }
         }
     }
 }

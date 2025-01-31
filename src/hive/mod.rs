@@ -352,6 +352,8 @@ pub mod cores;
 mod delay;
 
 pub use self::builder::Builder;
+#[cfg(feature = "batching")]
+pub use self::config::set_batch_size_default;
 pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
 #[cfg(feature = "retry")]
 pub use self::config::{
@@ -432,15 +434,19 @@ struct Config {
     thread_name: Any<String>,
     /// Stack size for each worker thread
     thread_stack_size: Usize,
+    /// CPU cores to which worker threads can be pinned
+    #[cfg(feature = "affinity")]
+    affinity: Any<cores::Cores>,
+    /// Maximum number of tasks for a worker thread to
+    /// take when receiving tasks from the input channel
+    #[cfg(feature = "batching")]
+    batch_size: Usize,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
     max_retries: U32,
     /// Multiplier for the retry backoff strategy
     #[cfg(feature = "retry")]
     retry_factor: U64,
-    /// CPU cores to which worker threads can be pinned
-    #[cfg(feature = "affinity")]
-    affinity: Any<cores::Cores>,
 }
 
 /// Data shared by all worker threads in a `Hive`.
@@ -474,7 +480,13 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     join_gate: PhasedGate,
     /// outcomes stored in the hive
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
+    /// worker thread-specific queues of tasks used when the `batching` feature is enabled
+    /// TODO: feature-gate the use of `UnsafeCell`
+    #[cfg(feature = "batching")]
+    local_queues: parking_lot::RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
     /// queue used for tasks that are waiting to be retried after a failure
+    /// TODO: look at using a crossbeam_queue::SegQueue to avoid worker threads having to
+    /// lock the retry queue
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
     /// the next time at which a task will be ready to be retried
