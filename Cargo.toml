@@ -37,7 +37,7 @@ name = "perf"
 harness = false
 
 [features]
-default = []
+default = ["batching"]
 affinity = ["dep:core_affinity"]
 batching = ["dep:crossbeam-queue"]
 retry = []

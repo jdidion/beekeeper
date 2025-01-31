@@ -413,6 +413,28 @@ mod batching {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::atomic::{AtomicOption, AtomicUsize, MutError};
+
+        #[test]
+        fn test_try_set() {
+            let mut a: AtomicOption<usize, AtomicUsize> = AtomicOption::default();
+            a.set(Some(42));
+            let b = a.into_sync();
+            assert!(matches!(b.try_set(1), Ok(42)));
+            assert_eq!(b.get(), Some(1));
+        }
+
+        #[test]
+        fn test_try_set_with_unset() {
+            let a: AtomicOption<usize, AtomicUsize> = AtomicOption::default();
+            assert!(matches!(a.try_set(1), Err(MutError::Unsync)));
+            let b = a.into_sync();
+            assert!(matches!(b.try_set(1), Err(MutError::Unset)));
+        }
+    }
 }
 
 #[cfg(test)]
