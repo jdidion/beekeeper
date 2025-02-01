@@ -450,8 +450,9 @@ mod batching {
         pub(super) fn init_local_queues(&self, start_index: usize, end_index: usize) {
             let mut local_queues = self.local_queues.write();
             assert_eq!(local_queues.len(), start_index);
-            let batch_size = self.batch_size();
-            (start_index..end_index).for_each(|_| local_queues.push(ArrayQueue::new(batch_size)))
+            // ArrayQueue cannot be zero-sized
+            let queue_size = self.batch_size().max(1);
+            (start_index..end_index).for_each(|_| local_queues.push(ArrayQueue::new(queue_size)))
         }
 
         /// Returns the local queue batch size.
