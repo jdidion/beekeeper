@@ -518,6 +518,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
 #[cfg(test)]
 mod tests {
     use super::{Builder, Hive, Outcome, OutcomeIteratorExt, OutcomeStore};
+    use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
         ApplyError, ApplyRefError, Context, DefaultQueen, Queen, RefWorker, RefWorkerResult,
@@ -769,22 +770,20 @@ mod tests {
         let test_tasks = 4_200_000;
 
         let hive = thunk_hive(TEST_TASKS);
-        let b0 = Arc::new(Barrier::new(TEST_TASKS + 1));
-        let b1 = Arc::new(Barrier::new(TEST_TASKS + 1));
+        let b0 = IndexedBarrier::new(TEST_TASKS);
+        let b1 = IndexedBarrier::new(TEST_TASKS);
 
         let (tx, rx) = mpsc::channel();
 
-        for i in 0..test_tasks {
+        for _ in 0..test_tasks {
             let tx = tx.clone();
             let (b0, b1) = (b0.clone(), b1.clone());
 
             hive.apply_store(Thunk::of(move || {
                 // Wait until the pool has been filled once.
-                if i < TEST_TASKS {
-                    b0.wait();
-                    // wait so the pool can be measured
-                    b1.wait();
-                }
+                b0.wait();
+                // wait so the pool can be measured
+                b1.wait();
                 assert!(tx.send(1).is_ok());
             }));
         }
@@ -1795,6 +1794,7 @@ mod affinity_tests {
 
 #[cfg(all(test, feature = "batching"))]
 mod batching_tests {
+    use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::bee::DefaultQueen;
     use crate::hive::{Builder, Hive, OutcomeIteratorExt, OutcomeReceiver, OutcomeSender};
@@ -1805,12 +1805,15 @@ mod batching_tests {
     fn launch_tasks(
         hive: &Hive<ThunkWorker<ThreadId>, DefaultQueen<ThunkWorker<ThreadId>>>,
         num_tasks: usize,
+        barrier: &IndexedBarrier,
         sleep_millis: u64,
         tx: OutcomeSender<ThunkWorker<ThreadId>>,
     ) -> Vec<usize> {
         hive.map_send(
             (0..num_tasks).map(|_| {
+                let barrier = barrier.clone();
                 Thunk::of(move || {
+                    barrier.wait();
                     thread::sleep(Duration::from_millis(sleep_millis));
                     thread::current().id()
                 })
@@ -1840,11 +1843,14 @@ mod batching_tests {
         let (tx, rx) = crate::hive::outcome_channel();
         // each worker should take `batch_size` tasks for its queue + 1 to work on immediately,
         // meaning there should be `batch_size + 1` tasks associated with each thread ID
-        let task_ids = launch_tasks(hive, total_tasks, 1, tx);
+        let barrier = IndexedBarrier::new(num_threads);
+        let task_ids = launch_tasks(hive, total_tasks, &barrier, 1, tx);
+        // start the first tasks
+        barrier.wait();
+        // wait for all tasks to complete
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert_eq!(thread_counts.len(), num_threads);
-        dbg!(&thread_counts);
         assert!(thread_counts
             .values()
             .all(|&count| count == tasks_per_thread));
@@ -1861,26 +1867,24 @@ mod batching_tests {
         run_test(&hive, NUM_THREADS, BATCH_SIZE);
     }
 
-    // TODO: hard to get this right - need some kind of Barrier where the first task run by each
-    // thread will wait for the main thread to release it
-    // #[test]
-    // fn test_set_batch_size() {
-    //     const NUM_THREADS: usize = 4;
-    //     const BATCH_SIZE_0: usize = 10;
-    //     const BATCH_SIZE_1: usize = 20;
-    //     const BATCH_SIZE_2: usize = 50;
-    //     let hive = Builder::new()
-    //         .num_threads(NUM_THREADS)
-    //         .batch_size(BATCH_SIZE_0)
-    //         .build_with_default::<ThunkWorker<ThreadId>>();
-    //     run_test(&hive, NUM_THREADS, BATCH_SIZE_0);
-    //     // increase batch size
-    //     hive.set_worker_batch_size(BATCH_SIZE_2);
-    //     run_test(&hive, NUM_THREADS, BATCH_SIZE_2);
-    //     // decrease batch size
-    //     hive.set_worker_batch_size(BATCH_SIZE_1);
-    //     run_test(&hive, NUM_THREADS, BATCH_SIZE_1);
-    // }
+    #[test]
+    fn test_set_batch_size() {
+        const NUM_THREADS: usize = 4;
+        const BATCH_SIZE_0: usize = 10;
+        const BATCH_SIZE_1: usize = 20;
+        const BATCH_SIZE_2: usize = 50;
+        let hive = Builder::new()
+            .num_threads(NUM_THREADS)
+            .batch_size(BATCH_SIZE_0)
+            .build_with_default::<ThunkWorker<ThreadId>>();
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_0);
+        // increase batch size
+        hive.set_worker_batch_size(BATCH_SIZE_2);
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_2);
+        // decrease batch size
+        hive.set_worker_batch_size(BATCH_SIZE_1);
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_1);
+    }
 
     #[test]
     fn test_shrink_batch_size() {
@@ -1893,7 +1897,9 @@ mod batching_tests {
             .batch_size(BATCH_SIZE_0)
             .build_with_default::<ThunkWorker<ThreadId>>();
         let (tx, rx) = crate::hive::outcome_channel();
-        let task_ids = launch_tasks(&hive, NUM_TASKS, 10, tx);
+        let barrier = IndexedBarrier::new(NUM_THREADS);
+        let task_ids = launch_tasks(&hive, NUM_TASKS, &barrier, 10, tx);
+        barrier.wait();
         hive.set_worker_batch_size(BATCH_SIZE_1);
         // The number of tasks completed by each thread could be variable, so we want to ensure
         // that a) each processed at least `BATCH_SIZE_0` tasks, and b) there are a total of
