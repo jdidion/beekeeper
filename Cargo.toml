@@ -1,7 +1,7 @@
 [package]
 name = "beekeeper"
 description = "A full-featured worker pool library for parallelizing tasks"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["John Didion <github@didion.net>"]
@@ -9,6 +9,7 @@ repository = "https://github.com/jdidion/beekeeper"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+crossbeam-deque = "0.8.6"
 crossbeam-utils = "0.8.20"
 num = "0.4.3"
 num_cpus = "1.16.0"
@@ -17,6 +18,8 @@ paste = "1.0.15"
 thiserror = "1.0.63"
 # required with the `affinity` feature
 core_affinity = { version = "0.8.1", optional = true }
+# required with the `batching` feature
+crossbeam-queue = { version = "0.3.12", optional = true }
 # alternate channel implementations that can be enabled with features
 crossbeam-channel = { version = "0.5.13", optional = true }
 flume = { version = "0.11.1", optional = true }
@@ -34,15 +37,16 @@ name = "perf"
 harness = false
 
 [features]
-default = []
+default = ["batching"]
 affinity = ["dep:core_affinity"]
+batching = ["dep:crossbeam-queue"]
 retry = []
 crossbeam = ["dep:crossbeam-channel"]
 flume = ["dep:flume"]
 loole = ["dep:loole"]
 
 [package.metadata.cargo-all-features]
-allowlist = ["affinity", "retry"]
+allowlist = ["affinity", "batching", "retry"]
 
 [profile.release]
 lto = true

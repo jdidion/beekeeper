@@ -325,6 +325,8 @@
 //! ```
 
 mod atomic;
+#[cfg(test)]
+mod barrier;
 pub mod bee;
 mod boxed;
 pub mod channel;

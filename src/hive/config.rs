@@ -1,3 +1,5 @@
+#[cfg(feature = "batching")]
+pub use batching::set_batch_size_default;
 #[cfg(feature = "retry")]
 pub use retry::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
 
@@ -44,6 +46,8 @@ impl Config {
     /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
+        #[cfg(feature = "batching")]
+        self.set_batch_const_defaults();
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
     }
@@ -54,12 +58,14 @@ impl Config {
             num_threads: self.num_threads.into_sync_default(),
             thread_name: self.thread_name.into_sync(),
             thread_stack_size: self.thread_stack_size.into_sync(),
+            #[cfg(feature = "affinity")]
+            affinity: self.affinity.into_sync(),
+            #[cfg(feature = "batching")]
+            batch_size: self.batch_size.into_sync_default(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_sync(),
             #[cfg(feature = "retry")]
             retry_factor: self.retry_factor.into_sync(),
-            #[cfg(feature = "affinity")]
-            affinity: self.affinity.into_sync(),
         }
     }
 
@@ -70,12 +76,14 @@ impl Config {
             num_threads: self.num_threads.into_unsync(),
             thread_name: self.thread_name.into_unsync(),
             thread_stack_size: self.thread_stack_size.into_unsync(),
+            #[cfg(feature = "affinity")]
+            affinity: self.affinity.into_unsync(),
+            #[cfg(feature = "batching")]
+            batch_size: self.batch_size.into_unsync(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_unsync(),
             #[cfg(feature = "retry")]
             retry_factor: self.retry_factor.into_unsync(),
-            #[cfg(feature = "affinity")]
-            affinity: self.affinity.into_unsync(),
         }
     }
 }
@@ -116,6 +124,23 @@ mod tests {
 
         let config = Config::with_defaults();
         assert_eq!(config.num_threads.get(), Some(super::DEFAULT_NUM_THREADS));
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use super::{Config, DEFAULTS};
+
+    const DEFAULT_BATCH_SIZE: usize = 10;
+
+    pub fn set_batch_size_default(batch_size: usize) {
+        DEFAULTS.lock().batch_size.set(Some(batch_size));
+    }
+
+    impl Config {
+        pub(super) fn set_batch_const_defaults(&mut self) {
+            self.batch_size.set(Some(DEFAULT_BATCH_SIZE));
+        }
     }
 }
 

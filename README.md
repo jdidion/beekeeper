@@ -48,6 +48,7 @@ is sometimes called a "worker pool").
 * The following optional features are provided via feature flags:
     * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
       context-switching.
+    * `batching`: worker threads take batches of tasks from the input channel and queue them locally, which may alleviate thread contention, especially when there are many short-lived tasks.
     * `retry`: Tasks that fail due to transient errors (e.g., temporarily unavailable resources)
       may be retried a set number of times, with an optional, exponentially increasing delay
       between retries.

@@ -52,14 +52,6 @@
 //! let hive: Hive<MyWorker, _> = Hive::default();
 //! ```
 //!
-//! ## Global defaults
-//!
-//! The [`hive`](crate::hive) module has functions for setting the global default values for some
-//! of the `Builder` parameters (e.g., [`set_num_threads_default`], [`set_num_threads_default_all`]).
-//! These default values are used to pre-configure the `Builder` when using `Builder::default()`.
-//!
-//! The global defaults can be reset their original values using the [`reset_defaults`] function.
-//!
 //! ## Thread affinity (requires `feature = "affinity"`)
 //!
 //! Threads are a feature of modern operating systems that enable more processes to execute than
@@ -135,6 +127,36 @@
 //! retry-aware but used with a `Hive` for which retry is not enabled, or in an application where
 //! the `retry` feature is not enabled. In such cases, `Retryable` errors are automatically
 //! converted to `Fatal` errors by the worker thread.
+//!
+//! ## Batching tasks (requires `feature = "batching"`)
+//!
+//! The performance of a `Hive` can degrade as the number of worker threads grows and/or the
+//! average duration of a task shrinks, due to increased contention between worker threads when
+//! receiving tasks from the shared input channel. To improve performance, workers can take more
+//! than one task each time they access the input channel, and store the extra tasks in a local
+//! queue. This behavior is activated by enabling the `batching` feature.
+//!
+//! With the `batching` feature enabled, `Builder` gains the
+//! [`batch_size`](crate::hive::Builder::batch_size) method for configuring size of worker threads'
+//! local queues, and `Hive` gains the [`set_worker_batch_size`](crate::hive::Hive::set_batch_size)
+//! method for changing the batch size of an existing `Hive`.
+//!
+//! ## Global defaults
+//!
+//! The [`hive`](crate::hive) module has functions for setting the global default values for some
+//! of the `Builder` parameters. These default values are used to pre-configure the `Builder` when
+//! using `Builder::default()`.
+//!
+//! The available global defaults are:
+//!
+//! * `num_threads`
+//!     * [`set_num_threads_default`]: sets the default to a specific value
+//!     * [`set_num_threads_default_all`]: sets the default to all available CPU cores
+//! * [`batch_size`](crate::hive::set_batch_size_default) (requires `feature = "batching"`)
+//! * [`max_retries`](crate::hive::set_max_retries_default] (requires `feature = "retry"`)
+//! * [`retry_factor`](crate::hive::set_retry_factor_default] (requires `feature = "retry"`)
+//!
+//! The global defaults can be reset their original values using the [`reset_defaults`] function.
 //!
 //! # Cloning a `Hive`
 //!
@@ -352,6 +374,8 @@ pub mod cores;
 mod delay;
 
 pub use self::builder::Builder;
+#[cfg(feature = "batching")]
+pub use self::config::set_batch_size_default;
 pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
 #[cfg(feature = "retry")]
 pub use self::config::{
@@ -432,15 +456,19 @@ struct Config {
     thread_name: Any<String>,
     /// Stack size for each worker thread
     thread_stack_size: Usize,
+    /// CPU cores to which worker threads can be pinned
+    #[cfg(feature = "affinity")]
+    affinity: Any<cores::Cores>,
+    /// Maximum number of tasks for a worker thread to
+    /// take when receiving tasks from the input channel
+    #[cfg(feature = "batching")]
+    batch_size: Usize,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
     max_retries: U32,
     /// Multiplier for the retry backoff strategy
     #[cfg(feature = "retry")]
     retry_factor: U64,
-    /// CPU cores to which worker threads can be pinned
-    #[cfg(feature = "affinity")]
-    affinity: Any<cores::Cores>,
 }
 
 /// Data shared by all worker threads in a `Hive`.
@@ -474,7 +502,12 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     join_gate: PhasedGate,
     /// outcomes stored in the hive
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
+    /// worker thread-specific queues of tasks used when the `batching` feature is enabled
+    #[cfg(feature = "batching")]
+    local_queues: parking_lot::RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
     /// queue used for tasks that are waiting to be retried after a failure
+    /// TODO: look at using a crossbeam_queue::SegQueue to avoid worker threads having to
+    /// lock the retry queue
     #[cfg(feature = "retry")]
     retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
     /// the next time at which a task will be ready to be retried
@@ -485,6 +518,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
 #[cfg(test)]
 mod tests {
     use super::{Builder, Hive, Outcome, OutcomeIteratorExt, OutcomeStore};
+    use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
     use crate::bee::{
         ApplyError, ApplyRefError, Context, DefaultQueen, Queen, RefWorker, RefWorkerResult,
@@ -507,11 +541,11 @@ mod tests {
     const SHORT_TASK: Duration = Duration::from_secs(2);
     const LONG_TASK: Duration = Duration::from_secs(5);
 
+    type ThunkHive<T> = Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>>;
+
     /// Convenience function that returns a `Hive` configured with the global defaults, and the
     /// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
-    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(
-        num_threads: usize,
-    ) -> Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>> {
+    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(num_threads: usize) -> ThunkHive<T> {
         Builder::default()
             .num_threads(num_threads)
             .build_with_default()
@@ -553,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_grow() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -576,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_suspend() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         // queue some long-running tasks
         let total_tasks = 2 * TEST_TASKS;
         for _ in 0..total_tasks {
@@ -637,7 +671,7 @@ mod tests {
 
     #[test]
     fn test_num_tasks_active() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         for _ in 0..2 * TEST_TASKS {
             hive.apply_store(Thunk::of(|| loop {
                 thread::sleep(LONG_TASK)
@@ -704,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
         let waiter_count = Arc::new(AtomicUsize::new(0));
 
@@ -736,22 +770,20 @@ mod tests {
         let test_tasks = 4_200_000;
 
         let hive = thunk_hive(TEST_TASKS);
-        let b0 = Arc::new(Barrier::new(TEST_TASKS + 1));
-        let b1 = Arc::new(Barrier::new(TEST_TASKS + 1));
+        let b0 = IndexedBarrier::new(TEST_TASKS);
+        let b1 = IndexedBarrier::new(TEST_TASKS);
 
         let (tx, rx) = mpsc::channel();
 
-        for i in 0..test_tasks {
+        for _ in 0..test_tasks {
             let tx = tx.clone();
             let (b0, b1) = (b0.clone(), b1.clone());
 
             hive.apply_store(Thunk::of(move || {
                 // Wait until the pool has been filled once.
-                if i < TEST_TASKS {
-                    b0.wait();
-                    // wait so the pool can be measured
-                    b1.wait();
-                }
+                b0.wait();
+                // wait so the pool can be measured
+                b1.wait();
                 assert!(tx.send(1).is_ok());
             }));
         }
@@ -1757,6 +1789,143 @@ mod affinity_tests {
                 }
             })
         }));
+    }
+}
+
+#[cfg(all(test, feature = "batching"))]
+mod batching_tests {
+    use crate::barrier::IndexedBarrier;
+    use crate::bee::stock::{Thunk, ThunkWorker};
+    use crate::bee::DefaultQueen;
+    use crate::hive::{Builder, Hive, OutcomeIteratorExt, OutcomeReceiver, OutcomeSender};
+    use std::collections::HashMap;
+    use std::thread::{self, ThreadId};
+    use std::time::Duration;
+
+    fn launch_tasks(
+        hive: &Hive<ThunkWorker<ThreadId>, DefaultQueen<ThunkWorker<ThreadId>>>,
+        num_threads: usize,
+        num_tasks_per_thread: usize,
+        barrier: &IndexedBarrier,
+        tx: &OutcomeSender<ThunkWorker<ThreadId>>,
+    ) -> Vec<usize> {
+        let total_tasks = num_threads * num_tasks_per_thread;
+        // send the first `num_threads` tasks widely spaced, so each worker thread only gets one
+        let init_task_ids: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let task_id = hive.apply_send(
+                    Thunk::of(move || {
+                        barrier.wait();
+                        thread::sleep(Duration::from_millis(100));
+                        thread::current().id()
+                    }),
+                    tx.clone(),
+                );
+                thread::sleep(Duration::from_millis(100));
+                task_id
+            })
+            .collect();
+        // send the rest all at once
+        let rest_task_ids = hive.map_send(
+            (num_threads..total_tasks).map(|_| {
+                Thunk::of(move || {
+                    thread::sleep(Duration::from_millis(1));
+                    thread::current().id()
+                })
+            }),
+            tx.clone(),
+        );
+        init_task_ids.into_iter().chain(rest_task_ids).collect()
+    }
+
+    fn count_thread_ids(
+        rx: OutcomeReceiver<ThunkWorker<ThreadId>>,
+        task_ids: Vec<usize>,
+    ) -> HashMap<ThreadId, usize> {
+        rx.select_unordered_outputs(task_ids)
+            .fold(HashMap::new(), |mut counter, id| {
+                *counter.entry(id).or_insert(0) += 1;
+                counter
+            })
+    }
+
+    fn run_test(
+        hive: &Hive<ThunkWorker<ThreadId>, DefaultQueen<ThunkWorker<ThreadId>>>,
+        num_threads: usize,
+        batch_size: usize,
+    ) {
+        let tasks_per_thread = batch_size + 2;
+        let (tx, rx) = crate::hive::outcome_channel();
+        // each worker should take `batch_size` tasks for its queue + 1 to work on immediately,
+        // meaning there should be `batch_size + 1` tasks associated with each thread ID
+        let barrier = IndexedBarrier::new(num_threads);
+        let task_ids = launch_tasks(hive, num_threads, tasks_per_thread, &barrier, &tx);
+        // start the first tasks
+        barrier.wait();
+        // wait for all tasks to complete
+        hive.join();
+        let thread_counts = count_thread_ids(rx, task_ids);
+        assert_eq!(thread_counts.len(), num_threads);
+        assert!(thread_counts
+            .values()
+            .all(|&count| count == tasks_per_thread));
+    }
+
+    #[test]
+    fn test_batching() {
+        const NUM_THREADS: usize = 4;
+        const BATCH_SIZE: usize = 24;
+        let hive = Builder::new()
+            .num_threads(NUM_THREADS)
+            .batch_size(BATCH_SIZE)
+            .build_with_default::<ThunkWorker<ThreadId>>();
+        run_test(&hive, NUM_THREADS, BATCH_SIZE);
+    }
+
+    #[test]
+    fn test_set_batch_size() {
+        const NUM_THREADS: usize = 4;
+        const BATCH_SIZE_0: usize = 10;
+        const BATCH_SIZE_1: usize = 20;
+        const BATCH_SIZE_2: usize = 50;
+        let hive = Builder::new()
+            .num_threads(NUM_THREADS)
+            .batch_size(BATCH_SIZE_0)
+            .build_with_default::<ThunkWorker<ThreadId>>();
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_0);
+        // increase batch size
+        hive.set_worker_batch_size(BATCH_SIZE_2);
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_2);
+        // decrease batch size
+        hive.set_worker_batch_size(BATCH_SIZE_1);
+        run_test(&hive, NUM_THREADS, BATCH_SIZE_1);
+    }
+
+    #[test]
+    fn test_shrink_batch_size() {
+        const NUM_THREADS: usize = 4;
+        const NUM_TASKS_PER_THREAD: usize = 125;
+        const BATCH_SIZE_0: usize = 100;
+        const BATCH_SIZE_1: usize = 10;
+        let hive = Builder::new()
+            .num_threads(NUM_THREADS)
+            .batch_size(BATCH_SIZE_0)
+            .build_with_default::<ThunkWorker<ThreadId>>();
+        let (tx, rx) = crate::hive::outcome_channel();
+        let barrier = IndexedBarrier::new(NUM_THREADS);
+        let task_ids = launch_tasks(&hive, NUM_THREADS, NUM_TASKS_PER_THREAD, &barrier, &tx);
+        let total_tasks = NUM_THREADS * NUM_TASKS_PER_THREAD;
+        assert_eq!(task_ids.len(), total_tasks);
+        barrier.wait();
+        hive.set_worker_batch_size(BATCH_SIZE_1);
+        // The number of tasks completed by each thread could be variable, so we want to ensure
+        // that a) each processed at least `BATCH_SIZE_0` tasks, and b) there are a total of
+        // `NUM_TASKS` outputs with no errors
+        hive.join();
+        let thread_counts = count_thread_ids(rx, task_ids);
+        assert!(thread_counts.values().all(|count| *count > BATCH_SIZE_0));
+        assert_eq!(thread_counts.values().sum::<usize>(), total_tasks);
     }
 }
 

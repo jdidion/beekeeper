@@ -1,5 +1,10 @@
 # Beekeeper changelog
 
+## 0.3.0
+
+* Features
+  * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
+
 ## 0.2.1
 
 * Bugfixes

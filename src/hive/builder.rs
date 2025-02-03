@@ -470,6 +470,33 @@ mod affinity {
     }
 }
 
+#[cfg(feature = "batching")]
+mod batching {
+    use super::Builder;
+
+    impl Builder {
+        /// Sets the worker thread batch size. If `batch_size` is `0`, batching is disabled, but
+        /// note that the performance may be worse than with the `batching` feature disabled.
+        pub fn batch_size(mut self, batch_size: usize) -> Self {
+            if batch_size == 0 {
+                self.0.batch_size.set(None);
+            } else {
+                self.0.batch_size.set(Some(batch_size));
+            }
+            self
+        }
+
+        /// Sets the worker thread batch size to the global default value.
+        pub fn with_default_batch_size(mut self) -> Self {
+            let _ = self
+                .0
+                .batch_size
+                .set(crate::hive::config::DEFAULTS.lock().batch_size.get());
+            self
+        }
+    }
+}
+
 #[cfg(feature = "retry")]
 mod retry {
     use super::Builder;
