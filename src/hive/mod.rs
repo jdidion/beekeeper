@@ -1847,14 +1847,14 @@ mod batching_tests {
         // it seems to take some time for the tasks sent to the channel to actually be available on
         // the receiving end - if we don't wait here, then the receiver yields fewer than the
         // requested number of tasks, the local queues don't get properly filled, and the test fails
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(100));
         // start the first tasks
         barrier.wait();
         // wait for all tasks to complete
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert_eq!(thread_counts.len(), num_threads);
-        dbg!(num_threads, batch_size, &thread_counts);
+        //dbg!(num_threads, batch_size, &thread_counts);
         assert!(thread_counts
             .values()
             .all(|&count| count == tasks_per_thread));
