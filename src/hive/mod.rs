@@ -1806,7 +1806,7 @@ mod batching_tests {
         hive: &Hive<ThunkWorker<ThreadId>, DefaultQueen<ThunkWorker<ThreadId>>>,
         num_tasks: usize,
         barrier: &IndexedBarrier,
-        tx: OutcomeSender<ThunkWorker<ThreadId>>,
+        tx: &OutcomeSender<ThunkWorker<ThreadId>>,
     ) -> Vec<usize> {
         hive.map_send(
             (0..num_tasks).map(|_| {
@@ -1843,7 +1843,7 @@ mod batching_tests {
         // each worker should take `batch_size` tasks for its queue + 1 to work on immediately,
         // meaning there should be `batch_size + 1` tasks associated with each thread ID
         let barrier = IndexedBarrier::new(num_threads);
-        let task_ids = launch_tasks(hive, total_tasks, &barrier, tx);
+        let task_ids = launch_tasks(hive, total_tasks, &barrier, &tx);
         // it seems to take some time for the tasks sent to the channel to actually be available on
         // the receiving end - if we don't wait here, then the receiver yields fewer than the
         // requested number of tasks, the local queues don't get properly filled, and the test fails
@@ -1902,7 +1902,7 @@ mod batching_tests {
             .build_with_default::<ThunkWorker<ThreadId>>();
         let (tx, rx) = crate::hive::outcome_channel();
         let barrier = IndexedBarrier::new(NUM_THREADS);
-        let task_ids = launch_tasks(&hive, NUM_TASKS, &barrier, tx);
+        let task_ids = launch_tasks(&hive, NUM_TASKS, &barrier, &tx);
         barrier.wait();
         hive.set_worker_batch_size(BATCH_SIZE_1);
         // The number of tasks completed by each thread could be variable, so we want to ensure
