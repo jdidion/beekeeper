@@ -1812,7 +1812,7 @@ mod batching_tests {
             (0..num_tasks).map(|_| {
                 let barrier = barrier.clone();
                 Thunk::of(move || {
-                    let sleep_millis = barrier.wait().is_some().then_some(100).unwrap_or(1);
+                    let sleep_millis = if barrier.wait().is_some() { 100 } else { 1 };
                     thread::sleep(Duration::from_millis(sleep_millis));
                     thread::current().id()
                 })
