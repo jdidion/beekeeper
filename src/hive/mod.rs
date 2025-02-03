@@ -541,11 +541,11 @@ mod tests {
     const SHORT_TASK: Duration = Duration::from_secs(2);
     const LONG_TASK: Duration = Duration::from_secs(5);
 
+    type ThunkHive<T> = Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>>;
+
     /// Convenience function that returns a `Hive` configured with the global defaults, and the
     /// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
-    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(
-        num_threads: usize,
-    ) -> Hive<ThunkWorker<T>, DefaultQueen<ThunkWorker<T>>> {
+    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(num_threads: usize) -> ThunkHive<T> {
         Builder::default()
             .num_threads(num_threads)
             .build_with_default()
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_grow() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_suspend() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         // queue some long-running tasks
         let total_tasks = 2 * TEST_TASKS;
         for _ in 0..total_tasks {
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn test_num_tasks_active() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         for _ in 0..2 * TEST_TASKS {
             hive.apply_store(Thunk::of(|| loop {
                 thread::sleep(LONG_TASK)
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
-        let hive = thunk_hive(TEST_TASKS);
+        let hive: ThunkHive<()> = Builder::new().num_threads(TEST_TASKS).build_with_default();
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
         let waiter_count = Arc::new(AtomicUsize::new(0));
 
