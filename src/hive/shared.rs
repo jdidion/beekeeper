@@ -535,37 +535,39 @@ mod batching {
             thread_index: usize,
         ) -> Option<Result<Task<W>, NextTaskError>> {
             let local_queue = &self.local_queues.read()[thread_index];
+            // pop from the local queue if it has any tasks
             if !local_queue.is_empty() {
-                Some(Ok(local_queue.pop().unwrap()))
-            } else {
-                let task_rx = self.task_rx.lock();
-                // wait for the next task from the receiver
-                let first = super::task_recv_timeout(&task_rx);
-                // if we fail after trying to get one, don't keep trying to fill the queue
-                if first.as_ref().map(|result| result.is_ok()).unwrap_or(false) {
-                    let batch_size = self.batch_size();
-                    // batch size 0 means batching is disabled
-                    if batch_size > 0 {
-                        // otherwise try to take up to `batch_size` tasks from the input channel
-                        // and add them to the local queue, but don't block if the input channel
-                        // is empty
-                        for result in task_rx
-                            .try_iter()
-                            .take(batch_size)
-                            .map(|task| local_queue.push(task))
-                        {
-                            if let Err(task) = result {
-                                // for some reason we can't push the task to the local queue;
-                                // this should never happen, but just in case we turn it into an
-                                // unprocessed outcome and stop iterating
-                                self.abandon_task(task);
-                                break;
-                            }
+                return Some(Ok(local_queue.pop().unwrap()));
+            }
+            // otherwise pull at least 1 and up to `batch_size + 1` tasks from the input channel
+            let task_rx = self.task_rx.lock();
+            // wait for the next task from the receiver
+            let first = super::task_recv_timeout(&task_rx);
+            // if we fail after trying to get one, don't keep trying to fill the queue
+            if first.as_ref().map(|result| result.is_ok()).unwrap_or(false) {
+                let batch_size = self.batch_size();
+                // batch size 0 means batching is disabled
+                if batch_size > 0 {
+                    // otherwise try to take up to `batch_size` tasks from the input channel
+                    // and add them to the local queue, but don't block if the input channel
+                    // is empty
+                    for result in task_rx
+                        .try_iter()
+                        .take(batch_size)
+                        .map(|task| local_queue.push(task))
+                    {
+                        if let Err(task) = result {
+                            // for some reason we can't push the task to the local queue;
+                            // this should never happen, but just in case we turn it into an
+                            // unprocessed outcome and stop iterating
+                            self.abandon_task(task);
+                            break;
                         }
                     }
+                    dbg!(thread_index, batch_size, local_queue.len());
                 }
-                first
             }
+            first
         }
     }
 }
