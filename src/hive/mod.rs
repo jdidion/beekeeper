@@ -1804,21 +1804,39 @@ mod batching_tests {
 
     fn launch_tasks(
         hive: &Hive<ThunkWorker<ThreadId>, DefaultQueen<ThunkWorker<ThreadId>>>,
-        num_tasks: usize,
+        num_threads: usize,
+        num_tasks_per_thread: usize,
         barrier: &IndexedBarrier,
         tx: &OutcomeSender<ThunkWorker<ThreadId>>,
     ) -> Vec<usize> {
-        hive.map_send(
-            (0..num_tasks).map(|_| {
+        let total_tasks = num_threads * num_tasks_per_thread;
+        // send the first `num_threads` tasks widely spaced, so each worker thread only gets one
+        let init_task_ids: Vec<_> = (0..num_threads)
+            .map(|_| {
                 let barrier = barrier.clone();
+                let task_id = hive.apply_send(
+                    Thunk::of(move || {
+                        barrier.wait();
+                        thread::sleep(Duration::from_millis(100));
+                        thread::current().id()
+                    }),
+                    tx.clone(),
+                );
+                thread::sleep(Duration::from_millis(100));
+                task_id
+            })
+            .collect();
+        // send the rest all at once
+        let rest_task_ids = hive.map_send(
+            (num_threads..total_tasks).map(|_| {
                 Thunk::of(move || {
-                    let sleep_millis = if barrier.wait().is_some() { 100 } else { 1 };
-                    thread::sleep(Duration::from_millis(sleep_millis));
+                    thread::sleep(Duration::from_millis(1));
                     thread::current().id()
                 })
             }),
             tx.clone(),
-        )
+        );
+        init_task_ids.into_iter().chain(rest_task_ids).collect()
     }
 
     fn count_thread_ids(
@@ -1837,24 +1855,18 @@ mod batching_tests {
         num_threads: usize,
         batch_size: usize,
     ) {
-        let tasks_per_thread = batch_size + 1;
-        let total_tasks = num_threads * tasks_per_thread;
+        let tasks_per_thread = batch_size + 2;
         let (tx, rx) = crate::hive::outcome_channel();
         // each worker should take `batch_size` tasks for its queue + 1 to work on immediately,
         // meaning there should be `batch_size + 1` tasks associated with each thread ID
         let barrier = IndexedBarrier::new(num_threads);
-        let task_ids = launch_tasks(hive, total_tasks, &barrier, &tx);
-        // it seems to take some time for the tasks sent to the channel to actually be available on
-        // the receiving end - if we don't wait here, then the receiver yields fewer than the
-        // requested number of tasks, the local queues don't get properly filled, and the test fails
-        thread::sleep(Duration::from_millis(100));
+        let task_ids = launch_tasks(hive, num_threads, tasks_per_thread, &barrier, &tx);
         // start the first tasks
         barrier.wait();
         // wait for all tasks to complete
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert_eq!(thread_counts.len(), num_threads);
-        //dbg!(num_threads, batch_size, &thread_counts);
         assert!(thread_counts
             .values()
             .all(|&count| count == tasks_per_thread));
@@ -1893,7 +1905,7 @@ mod batching_tests {
     #[test]
     fn test_shrink_batch_size() {
         const NUM_THREADS: usize = 4;
-        const NUM_TASKS: usize = 500;
+        const NUM_TASKS_PER_THREAD: usize = 125;
         const BATCH_SIZE_0: usize = 100;
         const BATCH_SIZE_1: usize = 10;
         let hive = Builder::new()
@@ -1902,7 +1914,9 @@ mod batching_tests {
             .build_with_default::<ThunkWorker<ThreadId>>();
         let (tx, rx) = crate::hive::outcome_channel();
         let barrier = IndexedBarrier::new(NUM_THREADS);
-        let task_ids = launch_tasks(&hive, NUM_TASKS, &barrier, &tx);
+        let task_ids = launch_tasks(&hive, NUM_THREADS, NUM_TASKS_PER_THREAD, &barrier, &tx);
+        let total_tasks = NUM_THREADS * NUM_TASKS_PER_THREAD;
+        assert_eq!(task_ids.len(), total_tasks);
         barrier.wait();
         hive.set_worker_batch_size(BATCH_SIZE_1);
         // The number of tasks completed by each thread could be variable, so we want to ensure
@@ -1911,7 +1925,7 @@ mod batching_tests {
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert!(thread_counts.values().all(|count| *count > BATCH_SIZE_0));
-        assert_eq!(thread_counts.values().sum::<usize>(), NUM_TASKS);
+        assert_eq!(thread_counts.values().sum::<usize>(), total_tasks);
     }
 }
 

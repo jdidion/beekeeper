@@ -564,7 +564,6 @@ mod batching {
                             break;
                         }
                     }
-                    dbg!(thread_index, batch_size, local_queue.len());
                 }
             }
             first
