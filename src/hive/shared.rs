@@ -744,8 +744,7 @@ mod retry {
                     .retry_queues
                     .read()
                     .get(thread_index)
-                    .map(|queue| queue.try_pop())
-                    .flatten()
+                    .and_then(|queue| queue.try_pop())
                 {
                     break Ok(task);
                 }
