@@ -1,5 +1,5 @@
 use super::counter::CounterError;
-use super::{Config, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
+use super::{Config, LocalQueue, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
@@ -11,7 +11,7 @@ use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 use std::{fmt, iter, mem};
 
-impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
     /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
     /// and all other fields set to their default values.
     pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
@@ -29,7 +29,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             resume_gate: Default::default(),
             join_gate: Default::default(),
             outcomes: Default::default(),
-            #[cfg(feature = "batching")]
             local_queues: Default::default(),
             #[cfg(feature = "retry")]
             retry_queues: Default::default(),
@@ -373,7 +372,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> fmt::Debug for Shared<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> fmt::Debug for Shared<W, Q, L> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
         f.debug_struct("Shared")
@@ -423,10 +422,10 @@ fn task_recv_timeout<W: Worker>(rx: &TaskReceiver<W>) -> Option<Result<Task<W>, 
 
 #[cfg(not(feature = "batching"))]
 mod no_batching {
-    use super::{NextTaskError, Shared, Task};
+    use super::{LocalQueue, NextTaskError, Shared, Task};
     use crate::bee::{Queen, Worker};
 
-    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
         /// Tries to receive a task from the input channel.
         ///
         /// Returns an error if the channel has disconnected. Returns `None` if a task is not
@@ -442,17 +441,16 @@ mod no_batching {
 mod batching {
     use super::{NextTaskError, Shared, Task};
     use crate::bee::{Queen, Worker};
+    use crate::hive::LocalQueue;
     use crossbeam_queue::ArrayQueue;
     use std::collections::HashSet;
     use std::time::Duration;
 
-    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
         pub(super) fn init_local_queues(&self, start_index: usize, end_index: usize) {
             let mut local_queues = self.local_queues.write();
             assert_eq!(local_queues.len(), start_index);
-            // ArrayQueue cannot be zero-sized
-            let queue_size = self.batch_size().max(1);
-            (start_index..end_index).for_each(|_| local_queues.push(ArrayQueue::new(queue_size)))
+            (start_index..end_index).for_each(|_| local_queues.push(L::new(self)));
         }
 
         /// Returns the local queue batch size.
@@ -603,12 +601,12 @@ pub enum NextTaskError {
 
 #[cfg(not(feature = "retry"))]
 mod no_retry {
-    use super::{NextTaskError, Task};
+    use super::{LocalQueue, NextTaskError, Task};
     use crate::atomic::Atomic;
     use crate::bee::{Queen, Worker};
     use crate::hive::{Husk, Shared};
 
-    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
         /// since this requires holding a lock on the task `Reciever`, this also blocks any other
         /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
@@ -799,8 +797,14 @@ mod tests {
     use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
 
+    #[cfg(not(feature = "batching"))]
+    type LocalQueue = ();
+    #[cfg(feature = "batching")]
+    type LocalQueue = crossbeam_deque::ArrayQueue<Task<ThunkWorker<()>>>;
+
     type VoidThunkWorker = ThunkWorker<()>;
-    type VoidThunkWorkerShared = super::Shared<VoidThunkWorker, DefaultQueen<VoidThunkWorker>>;
+    type VoidThunkWorkerShared =
+        super::Shared<VoidThunkWorker, DefaultQueen<VoidThunkWorker>, LocalQueue>;
 
     #[test]
     fn test_sync_shared() {

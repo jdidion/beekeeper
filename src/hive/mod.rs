@@ -362,12 +362,13 @@ mod gate;
 #[allow(clippy::module_inception)]
 mod hive;
 mod husk;
+mod local;
 mod outcome;
 // TODO: scoped hive is still a WIP
 //mod scoped;
 mod shared;
 mod task;
-//mod workstealing;
+mod workstealing;
 
 #[cfg(feature = "affinity")]
 pub mod cores;
@@ -423,17 +424,21 @@ type U32 = AtomicOption<u32, crate::atomic::AtomicU32>;
 #[cfg(feature = "retry")]
 type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
+trait LocalQueues<W: Worker>: Sized + Send + Sync + 'static {}
+
+type LocalQueuesImpl<W: Worker> = local::LocalQueuesImpl<W>;
+
 /// A pool of worker threads that each execute the same function.
 ///
 /// See the [module documentation](crate::hive) for details.
-pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
+pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q, LocalQueuesImpl<W>>>);
 
 /// A `Hive`'s inner state. Wraps a) the `Hive`'s reference to the `Shared` data (which is shared
 /// with the worker threads) and b) the `Sender<Task<W>>`, which is the sending end of the channel
 /// used to send tasks to the worker threads.
-struct HiveInner<W: Worker, Q: Queen<Kind = W>> {
+struct HiveInner<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
     task_tx: TaskSender<W>,
-    shared: Arc<Shared<W, Q>>,
+    shared: Arc<Shared<W, Q, L>>,
 }
 
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
@@ -473,7 +478,7 @@ struct Config {
 }
 
 /// Data shared by all worker threads in a `Hive`.
-struct Shared<W: Worker, Q: Queen<Kind = W>> {
+struct Shared<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
     /// core configuration parameters
     config: Config,
     /// the `Queen` used to create new workers
@@ -503,12 +508,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     join_gate: PhasedGate,
     /// outcomes stored in the hive
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
-    /// worker thread-specific queues of tasks used when the `batching` feature is enabled
-    #[cfg(feature = "batching")]
-    local_queues: parking_lot::RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
-    /// queue used for tasks that are waiting to be retried after a failure
-    #[cfg(feature = "retry")]
-    retry_queues: parking_lot::RwLock<Vec<delay::DelayQueue<Task<W>>>>,
+    /// local queues used by worker threads to manage tasks
+    local_queues: L,
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use super::prelude::*;
-use super::{Config, DerefOutcomes, HiveInner, OutcomeSender, Shared, SpawnError, TaskSender};
+use super::{
+    Config, DerefOutcomes, HiveInner, LocalQueue, OutcomeSender, Shared, SpawnError, TaskSender,
+};
 use crate::atomic::Atomic;
 use crate::bee::{DefaultQueen, Queen, TaskId, Worker};
 use crossbeam_utils::Backoff;
@@ -15,9 +17,9 @@ pub struct Poisoned;
 
 impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Spawns a new worker thread with the specified index and with access to the `shared` data.
-    fn try_spawn(
+    fn try_spawn<L: LocalQueue<W>>(
         thread_index: usize,
-        shared: Arc<Shared<W, Q>>,
+        shared: Arc<Shared<W, Q, L>>,
     ) -> Result<JoinHandle<()>, SpawnError> {
         // spawn a thread that executes the worker loop
         shared.thread_builder().spawn(move || {
@@ -60,11 +62,6 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         &self.0.as_ref().unwrap().task_tx
     }
 
-    #[inline]
-    fn shared(&self) -> &Arc<Shared<W, Q>> {
-        &self.0.as_ref().unwrap().shared
-    }
-
     /// Attempts to increase the number of worker threads by `num_threads`. Returns the number of
     /// new worker threads that were successfully started (which may be fewer than `num_threads`),
     /// or a `Poisoned` error if the hive has been poisoned.
@@ -72,7 +69,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if num_threads == 0 {
             return Ok(0);
         }
-        let shared = self.shared();
+        let shared = &self.0.as_ref().unwrap().shared;
         // do not start any new threads if the hive is poisoned
         if shared.is_poisoned() {
             return Err(Poisoned);
@@ -101,7 +98,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         if self.max_workers() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
-        let shared = self.shared();
+        let shared = &self.0.as_ref().unwrap().shared;
         let task = shared.prepare_task(input, outcome_tx);
         let task_id = task.id();
         // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
@@ -158,7 +155,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         let task_tx = self.task_tx();
         let iter = batch.into_iter();
         let (batch_size, _) = iter.size_hint();
-        let shared = self.shared();
+        let shared = &self.0.as_ref().unwrap().shared;
         let batch = shared.prepare_batch(batch_size, iter, outcome_tx);
         if !self.is_poisoned() {
             batch
@@ -176,7 +173,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         } else {
             // if the hive is poisoned, convert all tasks into `Unprocessed` outcomes and try to
             // send them to their outcome channels or store them in the hive
-            self.shared().abandon_batch(batch)
+            (&self.0.as_ref().unwrap().shared).abandon_batch(batch)
         }
     }
 
@@ -437,7 +434,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Blocks the calling thread until all tasks finish.
     pub fn join(&self) {
-        self.shared().wait_on_done();
+        (&self.0.as_ref().unwrap().shared).wait_on_done();
     }
 
     /// Returns the [`MutexGuard`](parking_lot::MutexGuard) for the [`Queen`].
@@ -445,20 +442,23 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Note that the `Queen` will remain locked until the returned guard is dropped, and that
     /// locking the `Queen` prevents new worker threads from being started.
     pub fn queen(&self) -> impl Deref<Target = Q> + '_ {
-        self.shared().queen.lock()
+        (&self.0.as_ref().unwrap().shared).queen.lock()
     }
 
     /// Returns the number of worker threads that have been requested, i.e., the maximum number of
     /// tasks that could be processed concurrently. This may be greater than
     /// [`active_workers`](Self::active_workers) if any of the worker threads failed to start.
     pub fn max_workers(&self) -> usize {
-        self.shared().config.num_threads.get_or_default()
+        (&self.0.as_ref().unwrap().shared)
+            .config
+            .num_threads
+            .get_or_default()
     }
 
     /// Returns the number of worker threads that have been successfully started. This may be
     /// fewer than [`max_workers`](Self::max_workers) if any of the worker threads failed to start.
     pub fn alive_workers(&self) -> usize {
-        self.shared()
+        (&self.0.as_ref().unwrap().shared)
             .spawn_results
             .lock()
             .iter()
@@ -468,7 +468,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Returns `true` if there are any "dead" worker threads that failed to spawn.
     pub fn has_dead_workers(&self) -> bool {
-        self.shared()
+        (&self.0.as_ref().unwrap().shared)
             .spawn_results
             .lock()
             .iter()
@@ -478,19 +478,19 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// Attempts to respawn any dead worker threads. Returns the number of worker threads that were
     /// successfully respawned.
     pub fn revive_workers(&self) -> usize {
-        let shared = self.shared();
+        let shared = &self.0.as_ref().unwrap().shared;
         shared
             .respawn_dead_threads(|thread_index| Self::try_spawn(thread_index, Arc::clone(shared)))
     }
 
     /// Returns the number of tasks currently (queued for processing, being processed).
     pub fn num_tasks(&self) -> (u64, u64) {
-        self.shared().num_tasks()
+        (&self.0.as_ref().unwrap().shared).num_tasks()
     }
 
     /// Returns the number of times one of this `Hive`'s worker threads has panicked.
     pub fn num_panics(&self) -> usize {
-        self.shared().num_panics.get()
+        (&self.0.as_ref().unwrap().shared).num_panics.get()
     }
 
     /// Returns `true` if this `Hive` has been poisoned - i.e., its internal state has been
@@ -500,12 +500,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// its stored [`Outcome`]s (e.g., [`take_stored`](Self::take_stored)) or consume it (e.g.,
     /// [`try_into_husk`](Self::try_into_husk)).
     pub fn is_poisoned(&self) -> bool {
-        self.shared().is_poisoned()
+        (&self.0.as_ref().unwrap().shared).is_poisoned()
     }
 
     /// Returns `true` if the suspended flag is set.
     pub fn is_suspended(&self) -> bool {
-        self.shared().is_suspended()
+        (&self.0.as_ref().unwrap().shared).is_suspended()
     }
 
     /// Sets the suspended flag, which notifies worker threads that they a) MAY terminate their
@@ -545,18 +545,18 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// # }
     /// ```
     pub fn suspend(&self) {
-        self.shared().set_suspended(true);
+        (&self.0.as_ref().unwrap().shared).set_suspended(true);
     }
 
     /// Unsets the suspended flag, allowing worker threads to continue processing queued tasks.
     pub fn resume(&self) {
-        self.shared().set_suspended(false);
+        (&self.0.as_ref().unwrap().shared).set_suspended(false);
     }
 
     /// Removes all `Unprocessed` outcomes from this `Hive` and returns them as an iterator over
     /// the input values.
     fn take_unprocessed_inputs(&self) -> impl ExactSizeIterator<Item = W::Input> {
-        self.shared()
+        (&self.0.as_ref().unwrap().shared)
             .take_unprocessed()
             .into_iter()
             .map(|outcome| match outcome {
@@ -569,7 +569,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// processing, with their results to be sent to `tx`. Returns a [`Vec`] of task IDs that
     /// were resumed.
     pub fn resume_send(&self, outcome_tx: OutcomeSender<W>) -> Vec<TaskId> {
-        self.shared()
+        (&self.0.as_ref().unwrap().shared)
             .set_suspended(false)
             .then(|| self.swarm_send(self.take_unprocessed_inputs(), outcome_tx))
             .unwrap_or_default()
@@ -579,7 +579,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     /// processing, with their results to be stored in the queue. Returns a [`Vec`] of task IDs
     /// that were resumed.
     pub fn resume_store(&self) -> Vec<TaskId> {
-        self.shared()
+        (&self.0.as_ref().unwrap().shared)
             .set_suspended(false)
             .then(|| self.swarm_store(self.take_unprocessed_inputs()))
             .unwrap_or_default()
@@ -587,7 +587,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     /// Returns all stored outcomes as a [`HashMap`] of task IDs to `Outcome`s.
     pub fn take_stored(&self) -> HashMap<TaskId, Outcome<W>> {
-        self.shared().take_outcomes()
+        (&self.0.as_ref().unwrap().shared).take_outcomes()
     }
 
     /// Consumes this `Hive` and attempts to return a [`Husk`] containing the remnants of this
@@ -599,7 +599,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
     ///
     /// This method first joins on the `Hive` to wait for all tasks to finish.
     pub fn try_into_husk(mut self) -> Option<Husk<W, Q>> {
-        if self.shared().num_referrers() > 1 {
+        if (&self.0.as_ref().unwrap().shared).num_referrers() > 1 {
             return None;
         }
         // take the inner value and replace it with `None`
@@ -640,12 +640,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Clone for Hive<W, Q> {
     /// i.e., all clones of a `Hive` submit tasks to the same shared worker thread pool.
     fn clone(&self) -> Self {
         let inner = self.0.as_ref().unwrap();
-        self.shared().referrer_is_cloning();
+        (&inner.shared).referrer_is_cloning();
         Self(Some(inner.clone()))
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> Clone for HiveInner<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Clone for HiveInner<W, Q, L> {
     fn clone(&self) -> Self {
         HiveInner {
             task_tx: self.task_tx.clone(),
@@ -669,7 +669,9 @@ impl<W: Worker, Q: Queen<Kind = W>> Debug for Hive<W, Q> {
 
 impl<W: Worker, Q: Queen<Kind = W>> PartialEq for Hive<W, Q> {
     fn eq(&self, other: &Hive<W, Q>) -> bool {
-        Arc::ptr_eq(self.shared(), other.shared())
+        let self_shared = &self.0.as_ref().unwrap().shared;
+        let other_shared = &other.0.as_ref().unwrap().shared;
+        Arc::ptr_eq(self_shared, other_shared)
     }
 }
 
@@ -678,12 +680,12 @@ impl<W: Worker, Q: Queen<Kind = W>> Eq for Hive<W, Q> {}
 impl<W: Worker, Q: Queen<Kind = W>> DerefOutcomes<W> for Hive<W, Q> {
     #[inline]
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>> {
-        self.shared().outcomes()
+        (&self.0.as_ref().unwrap().shared).outcomes()
     }
 
     #[inline]
     fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
-        self.shared().outcomes()
+        (&self.0.as_ref().unwrap().shared).outcomes()
     }
 }
 
@@ -705,14 +707,14 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Hive<W, Q> {
 
 /// Sentinel for a worker thread. Until the sentinel is cancelled, it will respawn the worker
 /// thread if it panics.
-struct Sentinel<W: Worker, Q: Queen<Kind = W>> {
+struct Sentinel<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> {
     thread_index: usize,
-    shared: Arc<Shared<W, Q>>,
+    shared: Arc<Shared<W, Q, L>>,
     active: bool,
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> Sentinel<W, Q> {
-    fn new(thread_index: usize, shared: Arc<Shared<W, Q>>) -> Self {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Sentinel<W, Q, L> {
+    fn new(thread_index: usize, shared: Arc<Shared<W, Q, L>>) -> Self {
         Self {
             thread_index,
             shared,
@@ -726,7 +728,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Sentinel<W, Q> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Drop for Sentinel<W, Q, L> {
     fn drop(&mut self) {
         if self.active {
             // if the sentinel is active, that means the thread panicked during task execution, so
@@ -748,11 +750,11 @@ impl<W: Worker, Q: Queen<Kind = W>> Drop for Sentinel<W, Q> {
 #[cfg(not(feature = "affinity"))]
 mod no_affinity {
     use crate::bee::{Queen, Worker};
-    use crate::hive::{Hive, Shared};
+    use crate::hive::{Hive, LocalQueue, Shared};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn init_thread(_: usize, _: &Shared<W, Q>) {}
+        pub(super) fn init_thread<L: LocalQueue<W>>(_: usize, _: &Shared<W, Q, L>) {}
     }
 }
 
@@ -783,7 +785,7 @@ mod affinity {
             num_threads: usize,
             affinity: C,
         ) -> Result<usize, Poisoned> {
-            self.shared().add_core_affinity(affinity.into());
+            (&self.0.as_ref().unwrap().shared).add_core_affinity(affinity.into());
             self.grow(num_threads)
         }
 
@@ -793,7 +795,7 @@ mod affinity {
         /// Returns the number of new threads spun up (if any) or a `Poisoned` error if the hive
         /// has been poisoned.
         pub fn use_all_cores_with_affinity(&self) -> Result<usize, Poisoned> {
-            self.shared().add_core_affinity(Cores::all());
+            (&self.0.as_ref().unwrap().shared).add_core_affinity(Cores::all());
             self.use_all_cores()
         }
     }
@@ -807,13 +809,13 @@ mod batching {
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         /// Returns the batch size for worker threads.
         pub fn worker_batch_size(&self) -> usize {
-            self.shared().batch_size()
+            (&self.0.as_ref().unwrap().shared).batch_size()
         }
 
         /// Sets the batch size for worker threads. This will block the current thread until all
         /// worker thread queues can be resized.
         pub fn set_worker_batch_size(&self, batch_size: usize) {
-            self.shared().set_batch_size(batch_size);
+            (&self.0.as_ref().unwrap().shared).set_batch_size(batch_size);
         }
     }
 }
@@ -821,15 +823,15 @@ mod batching {
 #[cfg(not(feature = "retry"))]
 mod no_retry {
     use crate::bee::{Queen, Worker};
-    use crate::hive::{Hive, Outcome, Shared, Task};
+    use crate::hive::{Hive, LocalQueue, Outcome, Shared, Task};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn execute(
+        pub(super) fn execute<L: LocalQueue<W>>(
             task: Task<W>,
             _thread_index: usize,
             worker: &mut W,
-            shared: &Shared<W, Q>,
+            shared: &Shared<W, Q, L>,
         ) {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
@@ -907,7 +909,7 @@ mod tests {
         assert_eq!(hive.max_workers(), 4);
         assert_eq!(hive.alive_workers(), 4);
         // poison hive using private method
-        hive.shared().poison();
+        hive.0.as_ref().unwrap().shared.poison();
         // attempt to spawn a new task
         assert!(matches!(hive.grow(1), Err(Poisoned)));
         // make sure the worker count wasn't increased
@@ -921,7 +923,7 @@ mod tests {
             .num_threads(4)
             .build_with(Caller::of(|i: usize| i * 2));
         // poison hive using private method
-        hive.shared().poison();
+        hive.0.as_ref().unwrap().shared.poison();
         // submit a task, check that it comes back unprocessed
         let (tx, rx) = outcome_channel();
         let sent_input = 1;
@@ -942,7 +944,7 @@ mod tests {
             .num_threads(4)
             .build_with(Caller::of(|i: usize| i * 2));
         // poison hive using private method
-        hive.shared().poison();
+        hive.0.as_ref().unwrap().shared.poison();
         // submit a task, check that it comes back unprocessed
         let (tx, rx) = outcome_channel();
         let inputs = 0..10;
