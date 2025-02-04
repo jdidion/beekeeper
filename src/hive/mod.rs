@@ -356,26 +356,22 @@
 //! ([`Husk::as_builder`](crate::hive::husk::Husk::as_builder)) or a new `Hive`
 //! ([`Husk::into_hive`](crate::hive::husk::Husk::into_hive)).
 mod builder;
+mod channel;
 mod config;
 mod counter;
 mod gate;
-#[allow(clippy::module_inception)]
-mod hive;
 mod husk;
-mod local;
 mod outcome;
-// TODO: scoped hive is still a WIP
 //mod scoped;
 mod shared;
 mod task;
-mod workstealing;
+//mod workstealing;
 
 #[cfg(feature = "affinity")]
 pub mod cores;
-#[cfg(feature = "retry")]
-mod delay;
 
 pub use self::builder::Builder;
+pub use self::channel::Poisoned;
 #[cfg(feature = "batching")]
 pub use self::config::set_batch_size_default;
 pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
@@ -383,7 +379,6 @@ pub use self::config::{reset_defaults, set_num_threads_default, set_num_threads_
 pub use self::config::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
 };
-pub use self::hive::Poisoned;
 pub use self::husk::Husk;
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
@@ -409,6 +404,7 @@ pub mod prelude {
 use self::counter::DualCounter;
 use self::gate::{Gate, PhasedGate};
 use self::outcome::{DerefOutcomes, OwnedOutcomes};
+use self::task::LocalQueuesImpl;
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use parking_lot::Mutex;
@@ -424,24 +420,22 @@ type U32 = AtomicOption<u32, crate::atomic::AtomicU32>;
 #[cfg(feature = "retry")]
 type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
-trait LocalQueues<W: Worker>: Sized + Send + Sync + 'static {}
-
-type LocalQueuesImpl<W: Worker> = local::LocalQueuesImpl<W>;
-
 /// A pool of worker threads that each execute the same function.
 ///
 /// See the [module documentation](crate::hive) for details.
-pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q, LocalQueuesImpl<W>>>);
+pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
 
 /// A `Hive`'s inner state. Wraps a) the `Hive`'s reference to the `Shared` data (which is shared
 /// with the worker threads) and b) the `Sender<Task<W>>`, which is the sending end of the channel
 /// used to send tasks to the worker threads.
-struct HiveInner<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
+struct HiveInner<W: Worker, Q: Queen<Kind = W>> {
     task_tx: TaskSender<W>,
-    shared: Arc<Shared<W, Q, L>>,
+    shared: Arc<Shared<W, Q, LocalQueuesImpl<W>>>,
 }
 
+/// Type alias for the input task channel sender
 type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
+/// Type alias for the input task channel receiver
 type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
 
 /// Internal representation of a task to be processed by a `Hive`.
@@ -465,8 +459,7 @@ struct Config {
     /// CPU cores to which worker threads can be pinned
     #[cfg(feature = "affinity")]
     affinity: Any<cores::Cores>,
-    /// Maximum number of tasks for a worker thread to
-    /// take when receiving tasks from the input channel
+    /// Maximum number of tasks for a worker thread to take when receiving from the input channel
     #[cfg(feature = "batching")]
     batch_size: Usize,
     /// Maximum number of retries for a task
@@ -507,10 +500,16 @@ struct Shared<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
     /// gate used by client threads to wait until all tasks have completed
     join_gate: PhasedGate,
     /// outcomes stored in the hive
+    /// TODO: switch to using thread-local outcome maps that need to be gathered when extracting
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
     /// local queues used by worker threads to manage tasks
     local_queues: L,
 }
+
+/// Trait that provides access to thread-specific queues for managing tasks. Ideally, these queues
+/// would be managed in a global thread-local data structure, but it has a generic type that
+/// requires it to be stored within the Hive's shared data.
+trait LocalQueues<W: Worker>: Sized + Default + Send + Sync + 'static {}
 
 #[cfg(test)]
 mod tests {
@@ -1762,7 +1761,7 @@ mod affinity_tests {
             .core_affinity(0..2)
             .build_with_default::<ThunkWorker<()>>();
 
-        hive.map_store((0..10).map(move |i| {
+        channel.map_store((0..10).map(move |i| {
             Thunk::of(move || {
                 if let Some(affininty) = core_affinity::get_core_ids() {
                     eprintln!("task {} on thread with affinity {:?}", i, affininty);
@@ -1779,7 +1778,7 @@ mod affinity_tests {
             .with_default_core_affinity()
             .build_with_default::<ThunkWorker<()>>();
 
-        hive.map_store((0..num_cpus::get()).map(move |i| {
+        channel.map_store((0..num_cpus::get()).map(move |i| {
             Thunk::of(move || {
                 if let Some(affininty) = core_affinity::get_core_ids() {
                     eprintln!("task {} on thread with affinity {:?}", i, affininty);

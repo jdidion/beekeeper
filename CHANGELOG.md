@@ -4,6 +4,8 @@
 
 * Features
   * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
+* Other
+  * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention
 
 ## 0.2.1
 

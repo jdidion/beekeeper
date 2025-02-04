@@ -1,5 +1,4 @@
-use super::counter::CounterError;
-use super::{Config, LocalQueue, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
+use super::{Config, LocalQueues, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Context, Queen, TaskId, Worker};
 use crate::channel::SenderExt;
@@ -11,7 +10,7 @@ use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 use std::{fmt, iter, mem};
 
-impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
     /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
     /// and all other fields set to their default values.
     pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
@@ -30,8 +29,6 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
             join_gate: Default::default(),
             outcomes: Default::default(),
             local_queues: Default::default(),
-            #[cfg(feature = "retry")]
-            retry_queues: Default::default(),
         }
     }
 
@@ -372,7 +369,7 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
     }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> fmt::Debug for Shared<W, Q, L> {
+impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> fmt::Debug for Shared<W, Q, L> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
         f.debug_struct("Shared")
@@ -441,12 +438,12 @@ mod no_batching {
 mod batching {
     use super::{NextTaskError, Shared, Task};
     use crate::bee::{Queen, Worker};
-    use crate::hive::LocalQueue;
+    use crate::hive::LocalQueues;
     use crossbeam_queue::ArrayQueue;
     use std::collections::HashSet;
     use std::time::Duration;
 
-    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
+    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
         pub(super) fn init_local_queues(&self, start_index: usize, end_index: usize) {
             let mut local_queues = self.local_queues.write();
             assert_eq!(local_queues.len(), start_index);
@@ -589,16 +586,6 @@ fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
     });
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum NextTaskError {
-    #[error("Task receiver disconnected")]
-    Disconnected,
-    #[error("The hive has been poisoned")]
-    Poisoned,
-    #[error("Task counter has invalid state")]
-    InvalidCounter(CounterError),
-}
-
 #[cfg(not(feature = "retry"))]
 mod no_retry {
     use super::{LocalQueue, NextTaskError, Task};
@@ -666,10 +653,10 @@ mod retry {
     use crate::atomic::Atomic;
     use crate::bee::{Context, Queen, Worker};
     use crate::hive::delay::DelayQueue;
-    use crate::hive::{Husk, OutcomeSender, Shared, Task};
+    use crate::hive::{Husk, LocalQueues, OutcomeSender, Shared, Task};
     use std::time::{Duration, Instant};
 
-    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
         /// Initializes the retry queues worker threads in the specified range.
         pub(super) fn init_retry_queues(&self, start_index: usize, end_index: usize) {
             let mut retry_queues = self.retry_queues.write();
@@ -796,15 +783,14 @@ mod retry {
 mod tests {
     use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
-
-    #[cfg(not(feature = "batching"))]
-    type LocalQueue = ();
-    #[cfg(feature = "batching")]
-    type LocalQueue = crossbeam_deque::ArrayQueue<Task<ThunkWorker<()>>>;
+    use crate::hive::LocalQueuesImpl;
 
     type VoidThunkWorker = ThunkWorker<()>;
-    type VoidThunkWorkerShared =
-        super::Shared<VoidThunkWorker, DefaultQueen<VoidThunkWorker>, LocalQueue>;
+    type VoidThunkWorkerShared = super::Shared<
+        VoidThunkWorker,
+        DefaultQueen<VoidThunkWorker>,
+        LocalQueuesImpl<VoidThunkWorker>,
+    >;
 
     #[test]
     fn test_sync_shared() {
