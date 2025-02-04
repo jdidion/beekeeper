@@ -37,8 +37,7 @@ impl<T> DelayQueue<T> {
             self.0
                 .get()
                 .as_ref()
-                .map(|queue| queue.peek().map(|head| head.until))
-                .flatten()
+                .and_then(|queue| queue.peek().map(|head| head.until))
         }
     }
 
@@ -54,8 +53,7 @@ impl<T> DelayQueue<T> {
                 self.0
                     .get()
                     .as_mut()
-                    .map(|queue| queue.pop())
-                    .flatten()
+                    .and_then(|queue| queue.pop())
                     .map(|delayed| delayed.value)
             } else {
                 None
