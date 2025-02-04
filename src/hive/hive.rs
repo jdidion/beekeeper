@@ -827,7 +827,7 @@ mod no_retry {
         #[inline]
         pub(super) fn execute(
             task: Task<W>,
-            thread_index: usize,
+            _thread_index: usize,
             worker: &mut W,
             shared: &Shared<W, Q>,
         ) {
