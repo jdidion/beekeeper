@@ -32,9 +32,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
             #[cfg(feature = "batching")]
             local_queues: Default::default(),
             #[cfg(feature = "retry")]
-            retry_queue: Default::default(),
-            #[cfg(feature = "retry")]
-            next_retry: Default::default(),
+            retry_queues: Default::default(),
         }
     }
 
@@ -92,6 +90,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
         // if worker threads need a local queue, initialize them before spawning
         #[cfg(feature = "batching")]
         self.init_local_queues(start_index, end_index);
+        #[cfg(feature = "retry")]
+        self.init_retry_queues(start_index, end_index);
         // spawn the worker threads and return the results
         let results: Vec<_> = (start_index..end_index).map(f).collect();
         spawn_results.reserve(num_threads);
@@ -667,11 +667,20 @@ mod retry {
     use super::NextTaskError;
     use crate::atomic::Atomic;
     use crate::bee::{Context, Queen, Worker};
+    use crate::hive::delay::DelayQueue;
     use crate::hive::{Husk, OutcomeSender, Shared, Task};
     use std::time::{Duration, Instant};
 
     impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
-        /// Returns `true` if the hive is configured to retry tasks.
+        /// Initializes the retry queues worker threads in the specified range.
+        pub(super) fn init_retry_queues(&self, start_index: usize, end_index: usize) {
+            let mut retry_queues = self.retry_queues.write();
+            assert_eq!(retry_queues.len(), start_index);
+            (start_index..end_index).for_each(|_| retry_queues.push(DelayQueue::default()))
+        }
+
+        /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
+        /// given `ctx` is less than the maximum number of retries.
         pub fn can_retry(&self, ctx: &Context) -> bool {
             self.config
                 .max_retries
@@ -680,25 +689,15 @@ mod retry {
                 .unwrap_or(false)
         }
 
-        /// Updates the `next_retry` field if `instant` is earlier than the current value.
-        pub(super) fn update_next_retry(&self, instant: Option<Instant>) {
-            let mut next_retry = self.next_retry.write();
-            if let Some(new_val) = instant {
-                if next_retry.map(|cur_val| new_val < cur_val).unwrap_or(true) {
-                    next_retry.replace(new_val);
-                }
-            } else {
-                next_retry.take();
-            }
-        }
-
         /// Adds a task to the retry queue with a delay based on `ctx.attempt()`.
         pub fn queue_retry(
             &self,
+            thread_index: usize,
             input: W::Input,
             ctx: Context,
             outcome_tx: Option<OutcomeSender<W>>,
-        ) {
+        ) -> Option<Instant> {
+            // compute the delay
             let delay = self
                 .config
                 .retry_factor
@@ -714,13 +713,19 @@ mod retry {
                         .unwrap()
                 })
                 .unwrap_or_default();
+            // try to queue the task
             let task = Task::new(input, ctx, outcome_tx);
-            let mut queue = self.retry_queue.lock();
             self.num_tasks
                 .increment_left(1)
                 .expect("overflowed queued task counter");
-            let available_at = queue.push(task, delay);
-            self.update_next_retry(Some(available_at));
+            if let Some(queue) = self.retry_queues.read().get(thread_index) {
+                queue.push(task, delay)
+            } else {
+                Err(task)
+            }
+            // if unable to queue the task, abandon it
+            .map_err(|task| self.abandon_task(task))
+            .ok()
         }
 
         /// Returns the next queued `Task`. The thread blocks until a new task becomes available,
@@ -735,16 +740,14 @@ mod retry {
                     return Err(NextTaskError::Poisoned);
                 }
 
-                let has_retry = {
-                    let next_retry = self.next_retry.read();
-                    next_retry.is_some_and(|next_retry| next_retry <= Instant::now())
-                };
-                if has_retry {
-                    let mut queue = self.retry_queue.lock();
-                    if let Some(task) = queue.try_pop() {
-                        self.update_next_retry(queue.next_available());
-                        break Ok(task);
-                    }
+                if let Some(task) = self
+                    .retry_queues
+                    .read()
+                    .get(thread_index)
+                    .map(|queue| queue.try_pop())
+                    .flatten()
+                {
+                    break Ok(task);
                 }
 
                 if let Some(result) = self.get_task(thread_index) {
@@ -764,8 +767,10 @@ mod retry {
             let mut outcomes = self.outcomes.lock();
             let task_rx = self.task_rx.lock();
             super::send_or_store(task_rx.try_iter(), &mut outcomes);
-            let mut retry_queue = self.retry_queue.lock();
-            super::send_or_store(retry_queue.drain(), &mut outcomes);
+            let mut retry_queue = self.retry_queues.write();
+            for queue in retry_queue.iter_mut() {
+                super::send_or_store(queue.drain(), &mut outcomes);
+            }
         }
 
         /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
@@ -776,8 +781,10 @@ mod retry {
             let mut outcomes = self.outcomes.into_inner();
             let task_rx = self.task_rx.into_inner();
             super::send_or_store(task_rx.try_iter(), &mut outcomes);
-            let mut retry_queue = self.retry_queue.into_inner();
-            super::send_or_store(retry_queue.drain(), &mut outcomes);
+            let mut retry_queue = self.retry_queues.into_inner();
+            for queue in retry_queue.iter_mut() {
+                super::send_or_store(queue.drain(), &mut outcomes);
+            }
             Husk::new(
                 self.config.into_unsync(),
                 self.queen.into_inner(),

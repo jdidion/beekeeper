@@ -367,6 +367,7 @@ mod outcome;
 //mod scoped;
 mod shared;
 mod task;
+//mod workstealing;
 
 #[cfg(feature = "affinity")]
 pub mod cores;
@@ -506,13 +507,8 @@ struct Shared<W: Worker, Q: Queen<Kind = W>> {
     #[cfg(feature = "batching")]
     local_queues: parking_lot::RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
     /// queue used for tasks that are waiting to be retried after a failure
-    /// TODO: look at using a crossbeam_queue::SegQueue to avoid worker threads having to
-    /// lock the retry queue
     #[cfg(feature = "retry")]
-    retry_queue: Mutex<delay::DelayQueue<Task<W>>>,
-    /// the next time at which a task will be ready to be retried
-    #[cfg(feature = "retry")]
-    next_retry: parking_lot::RwLock<Option<std::time::Instant>>,
+    retry_queues: parking_lot::RwLock<Vec<delay::DelayQueue<Task<W>>>>,
 }
 
 #[cfg(test)]
