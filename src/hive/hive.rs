@@ -33,7 +33,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
             while let Ok(task) = shared.next_task(thread_index) {
                 // execute the task until it succeeds or we reach maximum retries - this should
                 // be the only place where a panic can occur
-                Self::execute(task, &mut worker, &shared);
+                Self::execute(task, thread_index, &mut worker, &shared);
                 // finish the task - decrements the active counter and notifies other threads
                 shared.finish_task(false);
             }
@@ -825,7 +825,12 @@ mod no_retry {
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) {
+        pub(super) fn execute(
+            task: Task<W>,
+            _thread_index: usize,
+            worker: &mut W,
+            shared: &Shared<W, Q>,
+        ) {
             let (input, ctx, outcome_tx) = task.into_parts();
             let result = worker.apply(input, &ctx);
             let outcome = Outcome::from_worker_result(result, ctx.task_id());
@@ -841,12 +846,17 @@ mod retry {
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         #[inline]
-        pub(super) fn execute(task: Task<W>, worker: &mut W, shared: &Shared<W, Q>) {
+        pub(super) fn execute(
+            task: Task<W>,
+            thread_index: usize,
+            worker: &mut W,
+            shared: &Shared<W, Q>,
+        ) {
             let (input, mut ctx, outcome_tx) = task.into_parts();
             match worker.apply(input, &ctx) {
                 Err(ApplyError::Retryable { input, .. }) if shared.can_retry(&ctx) => {
                     ctx.inc_attempt();
-                    shared.queue_retry(input, ctx, outcome_tx);
+                    shared.queue_retry(thread_index, input, ctx, outcome_tx);
                 }
                 result => {
                     let outcome = Outcome::from_worker_result(result, ctx.task_id());
