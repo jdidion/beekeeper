@@ -1,23 +1,31 @@
-use super::{Config, LocalQueues, Outcome, OutcomeSender, Shared, SpawnError, Task, TaskReceiver};
+use super::task::ChannelGlobalQueue;
+use super::{
+    Config, GlobalQueue, Husk, LocalQueues, Outcome, OutcomeSender, Shared, SpawnError, Task,
+};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
-use crate::bee::{Context, Queen, TaskId, Worker};
+use crate::bee::{Queen, TaskId, Worker};
 use crate::channel::SenderExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::sync::mpsc::RecvTimeoutError;
 use std::thread::{Builder, JoinHandle};
-use std::time::Duration;
 use std::{fmt, iter, mem};
 
-impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
+impl<W, Q, G, L> Shared<W, Q, G, L>
+where
+    W: Worker,
+    Q: Queen<Kind = W>,
+    G: GlobalQueue<W>,
+    L: LocalQueues<W, G>,
+{
     /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
     /// and all other fields set to their default values.
-    pub fn new(config: Config, queen: Q, task_rx: TaskReceiver<W>) -> Self {
+    pub fn new(config: Config, global_queue: G, queen: Q) -> Self {
         Shared {
             config,
+            global_queue,
             queen: Mutex::new(queen),
-            task_rx: Mutex::new(task_rx),
+            local_queues: Default::default(),
             spawn_results: Default::default(),
             num_tasks: Default::default(),
             next_task_id: Default::default(),
@@ -28,7 +36,6 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
             resume_gate: Default::default(),
             join_gate: Default::default(),
             outcomes: Default::default(),
-            local_queues: Default::default(),
         }
     }
 
@@ -84,10 +91,8 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
         assert_eq!(spawn_results.len(), start_index);
         let end_index = start_index + num_threads;
         // if worker threads need a local queue, initialize them before spawning
-        #[cfg(feature = "batching")]
-        self.init_local_queues(start_index, end_index);
-        #[cfg(feature = "retry")]
-        self.init_retry_queues(start_index, end_index);
+        self.local_queues
+            .init_for_threads(start_index, end_index, self);
         // spawn the worker threads and return the results
         let results: Vec<_> = (start_index..end_index).map(f).collect();
         spawn_results.reserve(num_threads);
@@ -146,29 +151,75 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
 
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
     /// `outcome_tx` and the next ID.
-    pub fn prepare_task(&self, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Task<W> {
+    fn prepare_task(&self, input: W::Input, outcome_tx: Option<&OutcomeSender<W>>) -> Task<W> {
         self.num_tasks
             .increment_left(1)
             .expect("overflowed queued task counter");
         let task_id = self.next_task_id.add(1);
-        let ctx = Context::new(task_id, self.suspended.clone());
-        Task::new(input, ctx, outcome_tx)
+        Task::new(task_id, input, outcome_tx.cloned())
     }
 
-    /// Increments the number of queued tasks by the number of provided inputs. Returns an iterator
-    /// over `Task`s created from the provided inputs, `outcome_tx`s, and sequential task_ids.
-    pub fn prepare_batch<'a, T: Iterator<Item = W::Input> + 'a>(
-        &'a self,
-        min_size: usize,
+    /// Adds `task` to the global queue if possible, otherwise abandons it - converts it to an
+    /// `Unprocessed` outcome and sends it to the outcome channel or stores it in the hive.
+    pub fn push_global(&self, task: Task<W>) {
+        // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
+        // the task into an `Unprocessed` outcome and try to send it to the outcome channel; if
+        // that fails, store the outcome in the hive
+        if let Some(abandoned_task) = if self.is_poisoned() {
+            Some(task)
+        } else {
+            self.global_queue.try_push(task).err()
+        } {
+            self.abandon_task(abandoned_task);
+        }
+    }
+
+    /// Creates a new `Task` for the given input and outcome channel, and adds it to the global
+    /// queue.
+    pub fn send_one_global(
+        &self,
+        input: W::Input,
+        outcome_tx: Option<&OutcomeSender<W>>,
+    ) -> TaskId {
+        let task = self.prepare_task(input, outcome_tx);
+        let task_id = task.id();
+        self.push_global(task);
+        task_id
+    }
+
+    /// Creates a new `Task` for the given input and outcome channel, and attempts to add it to
+    /// the local queue for the specified `thread_index`. Falls back to adding it to the global
+    /// queue.
+    pub fn send_one_local(
+        &self,
+        input: W::Input,
+        outcome_tx: Option<&OutcomeSender<W>>,
+        thread_index: usize,
+    ) -> TaskId {
+        let task = self.prepare_task(input, outcome_tx);
+        let task_id = task.id();
+        self.local_queues.push(task, thread_index, &self);
+        task_id
+    }
+
+    /// Creates a new `Task` for each input in the given batch and sends them to the global queue.
+    pub fn send_batch_global<T>(
+        &self,
         inputs: T,
-        outcome_tx: Option<OutcomeSender<W>>,
-    ) -> impl Iterator<Item = Task<W>> + 'a {
+        outcome_tx: Option<&OutcomeSender<W>>,
+    ) -> Vec<TaskId>
+    where
+        T: IntoIterator<Item = W::Input>,
+        T::IntoIter: ExactSizeIterator,
+    {
+        let iter = inputs.into_iter();
+        let (min_size, _) = iter.size_hint();
         self.num_tasks
             .increment_left(min_size as u64)
             .expect("overflowed queued task counter");
         let task_id_start = self.next_task_id.add(min_size);
         let task_id_end = task_id_start + min_size;
-        inputs
+        let tasks = iter
             .map(Some)
             .chain(iter::repeat_with(|| None))
             .zip(
@@ -177,16 +228,72 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
                     .chain(iter::repeat_with(|| None)),
             )
             .map_while(move |pair| match pair {
-                (Some(input), Some(task_id)) => Some(Task {
-                    input,
-                    ctx: Context::new(task_id, self.suspended.clone()),
-                    //attempt: 0,
-                    outcome_tx: outcome_tx.clone(),
-                }),
-                (Some(input), None) => Some(self.prepare_task(input, outcome_tx.clone())),
+                (Some(input), Some(task_id)) => {
+                    Some(Task::new(task_id, input, outcome_tx.cloned()))
+                }
+                (Some(input), None) => Some(self.prepare_task(input, outcome_tx)),
                 (None, Some(_)) => panic!("batch contained fewer than {min_size} items"),
                 (None, None) => None,
-            })
+            });
+        if !self.is_poisoned() {
+            tasks
+                .map(|task| {
+                    let task_id = task.id();
+                    // try to send the task to the hive; if sending fails, convert the task into an
+                    // `Unprocessed` outcome and try to send it to the outcome channel; if that
+                    // fails, store the outcome in the hive
+                    if let Err(task) = self.global_queue.try_push(task) {
+                        self.abandon_task(task);
+                    }
+                    task_id
+                })
+                .collect()
+        } else {
+            // if the hive is poisoned, convert all tasks into `Unprocessed` outcomes and try to
+            // send them to their outcome channels or store them in the hive
+            self.abandon_batch(tasks)
+        }
+    }
+
+    /// Returns the next available `Task`. If there is a task in any local queue, it is returned,
+    /// otherwise a task is requested from the global queue.
+    ///
+    /// If the hive is suspended, the calling thread blocks until the `Hive` is resumed.
+    /// The calling thread also blocks until a task becomes available.
+    ///
+    /// Returns an error if the hive is poisoned or if the local queues are empty, and the global
+    /// queue is disconnected.
+    pub fn get_next_task(&self, thread_index: usize) -> Option<Task<W>> {
+        loop {
+            // block while the hive is suspended
+            self.wait_on_resume();
+            // stop iteration if the hive is poisoned
+            if self.is_poisoned() {
+                return None;
+            }
+            // try to get a task from the local queues
+            if let Some(task) = self.local_queues.try_pop(thread_index, &self) {
+                break Ok(task);
+            }
+            // fall back to requesting a task from the global queue
+            if let Some(result) = self.global_queue.try_pop() {
+                break result;
+            }
+        }
+        // if a task was successfully received, decrement the queued counter and increment the
+        // active counter
+        .map(|task| match self.num_tasks.transfer(1) {
+            Ok(_) => Some(task),
+            Err(_) => {
+                // the hive is in a corrupted state - abandon this task and then poison the hive
+                // so it can't be used anymore
+                self.abandon_task(task);
+                self.poison();
+                None
+            }
+        })
+        .ok()
+        .flatten()
     }
 
     /// Sends an outcome to `outcome_tx`, or stores it in the `Hive` shared data if there is no
@@ -337,6 +444,11 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
         self.suspended.get()
     }
 
+    #[inline]
+    pub fn wait_on_resume(&self) {
+        self.resume_gate.wait_while(|| self.is_suspended());
+    }
+
     /// Returns a mutable reference to the retained task outcomes.
     pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_ {
         self.outcomes.lock()
@@ -367,9 +479,36 @@ impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
             .map(|task_id| outcomes.remove(&task_id).unwrap())
             .collect()
     }
+
+    /// Drains all queued tasks, converts them into `Outcome::Unprocessed` outcomes, and tries
+    /// to send them or (if the task does not have a sender, or if the send fails) stores them
+    /// in the `outcomes` map.
+    fn drain_tasks_into_unprocessed(&self) {
+        self.abandon_batch(self.global_queue.drain().into_iter());
+        self.abandon_batch(self.local_queues.drain().into_iter());
+    }
+
+    /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
+    /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
+    /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
+    /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
+    pub fn into_husk(self) -> Husk<W, Q> {
+        self.drain_tasks_into_unprocessed();
+        Husk::new(
+            self.config.into_unsync(),
+            self.queen.into_inner(),
+            self.num_panics.into_inner(),
+            self.outcomes.into_inner(),
+        )
+    }
 }
 
-impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> fmt::Debug for Shared<W, Q, L> {
+impl<W, Q, L> fmt::Debug for Shared<W, Q, ChannelGlobalQueue<W>, L>
+where
+    W: Worker,
+    Q: Queen<Kind = W>,
+    L: LocalQueues<W, ChannelGlobalQueue<W>>,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
         f.debug_struct("Shared")
@@ -406,50 +545,18 @@ mod affinity {
     }
 }
 
-#[inline]
-fn task_recv_timeout<W: Worker>(rx: &TaskReceiver<W>) -> Option<Result<Task<W>, NextTaskError>> {
-    // time to wait in between polling the retry queue and then the task receiver
-    const RECV_TIMEOUT: Duration = Duration::from_secs(1);
-    match rx.recv_timeout(RECV_TIMEOUT) {
-        Ok(task) => Some(Ok(task)),
-        Err(RecvTimeoutError::Disconnected) => Some(Err(NextTaskError::Disconnected)),
-        Err(RecvTimeoutError::Timeout) => None,
-    }
-}
-
-#[cfg(not(feature = "batching"))]
-mod no_batching {
-    use super::{LocalQueue, NextTaskError, Shared, Task};
-    use crate::bee::{Queen, Worker};
-
-    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
-        /// Tries to receive a task from the input channel.
-        ///
-        /// Returns an error if the channel has disconnected. Returns `None` if a task is not
-        /// received within the timeout period (currently hard-coded to 1 second).
-        #[inline]
-        pub(super) fn get_task(&self, _: usize) -> Option<Result<Task<W>, NextTaskError>> {
-            super::task_recv_timeout(&self.task_rx.lock())
-        }
-    }
-}
-
 #[cfg(feature = "batching")]
 mod batching {
-    use super::{NextTaskError, Shared, Task};
     use crate::bee::{Queen, Worker};
-    use crate::hive::LocalQueues;
-    use crossbeam_queue::ArrayQueue;
-    use std::collections::HashSet;
-    use std::time::Duration;
+    use crate::hive::{GlobalQueue, LocalQueues, Shared};
 
-    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
-        pub(super) fn init_local_queues(&self, start_index: usize, end_index: usize) {
-            let mut local_queues = self.local_queues.write();
-            assert_eq!(local_queues.len(), start_index);
-            (start_index..end_index).for_each(|_| local_queues.push(L::new(self)));
-        }
-
+    impl<W, Q, G, L> Shared<W, Q, G, L>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        G: GlobalQueue<W>,
+        L: LocalQueues<W, G>,
+    {
         /// Returns the local queue batch size.
         pub fn batch_size(&self) -> usize {
             self.config.batch_size.get().unwrap_or_default()
@@ -476,305 +583,50 @@ mod batching {
             if num_threads == 0 {
                 return prev_batch_size;
             }
-            // keep track of which queues need to be resized
-            // TODO: this method could cause a hang if one of the worker threads is stuck - we
-            // might want to keep track of each queue's size and if we don't see it shrink within
-            // a certain amount of time, we give up on that thread and leave it with a wrong-sized
-            // queue (which should never cause a panic)
-            let mut to_resize: HashSet<usize> = (0..num_threads).collect();
-            // iterate until we've resized them all
-            loop {
-                // scope the mutable access to local_queues
-                {
-                    let mut local_queues = self.local_queues.write();
-                    to_resize.retain(|thread_index| {
-                        let queue = if let Some(queue) = local_queues.get_mut(*thread_index) {
-                            queue
-                        } else {
-                            return false;
-                        };
-                        if queue.len() > batch_size {
-                            return true;
-                        }
-                        let new_queue = ArrayQueue::new(batch_size);
-                        while let Some(task) = queue.pop() {
-                            if let Err(task) = new_queue.push(task) {
-                                // for some reason we can't push the task to the new queue
-                                // this should never happen, but just in case we turn it into
-                                // an unprocessed outcome
-                                self.abandon_task(task);
-                            }
-                        }
-                        // this is safe because the worker threads can't get readable access to the
-                        // queue while this thread holds the lock
-                        let old_queue = std::mem::replace(queue, new_queue);
-                        assert!(old_queue.is_empty());
-                        false
-                    });
-                }
-                if to_resize.is_empty() {
-                    return prev_batch_size;
-                } else {
-                    // short sleep to give worker threads the chance to pull from their queues
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
-
-        /// Returns the next task from the local queue if there are any, otherwise attempts to
-        /// fetch at least 1 and up to `batch_size + 1` tasks from the input channel and puts all
-        /// but the first one into the local queue.
-        #[inline]
-        pub(super) fn get_task(
-            &self,
-            thread_index: usize,
-        ) -> Option<Result<Task<W>, NextTaskError>> {
-            let local_queue = &self.local_queues.read()[thread_index];
-            // pop from the local queue if it has any tasks
-            if !local_queue.is_empty() {
-                return Some(Ok(local_queue.pop().unwrap()));
-            }
-            // otherwise pull at least 1 and up to `batch_size + 1` tasks from the input channel
-            let task_rx = self.task_rx.lock();
-            // wait for the next task from the receiver
-            let first = super::task_recv_timeout(&task_rx);
-            // if we fail after trying to get one, don't keep trying to fill the queue
-            if first.as_ref().map(|result| result.is_ok()).unwrap_or(false) {
-                let batch_size = self.batch_size();
-                // batch size 0 means batching is disabled
-                if batch_size > 0 {
-                    // otherwise try to take up to `batch_size` tasks from the input channel
-                    // and add them to the local queue, but don't block if the input channel
-                    // is empty
-                    for result in task_rx
-                        .try_iter()
-                        .take(batch_size)
-                        .map(|task| local_queue.push(task))
-                    {
-                        if let Err(task) = result {
-                            // for some reason we can't push the task to the local queue;
-                            // this should never happen, but just in case we turn it into an
-                            // unprocessed outcome and stop iterating
-                            self.abandon_task(task);
-                            break;
-                        }
-                    }
-                }
-            }
-            first
-        }
-    }
-}
-
-/// Sends each `Task` to its associated outcome sender (if any) or stores it in `outcomes`.
-/// TODO: if `outcomes` were `DerefMut` then the argument could either be a mutable referece or
-/// a Lazy<Mutex> that aquires the lock on first access. Unfortunately, rust's Lazy does not support
-/// mutable access, so we'd need something like OnceCell or OnceMutex.
-fn send_or_store<W: Worker, I: Iterator<Item = Task<W>>>(
-    tasks: I,
-    outcomes: &mut HashMap<TaskId, Outcome<W>>,
-) {
-    tasks.for_each(|task| {
-        let (outcome, outcome_tx) = task.into_unprocessed();
-        if let Some(outcome) = if let Some(tx) = outcome_tx {
-            tx.try_send_msg(outcome)
-        } else {
-            Some(outcome)
-        } {
-            outcomes.insert(*outcome.task_id(), outcome);
-        }
-    });
-}
-
-#[cfg(not(feature = "retry"))]
-mod no_retry {
-    use super::{LocalQueue, NextTaskError, Task};
-    use crate::atomic::Atomic;
-    use crate::bee::{Queen, Worker};
-    use crate::hive::{Husk, Shared};
-
-    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueue<W>> Shared<W, Q, L> {
-        /// Returns the next queued `Task`. The thread blocks until a new task becomes available, and
-        /// since this requires holding a lock on the task `Reciever`, this also blocks any other
-        /// threads that call this method. Returns `None` if the task `Sender` has hung up and there
-        /// are no tasks queued. Also returns `None` if the cancelled flag has been set.
-        pub fn next_task(&self, thread_index: usize) -> Result<Task<W>, NextTaskError> {
-            loop {
-                self.resume_gate.wait_while(|| self.is_suspended());
-
-                if self.is_poisoned() {
-                    return Err(NextTaskError::Poisoned);
-                }
-
-                if let Some(result) = self.get_task(thread_index) {
-                    break result;
-                }
-            }
-            .and_then(|task| match self.num_tasks.transfer(1) {
-                Ok(_) => Ok(task),
-                Err(e) => {
-                    // poison the hive so it can't be used anymore
-                    self.poison();
-                    Err(NextTaskError::InvalidCounter(e))
-                }
-            })
-        }
-
-        /// Drains all queued tasks, converts them into `Outcome::Unprocessed` outcomes, and tries
-        /// to send them or (if the task does not have a sender, or if the send fails) stores them
-        /// in the `outcomes` map.
-        pub fn drain_tasks_into_unprocessed(&self) {
-            let task_rx = self.task_rx.lock();
-            let mut outcomes = self.outcomes.lock();
-            super::send_or_store(task_rx.try_iter(), &mut outcomes);
-        }
-
-        /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
-        /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
-        /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
-        /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
-        pub fn try_into_husk(self) -> Husk<W, Q> {
-            let task_rx = self.task_rx.into_inner();
-            let mut outcomes = self.outcomes.into_inner();
-            super::send_or_store(task_rx.try_iter(), &mut outcomes);
-            Husk::new(
-                self.config.into_unsync(),
-                self.queen.into_inner(),
-                self.num_panics.into_inner(),
-                outcomes,
-            )
+            self.local_queues.resize(0, num_threads, batch_size, &self);
+            prev_batch_size
         }
     }
 }
 
 #[cfg(feature = "retry")]
 mod retry {
-    use super::NextTaskError;
-    use crate::atomic::Atomic;
-    use crate::bee::{Context, Queen, Worker};
-    use crate::hive::delay::DelayQueue;
-    use crate::hive::{Husk, LocalQueues, OutcomeSender, Shared, Task};
-    use std::time::{Duration, Instant};
+    use crate::bee::{Queen, Worker};
+    use crate::hive::{GlobalQueue, LocalQueues, OutcomeSender, Shared, Task, TaskId};
+    use std::time::Instant;
 
-    impl<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> Shared<W, Q, L> {
-        /// Initializes the retry queues worker threads in the specified range.
-        pub(super) fn init_retry_queues(&self, start_index: usize, end_index: usize) {
-            let mut retry_queues = self.retry_queues.write();
-            assert_eq!(retry_queues.len(), start_index);
-            (start_index..end_index).for_each(|_| retry_queues.push(DelayQueue::default()))
-        }
-
+    impl<W, Q, G, L> Shared<W, Q, G, L>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        G: GlobalQueue<W>,
+        L: LocalQueues<W, G>,
+    {
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
         /// given `ctx` is less than the maximum number of retries.
-        pub fn can_retry(&self, ctx: &Context) -> bool {
+        pub fn can_retry(&self, attempt: u32) -> bool {
             self.config
                 .max_retries
                 .get()
-                .map(|max_retries| ctx.attempt() < max_retries)
+                .map(|max_retries| attempt < max_retries)
                 .unwrap_or(false)
         }
 
-        /// Adds a task to the retry queue with a delay based on `ctx.attempt()`.
-        pub fn queue_retry(
+        /// Adds a task with the given `task_id`, `input`, and `outcome_tx` to the local retry
+        /// queue for the specified `thread_index`.
+        pub fn send_retry(
             &self,
-            thread_index: usize,
+            task_id: TaskId,
             input: W::Input,
-            ctx: Context,
             outcome_tx: Option<OutcomeSender<W>>,
+            attempt: u32,
+            thread_index: usize,
         ) -> Option<Instant> {
-            // compute the delay
-            let delay = self
-                .config
-                .retry_factor
-                .get()
-                .map(|retry_factor| {
-                    2u64.checked_pow(ctx.attempt() - 1)
-                        .and_then(|multiplier| {
-                            retry_factor
-                                .checked_mul(multiplier)
-                                .or(Some(u64::MAX))
-                                .map(Duration::from_nanos)
-                        })
-                        .unwrap()
-                })
-                .unwrap_or_default();
-            // try to queue the task
-            let task = Task::new(input, ctx, outcome_tx);
             self.num_tasks
                 .increment_left(1)
                 .expect("overflowed queued task counter");
-            if let Some(queue) = self.retry_queues.read().get(thread_index) {
-                queue.push(task, delay)
-            } else {
-                Err(task)
-            }
-            // if unable to queue the task, abandon it
-            .map_err(|task| self.abandon_task(task))
-            .ok()
-        }
-
-        /// Returns the next queued `Task`. The thread blocks until a new task becomes available,
-        /// and since this requires holding a lock on the task `Reciever`, this also blocks any
-        /// other threads that call this method. Returns an error if the task `Sender` has hung up
-        /// and there are no tasks queued for retry.
-        pub fn next_task(&self, thread_index: usize) -> Result<Task<W>, NextTaskError> {
-            loop {
-                self.resume_gate.wait_while(|| self.is_suspended());
-
-                if self.is_poisoned() {
-                    return Err(NextTaskError::Poisoned);
-                }
-
-                if let Some(task) = self
-                    .retry_queues
-                    .read()
-                    .get(thread_index)
-                    .and_then(|queue| queue.try_pop())
-                {
-                    break Ok(task);
-                }
-
-                if let Some(result) = self.get_task(thread_index) {
-                    break result;
-                }
-            }
-            .and_then(|task| match self.num_tasks.transfer(1) {
-                Ok(_) => Ok(task),
-                Err(e) => Err(NextTaskError::InvalidCounter(e)),
-            })
-        }
-
-        /// Drains all queued tasks, converts them into `Outcome::Unprocessed` outcomes, and tries
-        /// to send them or (if the task does not have a sender, or if the send fails) stores them
-        /// in the `outcomes` map.
-        pub fn drain_tasks_into_unprocessed(&self) {
-            let mut outcomes = self.outcomes.lock();
-            let task_rx = self.task_rx.lock();
-            super::send_or_store(task_rx.try_iter(), &mut outcomes);
-            let mut retry_queue = self.retry_queues.write();
-            for queue in retry_queue.iter_mut() {
-                super::send_or_store(queue.drain(), &mut outcomes);
-            }
-        }
-
-        /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
-        /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
-        /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
-        /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
-        pub fn try_into_husk(self) -> Husk<W, Q> {
-            let mut outcomes = self.outcomes.into_inner();
-            let task_rx = self.task_rx.into_inner();
-            super::send_or_store(task_rx.try_iter(), &mut outcomes);
-            let mut retry_queue = self.retry_queues.into_inner();
-            for queue in retry_queue.iter_mut() {
-                super::send_or_store(queue.drain(), &mut outcomes);
-            }
-            Husk::new(
-                self.config.into_unsync(),
-                self.queen.into_inner(),
-                self.num_panics.into_inner(),
-                outcomes,
-            )
+            let task = Task::with_attempt(task_id, input, outcome_tx, attempt);
+            self.local_queues.retry(task, thread_index, &self)
         }
     }
 }
@@ -783,13 +635,15 @@ mod retry {
 mod tests {
     use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
-    use crate::hive::LocalQueuesImpl;
+    use crate::hive::task::ChannelGlobalQueue;
+    use crate::hive::ChannelLocalQueues;
 
     type VoidThunkWorker = ThunkWorker<()>;
     type VoidThunkWorkerShared = super::Shared<
         VoidThunkWorker,
         DefaultQueen<VoidThunkWorker>,
-        LocalQueuesImpl<VoidThunkWorker>,
+        ChannelGlobalQueue<VoidThunkWorker>,
+        ChannelLocalQueues<VoidThunkWorker>,
     >;
 
     #[test]

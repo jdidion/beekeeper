@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 pub struct DelayQueue<T>(UnsafeCell<BinaryHeap<Delayed<T>>>);
 
 impl<T> DelayQueue<T> {
+    /// Returns the number of items currently in the queue.
+    pub fn len(&self) -> usize {
+        unsafe { self.0.get().as_ref().unwrap().len() }
+    }
+
     /// Pushes an item onto the queue. Returns the `Instant` at which the item will be available,
     /// or an error with `item` if there was an error pushing the item.
     pub fn push(&self, item: T, delay: Duration) -> Result<Instant, T> {
@@ -119,12 +124,6 @@ impl<T> Eq for Delayed<T> {}
 mod tests {
     use super::DelayQueue;
     use std::{thread, time::Duration};
-
-    impl<T> DelayQueue<T> {
-        fn len(&self) -> usize {
-            unsafe { self.0.get().as_ref().unwrap().len() }
-        }
-    }
 
     #[test]
     fn test_works() {

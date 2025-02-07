@@ -5,7 +5,9 @@ use std::fmt::Debug;
 
 /// The possible outcomes of a task execution.
 ///
-/// Each outcome includes the task ID of the task that produced it.
+/// Each outcome includes the task ID of the task that produced it. Tasks that submitted
+/// subtasks (via [`crate::bee::Context::submit_task`]) produce `Outcome` variants that have
+/// `subtask_ids`.
 ///
 /// Note that `Outcome`s can only be compared or ordered with other `Outcome`s produced by the same
 /// `Hive`, because comparison/ordering is completely based on the task ID.
@@ -13,6 +15,13 @@ use std::fmt::Debug;
 pub enum Outcome<W: Worker> {
     /// The task was executed successfully.
     Success { value: W::Output, task_id: TaskId },
+    /// The task was executed successfully, and it also submitted one or more subtask_ids to the
+    /// `Hive`.
+    SuccessWithSubtasks {
+        value: W::Output,
+        task_id: TaskId,
+        subtask_ids: Vec<TaskId>,
+    },
     /// The task failed with an error that was not retryable. The input value that caused the
     /// failure is provided if possible.
     Failure {
@@ -20,9 +29,24 @@ pub enum Outcome<W: Worker> {
         error: W::Error,
         task_id: TaskId,
     },
+    /// The task failed with an error that was not retryable, but it submitted one or more subtask_ids
+    /// before failing. The input value that caused the failure is provided if possible.
+    FailureWithSubtasks {
+        input: Option<W::Input>,
+        error: W::Error,
+        task_id: TaskId,
+        subtask_ids: Vec<TaskId>,
+    },
     /// The task was not executed before the Hive was dropped, or processing of the task was
     /// interrupted (e.g., by `suspend`ing the `Hive`).
     Unprocessed { input: W::Input, task_id: TaskId },
+    /// The task was not executed before the Hive was dropped, or processing of the task was
+    /// interrupted (e.g., by `suspend`ing the `Hive`), but it first submitted one or more subtask_ids.
+    UnprocessedWithSubtasks {
+        input: W::Input,
+        task_id: TaskId,
+        subtask_ids: Vec<TaskId>,
+    },
     /// The task with the given task_id was not found in the `Hive` or iterator from which it was
     /// being requested.
     Missing { task_id: TaskId },
@@ -31,6 +55,14 @@ pub enum Outcome<W: Worker> {
         input: Option<W::Input>,
         payload: Panic<String>,
         task_id: TaskId,
+    },
+    /// The task panicked, but it submitted one or more subtask_ids before panicking. The input value
+    /// that caused the panic is provided if possible.
+    PanicWithSubtasks {
+        input: Option<W::Input>,
+        payload: Panic<String>,
+        task_id: TaskId,
+        subtask_ids: Vec<TaskId>,
     },
     /// The task failed after retrying the maximum number of times.
     #[cfg(feature = "retry")]
@@ -42,11 +74,28 @@ pub enum Outcome<W: Worker> {
 }
 
 impl<W: Worker> Outcome<W> {
-    /// Converts a worker `result` into an `Outcome` with the given task_id.
-    pub(in crate::hive) fn from_worker_result(result: WorkerResult<W>, task_id: TaskId) -> Self {
-        match result {
-            Ok(value) => Self::Success { task_id, value },
-            Err(ApplyError::Retryable { input, error }) => {
+    /// Converts a worker `result` into an `Outcome` with the given task_id and optional subtask ids.
+    pub(in crate::hive) fn from_worker_result(
+        result: WorkerResult<W>,
+        task_id: TaskId,
+        subtask_ids: Option<Vec<TaskId>>,
+    ) -> Self {
+        match (result, subtask_ids) {
+            (Ok(value), Some(subtask_ids)) => Self::SuccessWithSubtasks {
+                value,
+                task_id,
+                subtask_ids,
+            },
+            (Ok(value), None) => Self::Success { value, task_id },
+            (Err(ApplyError::Retryable { input, error, .. }), Some(subtask_ids)) => {
+                Self::FailureWithSubtasks {
+                    input: Some(input),
+                    error,
+                    task_id,
+                    subtask_ids,
+                }
+            }
+            (Err(ApplyError::Retryable { input, error }), None) => {
                 #[cfg(feature = "retry")]
                 {
                     Self::MaxRetriesAttempted {
@@ -64,13 +113,36 @@ impl<W: Worker> Outcome<W> {
                     }
                 }
             }
-            Err(ApplyError::Fatal { input, error }) => Self::Failure {
+            (Err(ApplyError::Fatal { input, error }), Some(subtask_ids)) => {
+                Self::FailureWithSubtasks {
+                    input,
+                    error,
+                    task_id,
+                    subtask_ids,
+                }
+            }
+            (Err(ApplyError::Fatal { input, error }), None) => Self::Failure {
                 input,
                 error,
                 task_id,
             },
-            Err(ApplyError::Cancelled { input }) => Self::Unprocessed { input, task_id },
-            Err(ApplyError::Panic { input, payload }) => Self::Panic {
+            (Err(ApplyError::Cancelled { input }), Some(subtask_ids)) => {
+                Self::UnprocessedWithSubtasks {
+                    input,
+                    task_id,
+                    subtask_ids,
+                }
+            }
+            (Err(ApplyError::Cancelled { input }), None) => Self::Unprocessed { input, task_id },
+            (Err(ApplyError::Panic { input, payload }), Some(subtask_ids)) => {
+                Self::PanicWithSubtasks {
+                    input,
+                    payload,
+                    task_id,
+                    subtask_ids,
+                }
+            }
+            (Err(ApplyError::Panic { input, payload }), None) => Self::Panic {
                 input,
                 payload,
                 task_id,
@@ -102,12 +174,28 @@ impl<W: Worker> Outcome<W> {
     pub fn task_id(&self) -> &TaskId {
         match self {
             Self::Success { task_id, .. }
+            | Self::SuccessWithSubtasks { task_id, .. }
             | Self::Failure { task_id, .. }
+            | Self::FailureWithSubtasks { task_id, .. }
             | Self::Unprocessed { task_id, .. }
+            | Self::UnprocessedWithSubtasks { task_id, .. }
             | Self::Missing { task_id }
-            | Self::Panic { task_id, .. } => task_id,
+            | Self::Panic { task_id, .. }
+            | Self::PanicWithSubtasks { task_id, .. } => task_id,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { task_id, .. } => task_id,
+        }
+    }
+
+    /// Returns the IDs of the tasks submitted by the task that produced this outcome, or `None`
+    /// if the task did not submit any subtasks.
+    pub fn subtask_ids(&self) -> Option<&Vec<TaskId>> {
+        match self {
+            Self::SuccessWithSubtasks { subtask_ids, .. }
+            | Self::FailureWithSubtasks { subtask_ids, .. }
+            | Self::UnprocessedWithSubtasks { subtask_ids, .. }
+            | Self::PanicWithSubtasks { subtask_ids, .. } => Some(subtask_ids),
+            _ => None,
         }
     }
 
@@ -127,11 +215,14 @@ impl<W: Worker> Outcome<W> {
     /// Consumes this `Outcome` and returns the input value if available, otherwise `None`.
     pub fn try_into_input(self) -> Option<W::Input> {
         match self {
-            Self::Success { .. } => None,
-            Self::Failure { input, .. } => input,
-            Self::Unprocessed { input, .. } => Some(input),
-            Self::Missing { .. } => None,
-            Self::Panic { input, .. } => input,
+            Self::Failure { input, .. }
+            | Self::FailureWithSubtasks { input, .. }
+            | Self::Panic { input, .. }
+            | Self::PanicWithSubtasks { input, .. } => input,
+            Self::Unprocessed { input, .. } | Self::UnprocessedWithSubtasks { input, .. } => {
+                Some(input)
+            }
+            Self::Success { .. } | Self::SuccessWithSubtasks { .. } | Self::Missing { .. } => None,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { input, .. } => Some(input),
         }
@@ -143,11 +234,15 @@ impl<W: Worker> Outcome<W> {
     /// * Otherwise returns `None`.
     pub fn try_into_error(self) -> Option<W::Error> {
         match self {
-            Self::Success { .. } => None,
-            Self::Failure { error, .. } => Some(error),
-            Self::Unprocessed { .. } => None,
-            Self::Missing { .. } => None,
-            Self::Panic { payload, .. } => payload.resume(),
+            Self::Failure { error, .. } | Self::FailureWithSubtasks { error, .. } => Some(error),
+            Self::Panic { payload, .. } | Self::PanicWithSubtasks { payload, .. } => {
+                payload.resume()
+            }
+            Self::Success { .. }
+            | Self::SuccessWithSubtasks { .. }
+            | Self::Unprocessed { .. }
+            | Self::UnprocessedWithSubtasks { .. }
+            | Self::Missing { .. } => None,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { error, .. } => Some(error),
         }
@@ -157,11 +252,27 @@ impl<W: Worker> Outcome<W> {
 impl<W: Worker> PartialEq for Outcome<W> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Success { task_id: a, .. }, Self::Success { task_id: b, .. }) => a == b,
-            (Self::Failure { task_id: a, .. }, Self::Failure { task_id: b, .. }) => a == b,
-            (Self::Unprocessed { task_id: a, .. }, Self::Unprocessed { task_id: b, .. }) => a == b,
-            (Self::Missing { task_id: a }, Self::Missing { task_id: b }) => a == b,
-            (Self::Panic { task_id: a, .. }, Self::Panic { task_id: b, .. }) => a == b,
+            (Self::Success { task_id: a, .. }, Self::Success { task_id: b, .. })
+            | (
+                Self::SuccessWithSubtasks { task_id: a, .. },
+                Self::SuccessWithSubtasks { task_id: b, .. },
+            )
+            | (Self::Failure { task_id: a, .. }, Self::Failure { task_id: b, .. })
+            | (
+                Self::FailureWithSubtasks { task_id: a, .. },
+                Self::FailureWithSubtasks { task_id: b, .. },
+            )
+            | (Self::Unprocessed { task_id: a, .. }, Self::Unprocessed { task_id: b, .. })
+            | (
+                Self::UnprocessedWithSubtasks { task_id: a, .. },
+                Self::UnprocessedWithSubtasks { task_id: b, .. },
+            )
+            | (Self::Missing { task_id: a }, Self::Missing { task_id: b })
+            | (Self::Panic { task_id: a, .. }, Self::Panic { task_id: b, .. })
+            | (
+                Self::PanicWithSubtasks { task_id: a, .. },
+                Self::PanicWithSubtasks { task_id: b, .. },
+            ) => a == b,
             #[cfg(feature = "retry")]
             (
                 Self::MaxRetriesAttempted { task_id: a, .. },

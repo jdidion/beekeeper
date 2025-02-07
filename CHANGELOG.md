@@ -2,8 +2,11 @@
 
 ## 0.3.0
 
+* **Breaking**
+  * `beekeeper::bee::Context` has been changed from a struct to a trait, and `beekeeper::bee::Worker` now has a generic parameter for the `Context` type.
 * Features
   * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
+  * Added the `Context::submit` method, which enables tasks to submit new tasks to the `Hive`.
 * Other
   * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention
 

@@ -404,9 +404,9 @@ pub mod prelude {
 use self::counter::DualCounter;
 use self::gate::{Gate, PhasedGate};
 use self::outcome::{DerefOutcomes, OwnedOutcomes};
-use self::task::LocalQueuesImpl;
+use self::task::{ChannelGlobalQueue, ChannelLocalQueues};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
-use crate::bee::{Context, Queen, TaskId, Worker};
+use crate::bee::{Queen, TaskId, Worker};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Error as SpawnError;
@@ -423,26 +423,23 @@ type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 /// A pool of worker threads that each execute the same function.
 ///
 /// See the [module documentation](crate::hive) for details.
-pub struct Hive<W: Worker, Q: Queen<Kind = W>>(Option<HiveInner<W, Q>>);
-
-/// A `Hive`'s inner state. Wraps a) the `Hive`'s reference to the `Shared` data (which is shared
-/// with the worker threads) and b) the `Sender<Task<W>>`, which is the sending end of the channel
-/// used to send tasks to the worker threads.
-struct HiveInner<W: Worker, Q: Queen<Kind = W>> {
-    task_tx: TaskSender<W>,
-    shared: Arc<Shared<W, Q, LocalQueuesImpl<W>>>,
-}
+pub struct Hive<W: Worker, Q: Queen<Kind = W>>(
+    Option<Arc<Shared<W, Q, ChannelGlobalQueue<W>, ChannelLocalQueues<W>>>>,
+);
 
 /// Type alias for the input task channel sender
-type TaskSender<W> = std::sync::mpsc::Sender<Task<W>>;
+type TaskSender<W> = crossbeam_channel::Sender<Task<W>>;
 /// Type alias for the input task channel receiver
-type TaskReceiver<W> = std::sync::mpsc::Receiver<Task<W>>;
+type TaskReceiver<W> = crossbeam_channel::Receiver<Task<W>>;
 
 /// Internal representation of a task to be processed by a `Hive`.
+#[derive(Debug)]
 struct Task<W: Worker> {
+    id: TaskId,
     input: W::Input,
-    ctx: Context,
     outcome_tx: Option<OutcomeSender<W>>,
+    #[cfg(feature = "retry")]
+    attempt: u32,
 }
 
 /// Core configuration parameters that are set by a `Builder`, used in a `Hive`, and preserved in a
@@ -471,13 +468,15 @@ struct Config {
 }
 
 /// Data shared by all worker threads in a `Hive`.
-struct Shared<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
+struct Shared<W: Worker, Q: Queen<Kind = W>, G: GlobalQueue<W>, L: LocalQueues<W, G>> {
     /// core configuration parameters
     config: Config,
+    /// global task queue used by the `Hive` to send tasks to the worker threads
+    global_queue: G,
+    /// local queues used by worker threads to manage tasks
+    local_queues: L,
     /// the `Queen` used to create new workers
     queen: Mutex<Q>,
-    /// receiver for the channel used by the `Hive` to send tasks to the worker threads
-    task_rx: Mutex<TaskReceiver<W>>,
     /// The results of spawning each worker
     spawn_results: Mutex<Vec<Result<JoinHandle<()>, SpawnError>>>,
     /// allows for 2^48 queued tasks and 2^16 active tasks
@@ -494,7 +493,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
     poisoned: AtomicBool,
     /// whether the hive is suspended - if true, active tasks may complete and new tasks may be
     /// queued, but new tasks will not be processed
-    suspended: Arc<AtomicBool>,
+    suspended: AtomicBool,
     /// gate used by worker threads to wait until the hive is resumed
     resume_gate: Gate,
     /// gate used by client threads to wait until all tasks have completed
@@ -502,14 +501,94 @@ struct Shared<W: Worker, Q: Queen<Kind = W>, L: LocalQueues<W>> {
     /// outcomes stored in the hive
     /// TODO: switch to using thread-local outcome maps that need to be gathered when extracting
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
-    /// local queues used by worker threads to manage tasks
-    local_queues: L,
 }
 
-/// Trait that provides access to thread-specific queues for managing tasks. Ideally, these queues
-/// would be managed in a global thread-local data structure, but it has a generic type that
-/// requires it to be stored within the Hive's shared data.
-trait LocalQueues<W: Worker>: Sized + Default + Send + Sync + 'static {}
+#[derive(thiserror::Error, Debug)]
+pub enum GlobalPopError {
+    #[error("Task queue is closed")]
+    Closed,
+    #[error("The hive has been poisoned")]
+    Poisoned,
+}
+
+/// Trait that provides access to a global queue for receiving tasks.
+trait GlobalQueue<W: Worker>: Sized + Send + Sync + 'static {
+    /// Tries to add a task to the global queue.
+    ///
+    /// Returns an error if the queue is disconnected.
+    fn try_push(&self, task: Task<W>) -> Result<(), Task<W>>;
+
+    /// Tries to take a task from the global queue.
+    ///
+    /// Returns `None` if a task is not available, where each implementation may have a different
+    /// definition of "available".
+    ///
+    /// Returns an error if the queue is disconnected.
+    fn try_pop(&self) -> Option<Result<Task<W>, GlobalPopError>>;
+
+    /// Drains all tasks from the global queue and returns them as an iterator.
+    fn drain(&self) -> Vec<Task<W>>;
+
+    /// Closes this `GlobalQueue` so no more tasks may be pushed.
+    fn close(&self);
+}
+
+/// Trait that provides access to thread-specific queues for managing tasks.
+///
+/// Ideally, these queues would be managed in a global thread-local data structure, but since tasks
+/// are `Worker`-specific, each `Hive` must have it's own set of queues stored within the Hive's
+/// shared data.
+trait LocalQueues<W: Worker, G: GlobalQueue<W>>: Sized + Default + Send + Sync + 'static {
+    /// Initializes the local queues for the given range of worker thread indices.
+    fn init_for_threads<Q: Queen<Kind = W>>(
+        &self,
+        start_index: usize,
+        end_index: usize,
+        shared: &Shared<W, Q, G, Self>,
+    );
+
+    /// Changes the size of the local queues to `size`.
+    #[cfg(feature = "batching")]
+    fn resize<Q: Queen<Kind = W>>(
+        &self,
+        start_index: usize,
+        end_index: usize,
+        new_size: usize,
+        shared: &Shared<W, Q, G, Self>,
+    );
+
+    /// Attempts to add a task to the local queue if space is available, otherwise adds it to the
+    /// global queue. If adding to the global queue fails, the task is abandoned (converted to an
+    /// `Unprocessed` outcome and sent to the outcome channel or stored in the hive).
+    fn push<Q: Queen<Kind = W>>(
+        &self,
+        task: Task<W>,
+        thread_index: usize,
+        shared: &Shared<W, Q, G, Self>,
+    );
+
+    /// Attempts to remove a task from the local queue for the given worker thread index.
+    ///
+    /// Returns `None` if there is no task immediately available.
+    fn try_pop<Q: Queen<Kind = W>>(
+        &self,
+        thread_index: usize,
+        shared: &Shared<W, Q, G, Self>,
+    ) -> Option<Task<W>>;
+
+    /// Drains all tasks from all local queues and returns them as an iterator.
+    fn drain(&self) -> Vec<Task<W>>;
+
+    /// Attempts to add `task` to the local retry queue. Returns the earliest `Instant` at which it
+    /// might be retried.
+    #[cfg(feature = "retry")]
+    fn retry<Q: Queen<Kind = W>>(
+        &self,
+        task: Task<W>,
+        thread_index: usize,
+        shared: &Shared<W, Q, G, Self>,
+    ) -> Option<std::time::Instant>;
+}
 
 #[cfg(test)]
 mod tests {
@@ -568,7 +647,7 @@ mod tests {
         let hive = thunk_hive::<u8>(0);
         // check that with 0 threads no tasks are scheduled
         let (tx, rx) = super::outcome_channel();
-        let _ = hive.apply_send(Thunk::of(|| 0), tx);
+        let _ = hive.apply_send(Thunk::of(|| 0), &tx);
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().0, 1);
         assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
@@ -637,7 +716,11 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply_ref(&mut self, input: &Self::Input, ctx: &Context) -> RefWorkerResult<Self> {
+        fn apply_ref(
+            &mut self,
+            input: &Self::Input,
+            ctx: &Context<Self::Input>,
+        ) -> RefWorkerResult<Self> {
             for _ in 0..3 {
                 thread::sleep(Duration::from_secs(1));
                 if ctx.is_cancelled() {
@@ -702,7 +785,7 @@ mod tests {
         let (tx, _) = super::outcome_channel();
         // Panic all the existing threads.
         for _ in 0..TEST_TASKS {
-            hive.apply_send(Thunk::of(|| panic!("intentional panic")), tx.clone());
+            hive.apply_send(Thunk::of(|| panic!("intentional panic")), &tx);
         }
         hive.join();
         // Ensure that none of the threads have panicked
@@ -721,7 +804,7 @@ mod tests {
         let (tx, rx) = super::outcome_channel();
         // Panic all the existing threads.
         for i in 0..TEST_TASKS {
-            hive.apply_send(i as u8, tx.clone());
+            hive.apply_send(i as u8, &tx);
         }
         hive.join();
         // Ensure that none of the threads have panicked
@@ -1042,7 +1125,7 @@ mod tests {
                     i
                 })
             }),
-            tx,
+            &tx,
         );
         let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
@@ -1130,7 +1213,7 @@ mod tests {
                     i
                 })
             }),
-            tx,
+            &tx,
         );
         let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
@@ -1202,7 +1285,7 @@ mod tests {
             .num_threads(4)
             .build_with(Caller::of(|i| i * i));
         let (tx, rx) = super::outcome_channel();
-        let (mut task_ids, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
+        let (mut task_ids, state) = hive.scan_send(0..10, &tx, 0, |acc, i| {
             *acc += i;
             *acc
         });
@@ -1237,7 +1320,7 @@ mod tests {
             .num_threads(4)
             .build_with(Caller::of(|i| i * i));
         let (tx, rx) = super::outcome_channel();
-        let (results, state) = hive.try_scan_send(0..10, tx, 0, |acc, i| {
+        let (results, state) = hive.try_scan_send(0..10, &tx, 0, |acc, i| {
             *acc += i;
             Ok::<_, String>(*acc)
         });
@@ -1275,7 +1358,7 @@ mod tests {
             .build_with(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)));
         let (tx, _) = super::outcome_channel();
         let _ = hive
-            .try_scan_send(0..10, tx, 0, |_, _| Err("fail"))
+            .try_scan_send(0..10, &tx, 0, |_, _| Err("fail"))
             .0
             .into_iter()
             .map(Result::unwrap)
@@ -1608,7 +1691,7 @@ mod tests {
 
         // return results to your own channel...
         let (tx, rx) = crate::hive::outcome_channel();
-        let task_ids = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), tx);
+        let task_ids = hive.swarm_send((0..10).map(|i: i32| Thunk::of(move || i * i)), &tx);
         let outputs: Vec<_> = rx.select_unordered_outputs(task_ids).collect();
         assert_eq!(285, outputs.into_iter().sum());
 
@@ -1652,7 +1735,7 @@ mod tests {
             type Output = String;
             type Error = io::Error;
 
-            fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+            fn apply(&mut self, input: Self::Input, _: &Context<u8>) -> WorkerResult<Self> {
                 self.write_char(input).map_err(|error| ApplyError::Fatal {
                     input: Some(input),
                     error,
@@ -1816,7 +1899,7 @@ mod batching_tests {
                         thread::sleep(Duration::from_millis(100));
                         thread::current().id()
                     }),
-                    tx.clone(),
+                    &tx,
                 );
                 thread::sleep(Duration::from_millis(100));
                 task_id
@@ -1830,7 +1913,7 @@ mod batching_tests {
                     thread::current().id()
                 })
             }),
-            tx.clone(),
+            &tx,
         );
         init_task_ids.into_iter().chain(rest_task_ids).collect()
     }
@@ -1932,7 +2015,7 @@ mod retry_tests {
     use crate::hive::{Builder, Outcome, OutcomeIteratorExt};
     use std::time::{Duration, SystemTime};
 
-    fn echo_time(i: usize, ctx: &Context) -> Result<String, ApplyError<usize, String>> {
+    fn echo_time(i: usize, ctx: &Context<usize>) -> Result<String, ApplyError<usize, String>> {
         let attempt = ctx.attempt();
         if attempt == 3 {
             Ok("Success".into())
@@ -1960,7 +2043,10 @@ mod retry_tests {
 
     #[test]
     fn test_retries_fail() {
-        fn sometimes_fail(i: usize, _: &Context) -> Result<String, ApplyError<usize, String>> {
+        fn sometimes_fail(
+            i: usize,
+            _: &Context<usize>,
+        ) -> Result<String, ApplyError<usize, String>> {
             match i % 3 {
                 0 => Ok("Success".into()),
                 1 => Err(ApplyError::Retryable {

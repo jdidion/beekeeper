@@ -17,7 +17,7 @@ fn bench_apply_short_task(bencher: Bencher, (num_threads, num_tasks): (&usize, &
     bencher.bench_local(|| {
         let (tx, rx) = outcome_channel();
         for i in 0..*num_tasks {
-            hive.apply_send(i, tx.clone());
+            hive.apply_send(i, &tx);
         }
         hive.join();
         rx.into_iter().take(*num_tasks).for_each(black_box_drop);

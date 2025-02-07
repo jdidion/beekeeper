@@ -20,7 +20,7 @@ impl<T: Send + Debug + 'static> Worker for ThunkWorker<T> {
     type Error = ();
 
     #[inline]
-    fn apply(&mut self, f: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, f: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         Ok(f.0.call_box())
     }
 }
@@ -41,7 +41,7 @@ impl<T: Send + Debug + 'static, E: Send + Debug + 'static> Worker for FunkWorker
     type Error = E;
 
     #[inline]
-    fn apply(&mut self, f: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, f: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         f.0.call_box()
             .map_err(|error| ApplyError::Fatal { error, input: None })
     }
@@ -63,7 +63,7 @@ impl<T: Send + Debug + 'static> Worker for PunkWorker<T> {
     type Output = T;
     type Error = ();
 
-    fn apply(&mut self, f: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, f: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         Panic::try_call_boxed(None, f.0).map_err(|payload| ApplyError::Panic {
             input: None,
             payload,

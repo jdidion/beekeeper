@@ -28,8 +28,6 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
 pub struct Orderings {
     pub load: Ordering,
     pub swap: Ordering,
-    pub fetch_update_set: Ordering,
-    pub fetch_update_fetch: Ordering,
     pub fetch_add: Ordering,
     pub fetch_sub: Ordering,
 }
@@ -39,8 +37,6 @@ impl Default for Orderings {
         Orderings {
             load: Ordering::Acquire,
             swap: Ordering::Release,
-            fetch_update_set: Ordering::AcqRel,
-            fetch_update_fetch: Ordering::Acquire,
             fetch_add: Ordering::AcqRel,
             fetch_sub: Ordering::AcqRel,
         }

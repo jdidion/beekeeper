@@ -57,7 +57,7 @@ where
     type Error = ();
 
     #[inline]
-    fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         Ok((self.0.f)(input))
     }
 }
@@ -110,7 +110,7 @@ where
     type Error = E;
 
     #[inline]
-    fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         (self.0.f)(input).map_err(|error| ApplyError::Fatal { error, input: None })
     }
 }
@@ -167,7 +167,11 @@ where
     type Error = E;
 
     #[inline]
-    fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
+    fn apply_ref(
+        &mut self,
+        input: &Self::Input,
+        _: &Context<Self::Input>,
+    ) -> RefWorkerResult<Self> {
         (self.0.f)(input).map_err(|error| ApplyRefError::Fatal(error))
     }
 }
@@ -203,7 +207,7 @@ impl<I, O, E, F> RetryCaller<I, O, E, F> {
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + Debug + 'static,
-        F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>> + Clone + 'static,
+        F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Clone + 'static,
     {
         RetryCaller(Callable::of(f))
     }
@@ -214,14 +218,14 @@ where
     I: Send + 'static,
     O: Send + 'static,
     E: Send + Debug + 'static,
-    F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>> + Clone + 'static,
+    F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Clone + 'static,
 {
     type Input = I;
     type Output = O;
     type Error = E;
 
     #[inline]
-    fn apply(&mut self, input: Self::Input, ctx: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, ctx: &Context<Self::Input>) -> WorkerResult<Self> {
         (self.0.f)(input, ctx)
     }
 }
@@ -232,7 +236,7 @@ impl<I, O, E, F: Clone> Clone for RetryCaller<I, O, E, F> {
     }
 }
 
-impl<I, O, E, F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>>> Debug
+impl<I, O, E, F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>>> Debug
     for RetryCaller<I, O, E, F>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -242,7 +246,7 @@ impl<I, O, E, F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>>> Debug
 
 impl<I, O, E, F> From<F> for RetryCaller<I, O, E, F>
 where
-    F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>> + Clone + 'static,
+    F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Clone + 'static,
 {
     fn from(f: F) -> Self {
         RetryCaller(Callable::of(f))
@@ -265,9 +269,11 @@ mod tests {
         (bool, u8),
         u8,
         String,
-        impl FnMut((bool, u8), &Context) -> Result<u8, ApplyError<(bool, u8), String>> + Clone + 'static,
+        impl FnMut((bool, u8), &Context<(bool, u8)>) -> Result<u8, ApplyError<(bool, u8), String>>
+            + Clone
+            + 'static,
     > {
-        RetryCaller::of(|input: (bool, u8), _: &Context| {
+        RetryCaller::of(|input: (bool, u8), _: &Context<(bool, u8)>| {
             if input.0 {
                 Ok(input.1 + 1)
             } else {

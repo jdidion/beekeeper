@@ -354,7 +354,7 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply(&mut self, i: Self::Input, _: &Context) -> WorkerResult<Self> {
+        fn apply(&mut self, i: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
             Ok(i)
         }
     }

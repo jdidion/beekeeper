@@ -4,8 +4,6 @@ use crate::atomic::{Atomic, AtomicInt, AtomicU64, Ordering, Orderings};
 const SEQCST_ORDERING: Orderings = Orderings {
     load: Ordering::SeqCst,
     swap: Ordering::SeqCst,
-    fetch_update_set: Ordering::SeqCst,
-    fetch_update_fetch: Ordering::SeqCst,
     fetch_add: Ordering::SeqCst,
     fetch_sub: Ordering::SeqCst,
 };

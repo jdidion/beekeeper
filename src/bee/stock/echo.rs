@@ -18,7 +18,7 @@ impl<T: Send + Debug + 'static> Worker for EchoWorker<T> {
     type Error = ();
 
     #[inline]
-    fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         Ok(input)
     }
 }

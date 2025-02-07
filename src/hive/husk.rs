@@ -67,7 +67,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
     pub fn into_hive_swarm_send_unprocessed(
         mut self,
-        tx: OutcomeSender<W>,
+        tx: &OutcomeSender<W>,
     ) -> (Hive<W, Q>, Vec<TaskId>) {
         let unprocessed: Vec<_> = self
             .remove_all_unprocessed()
@@ -182,7 +182,7 @@ mod tests {
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
-        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(tx);
+        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(&tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();

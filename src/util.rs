@@ -154,7 +154,7 @@ mod retry {
         O: Send + Sync + 'static,
         E: Send + Sync + Debug + 'static,
         Inputs: IntoIterator<Item = I>,
-        F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>> + Send + Sync + Clone + 'static,
+        F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Send + Sync + Clone + 'static,
     {
         Builder::default()
             .num_threads(num_threads)
