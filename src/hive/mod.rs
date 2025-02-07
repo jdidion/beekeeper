@@ -380,7 +380,7 @@ pub use self::config::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
 };
 pub use self::husk::Husk;
-pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
+pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeQueue, OutcomeStore};
 
 /// Sender type for channel used to send task outcomes.
 pub type OutcomeSender<W> = crate::channel::Sender<Outcome<W>>;
@@ -408,7 +408,6 @@ use self::task::{ChannelGlobalQueue, ChannelLocalQueues};
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
 use crate::bee::{Queen, TaskId, Worker};
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::io::Error as SpawnError;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -499,8 +498,7 @@ struct Shared<W: Worker, Q: Queen<Kind = W>, G: GlobalQueue<W>, L: LocalQueues<W
     /// gate used by client threads to wait until all tasks have completed
     join_gate: PhasedGate,
     /// outcomes stored in the hive
-    /// TODO: switch to using thread-local outcome maps that need to be gathered when extracting
-    outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
+    outcomes: OutcomeQueue<W>,
 }
 
 #[derive(thiserror::Error, Debug)]

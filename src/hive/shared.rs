@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::thread::{Builder, JoinHandle};
-use std::{fmt, iter, mem};
+use std::{fmt, iter};
 
 impl<W, Q, G, L> Shared<W, Q, G, L>
 where
@@ -335,7 +335,7 @@ where
                     Some(outcome)
                 } {
                     outcomes
-                        .get_or_insert_with(|| self.outcomes.lock())
+                        .get_or_insert_with(|| self.outcomes.get_mut())
                         .insert(task_id, outcome);
                 }
                 task_id
@@ -451,24 +451,22 @@ where
 
     /// Returns a mutable reference to the retained task outcomes.
     pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_ {
-        self.outcomes.lock()
+        self.outcomes.get_mut()
     }
 
     /// Adds a new outcome to the retained task outcomes.
     pub fn add_outcome(&self, outcome: Outcome<W>) {
-        let mut lock = self.outcomes.lock();
-        lock.insert(*outcome.task_id(), outcome);
+        self.outcomes.push(outcome);
     }
 
     /// Removes and returns all retained task outcomes.
     pub fn take_outcomes(&self) -> HashMap<TaskId, Outcome<W>> {
-        let mut lock = self.outcomes.lock();
-        mem::take(&mut *lock)
+        self.outcomes.drain()
     }
 
     /// Removes and returns all retained `Unprocessed` outcomes.
     pub fn take_unprocessed(&self) -> Vec<Outcome<W>> {
-        let mut outcomes = self.outcomes.lock();
+        let mut outcomes = self.outcomes.get_mut();
         let unprocessed_task_ids: Vec<_> = outcomes
             .keys()
             .cloned()
