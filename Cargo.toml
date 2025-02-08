@@ -3,7 +3,7 @@ name = "beekeeper"
 description = "A full-featured worker pool library for parallelizing tasks"
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.83"
 authors = ["John Didion <github@didion.net>"]
 repository = "https://github.com/jdidion/beekeeper"
 license = "MIT OR Apache-2.0"
@@ -37,7 +37,7 @@ name = "perf"
 harness = false
 
 [features]
-default = ["batching", "retry"]
+default = ["affinity", "batching", "retry"]
 affinity = ["dep:core_affinity"]
 batching = ["dep:crossbeam-queue"]
 retry = []

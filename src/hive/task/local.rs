@@ -104,8 +104,7 @@ mod channel {
             let first = shared
                 .global_queue
                 .try_pop_timeout(Self::POP_TIMEOUT)
-                .map(Result::ok)
-                .flatten();
+                .and_then(Result::ok);
             // if we fail after trying to get one, don't keep trying to fill the queue
             if first.is_some() {
                 let batch_size = shared.batch_size();

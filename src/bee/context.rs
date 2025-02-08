@@ -16,13 +16,13 @@ pub trait TaskContext<I>: Debug {
 #[derive(Debug)]
 pub struct Context<'a, I> {
     task_id: TaskId,
-    task_ctx: Option<Box<&'a dyn TaskContext<I>>>,
+    task_ctx: Option<&'a dyn TaskContext<I>>,
     subtask_ids: Option<Vec<TaskId>>,
     #[cfg(feature = "retry")]
     attempt: u32,
 }
 
-impl<'a, I> Context<'a, I> {
+impl<I> Context<'_, I> {
     /// The task_id of this task within the `Hive`.
     pub fn task_id(&self) -> TaskId {
         self.task_id
@@ -65,7 +65,7 @@ impl<'a, I> Context<'a, I> {
 }
 
 #[cfg(not(feature = "retry"))]
-impl<'a, I> Context<'a, I> {
+impl<I> Context<'_, I> {
     /// Returns a new empty context. This is primarily useful for testing.
     pub fn empty() -> Self {
         Self {
@@ -76,7 +76,7 @@ impl<'a, I> Context<'a, I> {
     }
 
     /// Creates a new `Context` with the given task_id and shared cancellation status.
-    pub fn new(task_id: TaskId, task_ctx: Option<Box<&'a dyn TaskContext<I>>>) -> Self {
+    pub fn new(task_id: TaskId, task_ctx: Option<&'a dyn TaskContext<I>>) -> Self {
         Self {
             task_id,
             task_ctx,
@@ -105,11 +105,7 @@ impl<'a, I> Context<'a, I> {
     }
 
     /// Creates a new `Context` with the given task_id and shared cancellation status.
-    pub fn new(
-        task_id: TaskId,
-        attempt: u32,
-        task_ctx: Option<Box<&'a dyn TaskContext<I>>>,
-    ) -> Self {
+    pub fn new(task_id: TaskId, attempt: u32, task_ctx: Option<&'a dyn TaskContext<I>>) -> Self {
         Self {
             task_id,
             attempt,

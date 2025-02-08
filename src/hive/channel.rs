@@ -58,7 +58,7 @@ impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
 
     #[inline]
     fn shared(&self) -> &Arc<Shared<W, Q, ChannelGlobalQueue<W>, ChannelLocalQueues<W>>> {
-        &self.0.as_ref().unwrap()
+        self.0.as_ref().unwrap()
     }
 
     /// Attempts to increase the number of worker threads by `num_threads`. Returns the number of
@@ -733,12 +733,15 @@ mod no_affinity {
 mod affinity {
     use crate::bee::{Queen, Worker};
     use crate::hive::cores::Cores;
-    use crate::hive::{Hive, Poisoned, Shared};
+    use crate::hive::{GlobalQueue, Hive, LocalQueues, Poisoned, Shared};
 
     impl<W: Worker, Q: Queen<Kind = W>> Hive<W, Q> {
         /// Tries to pin the worker thread to a specific CPU core.
         #[inline]
-        pub(super) fn init_thread(thread_index: usize, shared: &Shared<W, Q>) {
+        pub(super) fn init_thread<G: GlobalQueue<W>, L: LocalQueues<W, G>>(
+            thread_index: usize,
+            shared: &Shared<W, Q, G, L>,
+        ) {
             if let Some(core) = shared.get_core_affinity(thread_index) {
                 core.try_pin_current();
             }
@@ -803,7 +806,7 @@ where
     outcome_tx: Option<&'a OutcomeSender<W>>,
 }
 
-impl<'a, W, Q, G, L> TaskContext<W::Input> for HiveTaskContext<'a, W, Q, G, L>
+impl<W, Q, G, L> TaskContext<W::Input> for HiveTaskContext<'_, W, Q, G, L>
 where
     W: Worker,
     Q: Queen<Kind = W>,
@@ -820,7 +823,7 @@ where
     }
 }
 
-impl<'a, W, Q, G, L> fmt::Debug for HiveTaskContext<'a, W, Q, G, L>
+impl<W, Q, G, L> fmt::Debug for HiveTaskContext<'_, W, Q, G, L>
 where
     W: Worker,
     Q: Queen<Kind = W>,
@@ -881,7 +884,7 @@ mod retry {
                 shared,
                 outcome_tx: outcome_tx.as_ref(),
             };
-            let ctx = Context::new(task_id, attempt, Some(Box::new(&task_ctx)));
+            let ctx = Context::new(task_id, attempt, Some(&task_ctx));
             // execute the task until it succeeds or we reach maximum retries - this should
             // be the only place where a panic can occur
             let result = worker.apply(input, &ctx);

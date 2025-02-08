@@ -1,4 +1,3 @@
-use super::task::ChannelGlobalQueue;
 use super::{
     Config, GlobalQueue, Husk, LocalQueues, Outcome, OutcomeSender, Shared, SpawnError, Task,
 };
@@ -198,7 +197,7 @@ where
     ) -> TaskId {
         let task = self.prepare_task(input, outcome_tx);
         let task_id = task.id();
-        self.local_queues.push(task, thread_index, &self);
+        self.local_queues.push(task, thread_index, self);
         task_id
     }
 
@@ -272,7 +271,7 @@ where
                 return None;
             }
             // try to get a task from the local queues
-            if let Some(task) = self.local_queues.try_pop(thread_index, &self) {
+            if let Some(task) = self.local_queues.try_pop(thread_index, self) {
                 break Ok(task);
             }
             // fall back to requesting a task from the global queue
@@ -501,11 +500,12 @@ where
     }
 }
 
-impl<W, Q, L> fmt::Debug for Shared<W, Q, ChannelGlobalQueue<W>, L>
+impl<W, Q, G, L> fmt::Debug for Shared<W, Q, G, L>
 where
     W: Worker,
     Q: Queen<Kind = W>,
-    L: LocalQueues<W, ChannelGlobalQueue<W>>,
+    G: GlobalQueue<W>,
+    L: LocalQueues<W, G>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
@@ -522,9 +522,15 @@ where
 mod affinity {
     use crate::bee::{Queen, Worker};
     use crate::hive::cores::{Core, Cores};
-    use crate::hive::Shared;
+    use crate::hive::{GlobalQueue, LocalQueues, Shared};
 
-    impl<W: Worker, Q: Queen<Kind = W>> Shared<W, Q> {
+    impl<W, Q, G, L> Shared<W, Q, G, L>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        G: GlobalQueue<W>,
+        L: LocalQueues<W, G>,
+    {
         /// Adds cores to which worker threads may be pinned.
         pub fn add_core_affinity(&self, new_cores: Cores) {
             let _ = self.config.affinity.try_update_with(|mut affinity| {
@@ -581,7 +587,7 @@ mod batching {
             if num_threads == 0 {
                 return prev_batch_size;
             }
-            self.local_queues.resize(0, num_threads, batch_size, &self);
+            self.local_queues.resize(0, num_threads, batch_size, self);
             prev_batch_size
         }
     }
@@ -624,7 +630,7 @@ mod retry {
                 .increment_left(1)
                 .expect("overflowed queued task counter");
             let task = Task::with_attempt(task_id, input, outcome_tx, attempt);
-            self.local_queues.retry(task, thread_index, &self)
+            self.local_queues.retry(task, thread_index, self)
         }
     }
 }

@@ -423,6 +423,7 @@ type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 ///
 /// See the [module documentation](crate::hive) for details.
 pub struct Hive<W: Worker, Q: Queen<Kind = W>>(
+    #[allow(clippy::type_complexity)]
     Option<Arc<Shared<W, Q, ChannelGlobalQueue<W>, ChannelLocalQueues<W>>>>,
 );
 
@@ -1842,7 +1843,7 @@ mod affinity_tests {
             .core_affinity(0..2)
             .build_with_default::<ThunkWorker<()>>();
 
-        channel.map_store((0..10).map(move |i| {
+        hive.map_store((0..10).map(move |i| {
             Thunk::of(move || {
                 if let Some(affininty) = core_affinity::get_core_ids() {
                     eprintln!("task {} on thread with affinity {:?}", i, affininty);
@@ -1859,7 +1860,7 @@ mod affinity_tests {
             .with_default_core_affinity()
             .build_with_default::<ThunkWorker<()>>();
 
-        channel.map_store((0..num_cpus::get()).map(move |i| {
+        hive.map_store((0..num_cpus::get()).map(move |i| {
             Thunk::of(move || {
                 if let Some(affininty) = core_affinity::get_core_ids() {
                     eprintln!("task {} on thread with affinity {:?}", i, affininty);
@@ -1897,7 +1898,7 @@ mod batching_tests {
                         thread::sleep(Duration::from_millis(100));
                         thread::current().id()
                     }),
-                    &tx,
+                    tx,
                 );
                 thread::sleep(Duration::from_millis(100));
                 task_id
@@ -1911,7 +1912,7 @@ mod batching_tests {
                     thread::current().id()
                 })
             }),
-            &tx,
+            tx,
         );
         init_task_ids.into_iter().chain(rest_task_ids).collect()
     }
