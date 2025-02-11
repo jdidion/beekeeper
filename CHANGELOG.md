@@ -2,14 +2,20 @@
 
 ## 0.3.0
 
+The general theme of this release is performance improvement by eliminating thread contention due to unnecessary locking of shared state. This required making some breaking changes to the API.
+
 * **Breaking**
+  * `beekeeper::bee::Queen::create` now takes `&self` rather than `&mut self`. There is a new type, `beekeeper::bee::QueenMut`, with a `create(&mut self)` method, and needs to be wrapped in a `beekeeper::bee::QueenCell` to implement the `Queen` trait. This enables the `Hive` to create new workers without locking in the case of a `Queen` that does not need mutable state.
   * `beekeeper::bee::Context` now takes a generic parameter that must be input type of the `Worker`.
 * Features
   * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
   * Added the `Context::submit` method, which enables tasks to submit new tasks to the `Hive`.
 * Other
+  * `beekeeper::hive::Hive` now has additional generic parameters for the global and local queue types. These default to `beekeeper::hive::ChannelGlobalQueue` and `beekeeper::hive::DefaultLocalQueues`, which provide the same behavior as before.
+    * `beekeeper::hive::ChannelHive` is the existing `Hive` implementation.
   * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention.
   * Switched to storing `Outcome`s in the hive using a data structure that does not require locking when inserting, which should reduce thread contention when using `*_store` operations.
+  * Switched to using `crossbeam_channel` for the `Hive`'s task input channel.
 
 ## 0.2.1
 

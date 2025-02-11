@@ -1,4 +1,4 @@
-use super::{Config, Hive};
+use super::{Config, Hive, QueuePair};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, Worker};
 
 /// A `Builder` for a [`Hive`](crate::hive::Hive).
@@ -259,7 +259,10 @@ impl Builder {
     /// assert_eq!(husk.queen().num_workers, 8);
     /// # }
     /// ```
-    pub fn build<Q: Queen>(self, queen: Q) -> Hive<Q::Kind, Q> {
+    pub fn build<Q: Queen, P: QueuePair<Q::Kind>>(
+        self,
+        queen: Q,
+    ) -> Hive<Q::Kind, Q, P::Global, P::Local, P> {
         Hive::new(self.0, queen)
     }
 
@@ -267,7 +270,9 @@ impl Builder {
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
     ///
     /// Returns an error if there was an error spawning the worker threads.
-    pub fn build_default<Q: Queen + Default>(self) -> Hive<Q::Kind, Q> {
+    pub fn build_default<Q: Queen + Default, P: QueuePair<Q::Kind>>(
+        self,
+    ) -> Hive<Q::Kind, Q, P::Global, P::Local, P> {
         Hive::new(self.0, Q::default())
     }
 
@@ -323,7 +328,10 @@ impl Builder {
     /// assert_eq!(sum, 8920);
     /// # }
     /// ```
-    pub fn build_with<W>(self, worker: W) -> Hive<W, CloneQueen<W>>
+    pub fn build_with<W, P: QueuePair<W>>(
+        self,
+        worker: W,
+    ) -> Hive<W, CloneQueen<W>, P::Global, P::Local, P>
     where
         W: Worker + Send + Sync + Clone,
     {
@@ -377,7 +385,9 @@ impl Builder {
     /// assert_eq!(sum, -25);
     /// # }
     /// ```
-    pub fn build_with_default<W>(self) -> Hive<W, DefaultQueen<W>>
+    pub fn build_with_default<W, P: QueuePair<W>>(
+        self,
+    ) -> Hive<W, DefaultQueen<W>, P::Global, P::Local, P>
     where
         W: Worker + Send + Sync + Default,
     {

@@ -1,5 +1,6 @@
-use super::{DerefOutcomes, Outcome};
+use super::Outcome;
 use crate::bee::{TaskId, Worker};
+use sealed::DerefOutcomes;
 
 /// Traits with methods that should only be accessed internally by public traits.
 pub mod sealed {
@@ -15,7 +16,7 @@ pub mod sealed {
         fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
 
         /// Returns a mutable reference to a map of task task_id to `Outcome`.
-        fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
+        fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_;
     }
 
     pub trait OwnedOutcomes<W: Worker>: Sized {

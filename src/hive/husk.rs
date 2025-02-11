@@ -1,6 +1,6 @@
 use super::{
     Builder, Config, DerefOutcomes, Hive, Outcome, OutcomeBatch, OutcomeSender, OutcomeStore,
-    OwnedOutcomes,
+    OwnedOutcomes, QueuePair,
 };
 use crate::bee::{Queen, TaskId, Worker};
 use std::collections::HashMap;
@@ -56,8 +56,8 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
 
     /// Consumes this `Husk` and returns a new `Hive` with the same configuration and `Queen` as
     /// the one that produced this `Husk`.
-    pub fn into_hive(self) -> Hive<W, Q> {
-        self.as_builder().build(self.queen)
+    pub fn into_hive<P: QueuePair<W>>(self) -> Hive<W, Q, P::Global, P::Local, P> {
+        self.as_builder().build::<Q, P>(self.queen)
     }
 
     /// Consumes this `Husk` and creates a new `Hive` with the same configuration as the one that
@@ -65,16 +65,16 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// be sent to `tx`. Returns the new `Hive` and the IDs of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_send_unprocessed(
+    pub fn into_hive_swarm_send_unprocessed<P: QueuePair<W>>(
         mut self,
         tx: &OutcomeSender<W>,
-    ) -> (Hive<W, Q>, Vec<TaskId>) {
+    ) -> (Hive<W, Q, P::Global, P::Local, P>, Vec<TaskId>) {
         let unprocessed: Vec<_> = self
             .remove_all_unprocessed()
             .into_iter()
             .map(|(_, input)| input)
             .collect();
-        let hive = self.as_builder().build(self.queen);
+        let hive = self.as_builder().build::<Q, P>(self.queen);
         let task_ids = hive.swarm_send(unprocessed, tx);
         (hive, task_ids)
     }
@@ -85,13 +85,15 @@ impl<W: Worker, Q: Queen<Kind = W>> Husk<W, Q> {
     /// of the tasks that were queued.
     ///
     /// This method returns a `SpawnError` if there is an error creating the new `Hive`.
-    pub fn into_hive_swarm_store_unprocessed(mut self) -> (Hive<W, Q>, Vec<TaskId>) {
+    pub fn into_hive_swarm_store_unprocessed<P: QueuePair<W>>(
+        mut self,
+    ) -> (Hive<W, Q, P::Global, P::Local, P>, Vec<TaskId>) {
         let unprocessed: Vec<_> = self
             .remove_all_unprocessed()
             .into_iter()
             .map(|(_, input)| input)
             .collect();
-        let hive = self.as_builder().build(self.queen);
+        let hive = self.as_builder().build::<Q, P>(self.queen);
         let task_ids = hive.swarm_store(unprocessed);
         (hive, task_ids)
     }
@@ -124,6 +126,7 @@ impl<W: Worker, Q: Queen<Kind = W>> OwnedOutcomes<W> for Husk<W, Q> {
 #[cfg(test)]
 mod tests {
     use crate::bee::stock::{PunkWorker, Thunk, ThunkWorker};
+    use crate::hive::queue::ChannelQueues;
     use crate::hive::{outcome_channel, Builder, Outcome, OutcomeIteratorExt, OutcomeStore};
 
     #[test]
@@ -131,7 +134,7 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>, ChannelQueues<_>>();
         let mut task_ids = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
@@ -156,12 +159,12 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>, ChannelQueues<_>>();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
-        let (hive2, _) = husk1.into_hive_swarm_store_unprocessed();
+        let (hive2, _) = husk1.into_hive_swarm_store_unprocessed::<ChannelQueues<_>>();
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
@@ -176,13 +179,13 @@ mod tests {
         // don't spin up any worker threads so that no tasks will be processed
         let hive1 = Builder::new()
             .num_threads(0)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>, ChannelQueues<_>>();
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk().unwrap();
         let (tx, rx) = outcome_channel();
-        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed(&tx);
+        let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed::<ChannelQueues<_>>(&tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
@@ -200,7 +203,7 @@ mod tests {
     fn test_into_result() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<ThunkWorker<u8>>();
+            .build_with_default::<ThunkWorker<u8>, ChannelQueues<_>>();
         hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
         let mut outputs = hive.try_into_husk().unwrap().into_parts().1.unwrap();
@@ -213,7 +216,7 @@ mod tests {
     fn test_into_result_panic() {
         let hive = Builder::new()
             .num_threads(4)
-            .build_with_default::<PunkWorker<u8>>();
+            .build_with_default::<PunkWorker<u8>, ChannelQueues<_>>();
         hive.map_store(
             (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );

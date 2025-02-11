@@ -7,7 +7,7 @@ pub type TaskId = usize;
 /// task execution.
 pub trait TaskContext<I>: Debug {
     /// Returns `true` if tasks in progress should be cancelled.
-    fn cancel_tasks(&self) -> bool;
+    fn should_cancel_tasks(&self) -> bool;
 
     /// Submits a new task to the `Hive` that is executing the current task.
     fn submit_task(&self, input: I) -> TaskId;
@@ -23,19 +23,19 @@ pub struct Context<'a, I> {
 }
 
 impl<I> Context<'_, I> {
-    /// The task_id of this task within the `Hive`.
+    /// The unique ID of this task within the `Hive`.
     pub fn task_id(&self) -> TaskId {
         self.task_id
     }
 
-    /// Returns `true` if the task has been cancelled.
+    /// Returns `true` if the current task should be cancelled.
     ///
     /// A long-running `Worker` should check this periodically and, if it returns `true`, exit
     /// early with an `ApplyError::Cancelled` result.
     pub fn is_cancelled(&self) -> bool {
         self.task_ctx
             .as_ref()
-            .map(|worker| worker.cancel_tasks())
+            .map(|worker| worker.should_cancel_tasks())
             .unwrap_or(false)
     }
 
@@ -43,7 +43,8 @@ impl<I> Context<'_, I> {
     ///
     /// If a thread-local queue is available and has capacity, the task will be added to it,
     /// otherwise it is added to the global queue. The ID of the submitted task is stored in this
-    /// `Context` and ultimately returned in the `Outcome` of the submitting task.
+    /// `Context` and ultimately returned in the `subtask_ids` of the `Outcome` of the submitting
+    /// task.
     ///
     /// The task will be submitted with the same outcome sender as the current task, or stored in
     /// the `Hive` if there is no sender.
@@ -59,13 +60,15 @@ impl<I> Context<'_, I> {
         }
     }
 
+    /// Consumes this `Context` and returns the IDs of the subtasks spawned during the execution
+    /// of the task, if any.
     pub(crate) fn into_subtask_ids(self) -> Option<Vec<TaskId>> {
         self.subtask_ids
     }
 }
 
 #[cfg(not(feature = "retry"))]
-impl<I> Context<'_, I> {
+impl<'a, I> Context<'a, I> {
     /// Returns a new empty context. This is primarily useful for testing.
     pub fn empty() -> Self {
         Self {
@@ -84,7 +87,7 @@ impl<I> Context<'_, I> {
         }
     }
 
-    /// The number of previous attempts to execute the current task.
+    /// The number of previous failed attempts to execute the current task.
     ///
     /// Always returns `0`.
     pub fn attempt(&self) -> u32 {

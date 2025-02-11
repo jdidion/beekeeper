@@ -4,7 +4,9 @@
 //! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
 //! down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
-use crate::hive::{Builder, Outcome, OutcomeBatch};
+use crate::hive::{
+    Builder, ChannelGlobalQueue, ChannelQueues, DefaultLocalQueues, Outcome, OutcomeBatch,
+};
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -30,7 +32,7 @@ where
 {
     Builder::default()
         .num_threads(num_threads)
-        .build_with(Caller::of(f))
+        .build_with::<_, ChannelQueues<_>>(Caller::of(f))
         .map(inputs)
         .map(Outcome::unwrap)
         .collect()
@@ -69,7 +71,7 @@ where
 {
     Builder::default()
         .num_threads(num_threads)
-        .build_with(OnceCaller::of(f))
+        .build_with::<_, ChannelQueues<_>>(OnceCaller::of(f))
         .map(inputs)
         .into()
 }
@@ -115,7 +117,7 @@ pub use retry::try_map_retryable;
 mod retry {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, OutcomeBatch};
+    use crate::hive::{Builder, ChannelQueues, OutcomeBatch};
     use std::fmt::Debug;
 
     /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -159,7 +161,7 @@ mod retry {
         Builder::default()
             .num_threads(num_threads)
             .max_retries(max_retries)
-            .build_with(RetryCaller::of(f))
+            .build_with::<_, ChannelQueues<_>>(RetryCaller::of(f))
             .map(inputs)
             .into()
     }

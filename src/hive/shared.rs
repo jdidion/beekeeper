@@ -1,30 +1,30 @@
 use super::{
-    Config, GlobalQueue, Husk, LocalQueues, Outcome, OutcomeSender, Shared, SpawnError, Task,
+    Config, GlobalQueue, Husk, LocalQueues, Outcome, OutcomeSender, QueuePair, Shared, SpawnError,
+    Task,
 };
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Queen, TaskId, Worker};
 use crate::channel::SenderExt;
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::thread::{Builder, JoinHandle};
 use std::{fmt, iter};
 
-impl<W, Q, G, L> Shared<W, Q, G, L>
+impl<W, Q, P> Shared<W, Q, P>
 where
     W: Worker,
     Q: Queen<Kind = W>,
-    G: GlobalQueue<W>,
-    L: LocalQueues<W, G>,
+    P: QueuePair<W>,
 {
     /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
     /// and all other fields set to their default values.
-    pub fn new(config: Config, global_queue: G, queen: Q) -> Self {
+    pub fn new(config: Config, queen: Q) -> Self {
+        let (global_queue, local_queues) = P::new();
         Shared {
             config,
+            queen,
             global_queue,
-            queen: Mutex::new(queen),
-            local_queues: Default::default(),
+            local_queues,
             spawn_results: Default::default(),
             num_tasks: Default::default(),
             next_task_id: Default::default(),
@@ -145,7 +145,7 @@ where
 
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
     pub fn create_worker(&self) -> Q::Kind {
-        self.queen.lock().create()
+        self.queen.create()
     }
 
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
@@ -180,6 +180,9 @@ where
         input: W::Input,
         outcome_tx: Option<&OutcomeSender<W>>,
     ) -> TaskId {
+        if self.config.num_threads.get_or_default() == 0 {
+            dbg!("WARNING: no worker threads are active for hive");
+        }
         let task = self.prepare_task(input, outcome_tx);
         let task_id = task.id();
         self.push_global(task);
@@ -211,6 +214,10 @@ where
         T: IntoIterator<Item = W::Input>,
         T::IntoIter: ExactSizeIterator,
     {
+        #[cfg(debug_assertions)]
+        if self.config.num_threads.get_or_default() == 0 {
+            dbg!("WARNING: no worker threads are active for hive");
+        }
         let iter = inputs.into_iter();
         let (min_size, _) = iter.size_hint();
         self.num_tasks
@@ -493,19 +500,18 @@ where
         self.drain_tasks_into_unprocessed();
         Husk::new(
             self.config.into_unsync(),
-            self.queen.into_inner(),
+            self.queen,
             self.num_panics.into_inner(),
             self.outcomes.into_inner(),
         )
     }
 }
 
-impl<W, Q, G, L> fmt::Debug for Shared<W, Q, G, L>
+impl<W, Q, P> fmt::Debug for Shared<W, Q, P>
 where
     W: Worker,
     Q: Queen<Kind = W>,
-    G: GlobalQueue<W>,
-    L: LocalQueues<W, G>,
+    P: QueuePair<W>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
@@ -522,14 +528,13 @@ where
 mod affinity {
     use crate::bee::{Queen, Worker};
     use crate::hive::cores::{Core, Cores};
-    use crate::hive::{GlobalQueue, LocalQueues, Shared};
+    use crate::hive::{QueuePair, Shared};
 
-    impl<W, Q, G, L> Shared<W, Q, G, L>
+    impl<W, Q, P> Shared<W, Q, P>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        G: GlobalQueue<W>,
-        L: LocalQueues<W, G>,
+        P: QueuePair<W>,
     {
         /// Adds cores to which worker threads may be pinned.
         pub fn add_core_affinity(&self, new_cores: Cores) {
@@ -552,14 +557,13 @@ mod affinity {
 #[cfg(feature = "batching")]
 mod batching {
     use crate::bee::{Queen, Worker};
-    use crate::hive::{GlobalQueue, LocalQueues, Shared};
+    use crate::hive::{LocalQueues, QueuePair, Shared};
 
-    impl<W, Q, G, L> Shared<W, Q, G, L>
+    impl<W, Q, P> Shared<W, Q, P>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        G: GlobalQueue<W>,
-        L: LocalQueues<W, G>,
+        P: QueuePair<W>,
     {
         /// Returns the local queue batch size.
         pub fn batch_size(&self) -> usize {
@@ -596,15 +600,14 @@ mod batching {
 #[cfg(feature = "retry")]
 mod retry {
     use crate::bee::{Queen, Worker};
-    use crate::hive::{GlobalQueue, LocalQueues, OutcomeSender, Shared, Task, TaskId};
+    use crate::hive::{LocalQueues, OutcomeSender, QueuePair, Shared, Task, TaskId};
     use std::time::Instant;
 
-    impl<W, Q, G, L> Shared<W, Q, G, L>
+    impl<W, Q, P> Shared<W, Q, P>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        G: GlobalQueue<W>,
-        L: LocalQueues<W, G>,
+        P: QueuePair<W>,
     {
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
         /// given `ctx` is less than the maximum number of retries.
@@ -639,15 +642,13 @@ mod retry {
 mod tests {
     use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
-    use crate::hive::task::ChannelGlobalQueue;
-    use crate::hive::ChannelLocalQueues;
+    use crate::hive::queue::ChannelQueues;
 
     type VoidThunkWorker = ThunkWorker<()>;
     type VoidThunkWorkerShared = super::Shared<
         VoidThunkWorker,
         DefaultQueen<VoidThunkWorker>,
-        ChannelGlobalQueue<VoidThunkWorker>,
-        ChannelLocalQueues<VoidThunkWorker>,
+        ChannelQueues<VoidThunkWorker>,
     >;
 
     #[test]

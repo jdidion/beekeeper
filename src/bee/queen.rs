@@ -1,14 +1,51 @@
 //! The Queen bee trait.
 use super::Worker;
+use parking_lot::RwLock;
 use std::marker::PhantomData;
 
-/// A trait for stateful factories that create `Worker`s.
+/// A trait for factories that create `Worker`s.
 pub trait Queen: Send + Sync + 'static {
     /// The kind of `Worker` created by this factory.
     type Kind: Worker;
 
-    /// Returns a new instance of `Self::Kind`.
+    /// Creates and returns a new instance of `Self::Kind`, *immutably*.
+    fn create(&self) -> Self::Kind;
+}
+
+/// A trait for mutable factories that create `Worker`s.
+pub trait QueenMut: Send + Sync + 'static {
+    /// The kind of `Worker` created by this factory.
+    type Kind: Worker;
+
+    /// Creates and returns a new instance of `Self::Kind`, *immutably*.
     fn create(&mut self) -> Self::Kind;
+}
+
+/// A wrapper for a `MutQueen` that implements `Queen` using an `RwLock` internally.
+pub struct QueenCell<Q: QueenMut>(RwLock<Q>);
+
+impl<Q: QueenMut> QueenCell<Q> {
+    pub fn new(mut_queen: Q) -> Self {
+        Self(RwLock::new(mut_queen))
+    }
+
+    pub fn into_inner(self) -> Q {
+        self.0.into_inner()
+    }
+}
+
+impl<Q: QueenMut> Queen for QueenCell<Q> {
+    type Kind = Q::Kind;
+
+    fn create(&self) -> Self::Kind {
+        self.0.write().create()
+    }
+}
+
+impl<Q: QueenMut + Default> Default for QueenCell<Q> {
+    fn default() -> Self {
+        Self::new(Q::default())
+    }
 }
 
 /// A `Queen` that can create a `Worker` type that implements `Default`.
@@ -49,7 +86,7 @@ pub struct DefaultQueen<W>(PhantomData<W>);
 impl<W: Worker + Send + Sync + Default> Queen for DefaultQueen<W> {
     type Kind = W;
 
-    fn create(&mut self) -> Self::Kind {
+    fn create(&self) -> Self::Kind {
         Self::Kind::default()
     }
 }
@@ -68,7 +105,7 @@ impl<W: Worker + Clone> CloneQueen<W> {
 impl<W: Worker + Send + Sync + Clone> Queen for CloneQueen<W> {
     type Kind = W;
 
-    fn create(&mut self) -> Self::Kind {
+    fn create(&self) -> Self::Kind {
         self.0.clone()
     }
 }
