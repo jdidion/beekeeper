@@ -1,7 +1,9 @@
 #[cfg(feature = "batching")]
-pub use batching::set_batch_size_default;
+pub use self::batching::set_batch_size_default;
 #[cfg(feature = "retry")]
-pub use retry::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
+pub use self::retry::{
+    set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
+};
 
 use super::Config;
 use parking_lot::Mutex;
@@ -9,8 +11,8 @@ use std::sync::LazyLock;
 
 const DEFAULT_NUM_THREADS: usize = 4;
 
-pub(super) static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
-    let mut config = Config::default();
+pub static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
+    let mut config = Config::empty();
     config.set_const_defaults();
     Mutex::new(config)
 });
@@ -35,12 +37,19 @@ pub fn reset_defaults() {
 impl Config {
     /// Creates a new `Config` with all values unset.
     pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Creates a new `Config` with default values. This simply clones `DEFAULTS`.
-    pub fn with_defaults() -> Self {
-        DEFAULTS.lock().clone()
+        Self {
+            num_threads: Default::default(),
+            thread_name: Default::default(),
+            thread_stack_size: Default::default(),
+            #[cfg(feature = "affinity")]
+            affinity: Default::default(),
+            #[cfg(feature = "batching")]
+            batch_size: Default::default(),
+            #[cfg(feature = "retry")]
+            max_retries: Default::default(),
+            #[cfg(feature = "retry")]
+            retry_factor: Default::default(),
+        }
     }
 
     /// Resets config values to their pre-configured defaults.
@@ -88,6 +97,13 @@ impl Config {
     }
 }
 
+impl Default for Config {
+    /// Creates a new `Config` with default values. This simply clones `DEFAULTS`.
+    fn default() -> Self {
+        DEFAULTS.lock().clone()
+    }
+}
+
 #[cfg(test)]
 pub mod reset {
     /// Struct that resets the default values when `drop`ped.
@@ -111,18 +127,18 @@ mod tests {
     fn test_set_num_threads_default() {
         let reset = Reset;
         super::set_num_threads_default(2);
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(2));
         // Dropping `Reset` should reset the defaults
         drop(reset);
 
         let reset = Reset;
         super::set_num_threads_default_all();
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(num_cpus::get()));
         drop(reset);
 
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(super::DEFAULT_NUM_THREADS));
     }
 }
@@ -183,7 +199,7 @@ mod retry {
     #[cfg(test)]
     mod tests {
         use super::Config;
-        use crate::hive::config::reset::Reset;
+        use crate::hive::inner::config::reset::Reset;
         use serial_test::serial;
         use std::time::Duration;
 
@@ -198,18 +214,18 @@ mod retry {
         fn test_set_max_retries_default() {
             let reset = Reset;
             super::set_max_retries_default(1);
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(1));
             // Dropping `Reset` should reset the defaults
             drop(reset);
 
             let reset = Reset;
             super::set_retries_default_disabled();
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(0));
             drop(reset);
 
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(super::DEFAULT_MAX_RETRIES));
         }
 
@@ -218,14 +234,14 @@ mod retry {
         fn test_set_retry_factor_default() {
             let reset = Reset;
             super::set_retry_factor_default(Duration::from_secs(2));
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(
                 config.get_retry_factor_duration(),
                 Some(Duration::from_secs(2))
             );
             // Dropping `Reset` should reset the defaults
             drop(reset);
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(
                 config.get_retry_factor_duration(),
                 Some(Duration::from_secs(super::DEFAULT_RETRY_FACTOR_SECS))

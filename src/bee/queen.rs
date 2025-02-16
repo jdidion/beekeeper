@@ -2,6 +2,7 @@
 use super::Worker;
 use parking_lot::RwLock;
 use std::marker::PhantomData;
+use std::ops::Deref;
 
 /// A trait for factories that create `Worker`s.
 pub trait Queen: Send + Sync + 'static {
@@ -21,12 +22,18 @@ pub trait QueenMut: Send + Sync + 'static {
     fn create(&mut self) -> Self::Kind;
 }
 
-/// A wrapper for a `MutQueen` that implements `Queen` using an `RwLock` internally.
+/// A wrapper for a `MutQueen` that implements `Queen`.
+///
+/// Interior mutability is enabled using an `RwLock`.
 pub struct QueenCell<Q: QueenMut>(RwLock<Q>);
 
 impl<Q: QueenMut> QueenCell<Q> {
     pub fn new(mut_queen: Q) -> Self {
         Self(RwLock::new(mut_queen))
+    }
+
+    pub fn get(&self) -> impl Deref<Target = Q> + '_ {
+        self.0.read()
     }
 
     pub fn into_inner(self) -> Q {
@@ -45,6 +52,12 @@ impl<Q: QueenMut> Queen for QueenCell<Q> {
 impl<Q: QueenMut + Default> Default for QueenCell<Q> {
     fn default() -> Self {
         Self::new(Q::default())
+    }
+}
+
+impl<Q: QueenMut> From<Q> for QueenCell<Q> {
+    fn from(queen: Q) -> Self {
+        Self::new(queen)
     }
 }
 

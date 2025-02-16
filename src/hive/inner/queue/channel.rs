@@ -1,25 +1,166 @@
-use std::marker::PhantomData;
-
+//! Implementation of `TaskQueues` that uses `crossbeam` channels for the global queue (i.e., for
+//! sending tasks from the `Hive` to the worker threads) and a default implementation of local
+//! queues that depends on which combination of the `retry` and `batching` features are enabled.
+use super::{PopTaskError, Task, TaskQueues, Token};
+use crate::atomic::{Atomic, AtomicBool};
 use crate::bee::{Queen, Worker};
-use crate::hive::{GlobalQueue, LocalQueues, QueuePair, Shared, Task};
+use crate::hive::inner::Shared;
+use crossbeam_channel::RecvTimeoutError;
 use parking_lot::RwLock;
+use std::time::Duration;
 
-pub struct LocalQueuesImpl<W: Worker, G: GlobalQueue<W>> {
+// time to wait in between polling the retry queue and then the task receiver
+const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Type alias for the input task channel sender
+type TaskSender<W> = crossbeam_channel::Sender<Task<W>>;
+/// Type alias for the input task channel receiver
+type TaskReceiver<W> = crossbeam_channel::Receiver<Task<W>>;
+
+pub struct ChannelTaskQueues<W: Worker> {
+    global_tx: TaskSender<W>,
+    global_rx: TaskReceiver<W>,
+    closed: AtomicBool,
     /// thread-local queues of tasks used when the `batching` feature is enabled
     #[cfg(feature = "batching")]
-    batch_queues: RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
+    local_batch_queues: RwLock<Vec<crossbeam_queue::ArrayQueue<Task<W>>>>,
     /// thread-local queues used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
-    retry_queues: RwLock<Vec<crate::hive::queue::delay::DelayQueue<Task<W>>>>,
-    /// marker for the global queue type
-    _global: PhantomData<G>,
+    local_retry_queues: RwLock<Vec<super::delay::DelayQueue<Task<W>>>>,
+}
+
+impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
+    fn new(_: Token) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        Self {
+            global_tx: tx,
+            global_rx: rx,
+            closed: AtomicBool::default(),
+            #[cfg(feature = "batching")]
+            local_batch_queues: Default::default(),
+            #[cfg(feature = "retry")]
+            local_retry_queues: Default::default(),
+        }
+    }
+
+    fn init_for_threads<Q: Queen<Kind = W>>(
+        &self,
+        start_index: usize,
+        end_index: usize,
+        #[allow(unused_variables)] shared: &Shared<Q, Self>,
+    ) {
+        #[cfg(feature = "batching")]
+        self.init_batch_queues_for_threads(start_index, end_index, shared);
+        #[cfg(feature = "retry")]
+        self.init_retry_queues_for_threads(start_index, end_index);
+    }
+
+    fn try_push_global(&self, task: Task<W>) -> Result<(), Task<W>> {
+        if !self.closed.get() {
+            self.global_tx
+                .try_send(task)
+                .map_err(|err| err.into_inner())
+        } else {
+            Err(task)
+        }
+    }
+
+    /// Creates a task from `input` and pushes it to the local queue if there is space,
+    /// otherwise attempts to add it to the global queue. Returns the task ID if the push
+    /// succeeds, otherwise returns an error with the input.
+    fn push_local<Q: Queen<Kind = W>>(
+        &self,
+        task: Task<W>,
+        #[allow(unused_variables)] thread_index: usize,
+        shared: &Shared<Q, Self>,
+    ) {
+        #[cfg(feature = "batching")]
+        let task = match self.try_push_local(task, thread_index) {
+            Ok(_) => return,
+            Err(task) => task,
+        };
+        shared.push_global(task);
+    }
+
+    /// Returns the next task from the local queue if there are any, otherwise attempts to
+    /// fetch at least 1 and up to `batch_size + 1` tasks from the input channel and puts all
+    /// but the first one into the local queue.
+    fn try_pop<Q: Queen<Kind = W>>(
+        &self,
+        thread_index: usize,
+        #[allow(unused_variables)] shared: &Shared<Q, Self>,
+    ) -> Result<Task<W>, PopTaskError> {
+        // try to get a task from the local queues
+        #[cfg(feature = "retry")]
+        if let Some(task) = self.try_pop_retry(thread_index) {
+            return Ok(task);
+        }
+        #[cfg(feature = "batching")]
+        if let Some(task) = self.try_pop_local_or_refill(thread_index, shared) {
+            return Ok(task);
+        }
+        // fall back to requesting a task from the global queue
+        self.try_pop_timeout(RECV_TIMEOUT)
+    }
+
+    fn drain(&self, _: Token) -> Vec<Task<W>> {
+        let mut tasks = Vec::from_iter(self.global_rx.try_iter());
+        #[cfg(feature = "batching")]
+        {
+            self.drain_batch_queues_into(&mut tasks);
+        }
+        #[cfg(feature = "retry")]
+        {
+            self.drain_retry_queues_into(&mut tasks);
+        }
+        tasks
+    }
+
+    #[cfg(feature = "batching")]
+    fn resize_local<Q: Queen<Kind = W>>(
+        &self,
+        start_index: usize,
+        end_index: usize,
+        new_size: usize,
+        shared: &Shared<Q, Self>,
+    ) {
+        self.resize_batch_queues(start_index, end_index, new_size, shared);
+    }
+
+    #[cfg(feature = "retry")]
+    fn retry<Q: Queen<Kind = W>>(
+        &self,
+        task: Task<W>,
+        thread_index: usize,
+        shared: &Shared<Q, Self>,
+    ) -> Option<std::time::Instant> {
+        self.try_push_retry(task, thread_index, shared)
+    }
+
+    fn close(&self, _: Token) {
+        self.closed.set(true);
+    }
+}
+
+impl<W: Worker> ChannelTaskQueues<W> {
+    #[inline]
+    fn try_pop_timeout(&self, timeout: Duration) -> Result<Task<W>, PopTaskError> {
+        match self.global_rx.recv_timeout(timeout) {
+            Ok(task) => Ok(task),
+            Err(RecvTimeoutError::Disconnected) => Err(PopTaskError::Closed),
+            Err(RecvTimeoutError::Timeout) if self.closed.get() && self.global_rx.is_empty() => {
+                Err(PopTaskError::Closed)
+            }
+            Err(RecvTimeoutError::Timeout) => Err(PopTaskError::Empty),
+        }
+    }
 }
 
 #[cfg(feature = "retry")]
-impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
+impl<W: Worker> ChannelTaskQueues<W> {
     #[inline]
     fn try_pop_retry(&self, thread_index: usize) -> Option<Task<W>> {
-        self.retry_queues
+        self.local_retry_queues
             .read()
             .get(thread_index)
             .and_then(|queue| queue.try_pop())
@@ -27,26 +168,26 @@ impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
 }
 
 #[cfg(feature = "batching")]
-impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
+impl<W: Worker> ChannelTaskQueues<W> {
     #[inline]
     fn try_push_local(&self, task: Task<W>, thread_index: usize) -> Result<(), Task<W>> {
-        self.batch_queues.read()[thread_index].push(task)
+        self.local_batch_queues.read()[thread_index].push(task)
     }
 
     #[inline]
-    fn try_pop_local_or_refill<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
+    fn try_pop_local_or_refill<Q: Queen<Kind = W>>(
         &self,
         thread_index: usize,
-        shared: &Shared<W, Q, P>,
+        shared: &Shared<Q, Self>,
     ) -> Option<Task<W>> {
-        let local_queue = &self.batch_queues.read()[thread_index];
+        let local_queue = &self.local_batch_queues.read()[thread_index];
         // pop from the local queue if it has any tasks
         if !local_queue.is_empty() {
             return local_queue.pop();
         }
         // otherwise pull at least 1 and up to `batch_size + 1` tasks from the input channel
         // wait for the next task from the receiver
-        let first = shared.global_queue.try_pop().and_then(Result::ok);
+        let first = self.try_pop_timeout(RECV_TIMEOUT).ok();
         // if we fail after trying to get one, don't keep trying to fill the queue
         if first.is_some() {
             let batch_size = shared.batch_size();
@@ -55,8 +196,8 @@ impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
                 // otherwise try to take up to `batch_size` tasks from the input channel
                 // and add them to the local queue, but don't block if the input channel
                 // is empty
-                for result in shared
-                    .global_queue
+                for result in self
+                    .global_rx
                     .try_iter()
                     .take(batch_size)
                     .map(|task| local_queue.push(task))
@@ -75,136 +216,34 @@ impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
     }
 }
 
-impl<W: Worker, G: GlobalQueue<W>> LocalQueues<W, G> for LocalQueuesImpl<W, G> {
-    fn init_for_threads<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
-        &self,
-        start_index: usize,
-        end_index: usize,
-        #[allow(unused_variables)] shared: &Shared<W, Q, P>,
-    ) {
-        #[cfg(feature = "batching")]
-        self.init_batch_queues_for_threads(start_index, end_index, shared);
-        #[cfg(feature = "retry")]
-        self.init_retry_queues_for_threads(start_index, end_index);
-    }
-
-    #[cfg(feature = "batching")]
-    fn resize<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
-        &self,
-        start_index: usize,
-        end_index: usize,
-        new_size: usize,
-        shared: &Shared<W, Q, P>,
-    ) {
-        self.resize_batch_queues(start_index, end_index, new_size, shared);
-    }
-
-    /// Creates a task from `input` and pushes it to the local queue if there is space,
-    /// otherwise attempts to add it to the global queue. Returns the task ID if the push
-    /// succeeds, otherwise returns an error with the input.
-    fn push<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
-        &self,
-        task: Task<W>,
-        #[allow(unused_variables)] thread_index: usize,
-        shared: &Shared<W, Q, P>,
-    ) {
-        #[cfg(feature = "batching")]
-        let task = match self.try_push_local(task, thread_index) {
-            Ok(_) => return,
-            Err(task) => task,
-        };
-        shared.push_global(task);
-    }
-
-    /// Returns the next task from the local queue if there are any, otherwise attempts to
-    /// fetch at least 1 and up to `batch_size + 1` tasks from the input channel and puts all
-    /// but the first one into the local queue.
-    fn try_pop<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
-        &self,
-        thread_index: usize,
-        #[allow(unused_variables)] shared: &Shared<W, Q, P>,
-    ) -> Option<Task<W>> {
-        #[cfg(feature = "retry")]
-        if let Some(task) = self.try_pop_retry(thread_index) {
-            return Some(task);
-        }
-        #[cfg(feature = "batching")]
-        if let Some(task) = self.try_pop_local_or_refill(thread_index, shared) {
-            return Some(task);
-        }
-        None
-    }
-
-    fn drain(&self) -> Vec<Task<W>> {
-        let mut tasks = Vec::new();
-        #[cfg(feature = "batching")]
-        {
-            self.drain_batch_queues_into(&mut tasks);
-        }
-        #[cfg(feature = "retry")]
-        {
-            self.drain_retry_queues_into(&mut tasks);
-        }
-        tasks
-    }
-
-    #[cfg(feature = "retry")]
-    fn retry<Q: Queen<Kind = W>, P: QueuePair<W, Global = G, Local = Self>>(
-        &self,
-        task: Task<W>,
-        thread_index: usize,
-        shared: &Shared<W, Q, P>,
-    ) -> Option<std::time::Instant> {
-        self.try_push_retry(task, thread_index, shared)
-    }
-}
-
-impl<W: Worker, G: GlobalQueue<W>> Default for LocalQueuesImpl<W, G> {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "batching")]
-            batch_queues: Default::default(),
-            #[cfg(feature = "retry")]
-            retry_queues: Default::default(),
-            _global: PhantomData,
-        }
-    }
-}
-
 #[cfg(feature = "batching")]
 mod batching {
-    use super::LocalQueuesImpl;
+    use super::{ChannelTaskQueues, Task};
     use crate::bee::{Queen, Worker};
-    use crate::hive::{GlobalQueue, QueuePair, Shared, Task};
+    use crate::hive::inner::Shared;
     use crossbeam_queue::ArrayQueue;
     use std::collections::HashSet;
     use std::time::Duration;
 
-    impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
-        pub(super) fn init_batch_queues_for_threads<
-            Q: Queen<Kind = W>,
-            P: QueuePair<W, Global = G, Local = Self>,
-        >(
+    impl<W: Worker> ChannelTaskQueues<W> {
+        pub(super) fn init_batch_queues_for_threads<Q: Queen<Kind = W>>(
             &self,
             start_index: usize,
             end_index: usize,
-            shared: &Shared<W, Q, P>,
+            shared: &Shared<Q, Self>,
         ) {
-            let mut batch_queues = self.batch_queues.write();
+            let mut batch_queues = self.local_batch_queues.write();
             assert_eq!(batch_queues.len(), start_index);
             let queue_size = shared.batch_size().max(1);
             (start_index..end_index).for_each(|_| batch_queues.push(ArrayQueue::new(queue_size)));
         }
 
-        pub(super) fn resize_batch_queues<
-            Q: Queen<Kind = W>,
-            P: QueuePair<W, Global = G, Local = Self>,
-        >(
+        pub(super) fn resize_batch_queues<Q: Queen<Kind = W>>(
             &self,
             start_index: usize,
             end_index: usize,
             batch_size: usize,
-            shared: &Shared<W, Q, P>,
+            shared: &Shared<Q, Self>,
         ) {
             // keep track of which queues need to be resized
             // TODO: this method could cause a hang if one of the worker threads is stuck - we
@@ -216,7 +255,7 @@ mod batching {
             loop {
                 // scope the mutable access to local_queues
                 {
-                    let mut batch_queues = self.batch_queues.write();
+                    let mut batch_queues = self.local_batch_queues.write();
                     to_resize.retain(|thread_index| {
                         let queue = if let Some(queue) = batch_queues.get_mut(*thread_index) {
                             queue
@@ -251,7 +290,7 @@ mod batching {
 
         pub(super) fn drain_batch_queues_into(&self, tasks: &mut Vec<Task<W>>) {
             let _ = self
-                .batch_queues
+                .local_batch_queues
                 .write()
                 .iter_mut()
                 .fold(tasks, |tasks, queue| {
@@ -267,29 +306,26 @@ mod batching {
 
 #[cfg(feature = "retry")]
 mod retry {
-    use super::LocalQueuesImpl;
+    use super::{ChannelTaskQueues, Task};
     use crate::bee::{Queen, Worker};
-    use crate::hive::queue::delay::DelayQueue;
-    use crate::hive::{GlobalQueue, QueuePair, Shared, Task};
+    use crate::hive::inner::queue::delay::DelayQueue;
+    use crate::hive::inner::Shared;
     use std::time::{Duration, Instant};
 
-    impl<W: Worker, G: GlobalQueue<W>> LocalQueuesImpl<W, G> {
+    impl<W: Worker> ChannelTaskQueues<W> {
         /// Initializes the retry queues worker threads in the specified range.
         pub(super) fn init_retry_queues_for_threads(&self, start_index: usize, end_index: usize) {
-            let mut retry_queues = self.retry_queues.write();
+            let mut retry_queues = self.local_retry_queues.write();
             assert_eq!(retry_queues.len(), start_index);
             (start_index..end_index).for_each(|_| retry_queues.push(DelayQueue::default()))
         }
 
         /// Adds a task to the retry queue with a delay based on `attempt`.
-        pub(super) fn try_push_retry<
-            Q: Queen<Kind = W>,
-            P: QueuePair<W, Global = G, Local = Self>,
-        >(
+        pub(super) fn try_push_retry<Q: Queen<Kind = W>>(
             &self,
             task: Task<W>,
             thread_index: usize,
-            shared: &Shared<W, Q, P>,
+            shared: &Shared<Q, Self>,
         ) -> Option<Instant> {
             // compute the delay
             let delay = shared
@@ -307,7 +343,7 @@ mod retry {
                         .unwrap()
                 })
                 .unwrap_or_default();
-            if let Some(queue) = self.retry_queues.read().get(thread_index) {
+            if let Some(queue) = self.local_retry_queues.read().get(thread_index) {
                 queue.push(task, delay)
             } else {
                 Err(task)
@@ -319,7 +355,7 @@ mod retry {
 
         pub(super) fn drain_retry_queues_into(&self, tasks: &mut Vec<Task<W>>) {
             let _ = self
-                .retry_queues
+                .local_retry_queues
                 .write()
                 .iter_mut()
                 .fold(tasks, |tasks, queue| {

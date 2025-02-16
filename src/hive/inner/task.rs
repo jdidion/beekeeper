@@ -1,5 +1,6 @@
-use super::{Outcome, OutcomeSender, Task};
+use super::Task;
 use crate::bee::{TaskId, Worker};
+use crate::hive::{Outcome, OutcomeSender};
 
 impl<W: Worker> Task<W> {
     /// Returns the ID of this task.

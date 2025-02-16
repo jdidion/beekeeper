@@ -1,6 +1,5 @@
 use super::Outcome;
-use crate::bee::Worker;
-use crate::hive::TaskId;
+use crate::bee::{TaskId, Worker};
 use crossbeam_queue::SegQueue;
 use parking_lot::Mutex;
 use std::collections::HashMap;

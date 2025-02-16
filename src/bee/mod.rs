@@ -115,14 +115,16 @@ mod queen;
 pub mod stock;
 mod worker;
 
-pub use context::{Context, TaskContext, TaskId};
-pub use error::{ApplyError, ApplyRefError};
-pub use queen::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut};
-pub use worker::{RefWorker, RefWorkerResult, Worker, WorkerError, WorkerResult};
+#[cfg(test)]
+pub use self::context::mock::MockTaskContext;
+pub use self::context::{Context, TaskContext, TaskId};
+pub use self::error::{ApplyError, ApplyRefError};
+pub use self::queen::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut};
+pub use self::worker::{RefWorker, RefWorkerResult, Worker, WorkerError, WorkerResult};
 
 pub mod prelude {
     pub use super::{
-        ApplyError, ApplyRefError, Context, Queen, QueenMut, RefWorker, RefWorkerResult, Worker,
-        WorkerError, WorkerResult,
+        ApplyError, ApplyRefError, Context, Queen, QueenCell, QueenMut, RefWorker, RefWorkerResult,
+        Worker, WorkerError, WorkerResult,
     };
 }

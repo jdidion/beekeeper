@@ -1,30 +1,22 @@
-use super::{
-    Config, GlobalQueue, Husk, LocalQueues, Outcome, OutcomeSender, QueuePair, Shared, SpawnError,
-    Task,
-};
+use super::{Config, PopTaskError, Shared, Task, TaskQueues, Token};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Queen, TaskId, Worker};
 use crate::channel::SenderExt;
+use crate::hive::{Husk, Outcome, OutcomeSender, SpawnError};
+use parking_lot::MutexGuard;
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::thread::{Builder, JoinHandle};
 use std::{fmt, iter};
 
-impl<W, Q, P> Shared<W, Q, P>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    P: QueuePair<W>,
-{
+impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     /// Creates a new `Shared` instance with the given configuration, queen, and task receiver,
     /// and all other fields set to their default values.
     pub fn new(config: Config, queen: Q) -> Self {
-        let (global_queue, local_queues) = P::new();
         Shared {
             config,
             queen,
-            global_queue,
-            local_queues,
+            task_queues: T::new(Token),
             spawn_results: Default::default(),
             num_tasks: Default::default(),
             next_task_id: Default::default(),
@@ -50,13 +42,18 @@ where
         builder
     }
 
+    /// Returns the current number of worker threads.
+    pub fn num_threads(&self) -> usize {
+        self.config.num_threads.get_or_default()
+    }
+
     /// Spawns the initial set of `self.config.num_threads` worker threads using the provided
     /// spawning function. Returns the number of worker threads that were successfully started.
     pub fn init_threads<F>(&self, f: F) -> usize
     where
         F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
     {
-        let num_threads = self.config.num_threads.get_or_default();
+        let num_threads = self.num_threads();
         if num_threads == 0 {
             return 0;
         }
@@ -90,7 +87,7 @@ where
         assert_eq!(spawn_results.len(), start_index);
         let end_index = start_index + num_threads;
         // if worker threads need a local queue, initialize them before spawning
-        self.local_queues
+        self.task_queues
             .init_for_threads(start_index, end_index, self);
         // spawn the worker threads and return the results
         let results: Vec<_> = (start_index..end_index).map(f).collect();
@@ -143,6 +140,10 @@ where
             .count()
     }
 
+    pub fn spawn_results(&self) -> MutexGuard<Vec<Result<JoinHandle<()>, SpawnError>>> {
+        self.spawn_results.lock()
+    }
+
     /// Returns a new `Worker` from the queen, or an error if a `Worker` could not be created.
     pub fn create_worker(&self) -> Q::Kind {
         self.queen.create()
@@ -167,7 +168,7 @@ where
         if let Some(abandoned_task) = if self.is_poisoned() {
             Some(task)
         } else {
-            self.global_queue.try_push(task).err()
+            self.task_queues.try_push_global(task).err()
         } {
             self.abandon_task(abandoned_task);
         }
@@ -180,7 +181,7 @@ where
         input: W::Input,
         outcome_tx: Option<&OutcomeSender<W>>,
     ) -> TaskId {
-        if self.config.num_threads.get_or_default() == 0 {
+        if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task = self.prepare_task(input, outcome_tx);
@@ -200,22 +201,22 @@ where
     ) -> TaskId {
         let task = self.prepare_task(input, outcome_tx);
         let task_id = task.id();
-        self.local_queues.push(task, thread_index, self);
+        self.task_queues.push_local(task, thread_index, self);
         task_id
     }
 
     /// Creates a new `Task` for each input in the given batch and sends them to the global queue.
-    pub fn send_batch_global<T>(
+    pub fn send_batch_global<I>(
         &self,
-        inputs: T,
+        inputs: I,
         outcome_tx: Option<&OutcomeSender<W>>,
     ) -> Vec<TaskId>
     where
-        T: IntoIterator<Item = W::Input>,
-        T::IntoIter: ExactSizeIterator,
+        I: IntoIterator<Item = W::Input>,
+        I::IntoIter: ExactSizeIterator,
     {
         #[cfg(debug_assertions)]
-        if self.config.num_threads.get_or_default() == 0 {
+        if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let iter = inputs.into_iter();
@@ -248,7 +249,7 @@ where
                     // try to send the task to the hive; if sending fails, convert the task into an
                     // `Unprocessed` outcome and try to send it to the outcome channel; if that
                     // fails, store the outcome in the hive
-                    if let Err(task) = self.global_queue.try_push(task) {
+                    if let Err(task) = self.task_queues.try_push_global(task) {
                         self.abandon_task(task);
                     }
                     task_id
@@ -277,18 +278,16 @@ where
             if self.is_poisoned() {
                 return None;
             }
-            // try to get a task from the local queues
-            if let Some(task) = self.local_queues.try_pop(thread_index, self) {
-                break Ok(task);
-            }
-            // fall back to requesting a task from the global queue
-            if let Some(result) = self.global_queue.try_pop() {
-                break result;
+            // get the next task from the queue - break if its closed
+            match self.task_queues.try_pop(thread_index, self) {
+                Ok(task) => break Some(task),
+                Err(PopTaskError::Closed) => break None,
+                Err(PopTaskError::Empty) => continue,
             }
         }
         // if a task was successfully received, decrement the queued counter and increment the
         // active counter
-        .map(|task| match self.num_tasks.transfer(1) {
+        .and_then(|task| match self.num_tasks.transfer(1) {
             Ok(_) => Some(task),
             Err(_) => {
                 // the hive is in a corrupted state - abandon this task and then poison the hive
@@ -298,8 +297,6 @@ where
                 None
             }
         })
-        .ok()
-        .flatten()
     }
 
     /// Sends an outcome to `outcome_tx`, or stores it in the `Hive` shared data if there is no
@@ -370,6 +367,19 @@ where
         self.no_work_notify_all();
     }
 
+    /// Returns a reference to the `Queen`.
+    ///
+    /// Note that, if the queen is a `QueenMut`, the returned value will be a `QueenCell`, and it
+    /// is necessary to call its `get()` method to obtain a reference to the inner queen.
+    pub fn queen(&self) -> &Q {
+        &self.queen
+    }
+
+    /// Returns a reference to the `Config`.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// Returns a tuple with the number of (queued, active) tasks.
     #[inline]
     pub fn num_tasks(&self) -> (u64, u64) {
@@ -397,6 +407,10 @@ where
         if !self.has_work() {
             self.join_gate.notify_all();
         }
+    }
+
+    pub fn num_panics(&self) -> usize {
+        self.num_panics.get()
     }
 
     /// Returns the number of `Hive`s holding a reference to this shared data.
@@ -488,15 +502,19 @@ where
     /// to send them or (if the task does not have a sender, or if the send fails) stores them
     /// in the `outcomes` map.
     fn drain_tasks_into_unprocessed(&self) {
-        self.abandon_batch(self.global_queue.drain().into_iter());
-        self.abandon_batch(self.local_queues.drain().into_iter());
+        self.abandon_batch(self.task_queues.drain(Token).into_iter());
+    }
+
+    /// Close the tasks queues so no more tasks can be added.
+    pub fn close(&self) {
+        self.task_queues.close(Token);
     }
 
     /// Consumes this `Shared` and returns a `Husk` containing the `Queen`, panic count, stored
     /// outcomes, and all configuration information necessary to create a new `Hive`. Any queued
     /// tasks are converted into `Outcome::Unprocessed` outcomes and either sent to the task's
     /// sender or (if there is no sender, or the send fails) stored in the `outcomes` map.
-    pub fn into_husk(self) -> Husk<W, Q> {
+    pub fn into_husk(self) -> Husk<Q> {
         self.drain_tasks_into_unprocessed();
         Husk::new(
             self.config.into_unsync(),
@@ -507,11 +525,11 @@ where
     }
 }
 
-impl<W, Q, P> fmt::Debug for Shared<W, Q, P>
+impl<W, Q, T> fmt::Debug for Shared<Q, T>
 where
     W: Worker,
     Q: Queen<Kind = W>,
-    P: QueuePair<W>,
+    T: TaskQueues<W>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let (queued, active) = self.num_tasks();
@@ -526,15 +544,15 @@ where
 
 #[cfg(feature = "affinity")]
 mod affinity {
+    use super::{Shared, TaskQueues};
     use crate::bee::{Queen, Worker};
     use crate::hive::cores::{Core, Cores};
-    use crate::hive::{QueuePair, Shared};
 
-    impl<W, Q, P> Shared<W, Q, P>
+    impl<W, Q, T> Shared<Q, T>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        P: QueuePair<W>,
+        T: TaskQueues<W>,
     {
         /// Adds cores to which worker threads may be pinned.
         pub fn add_core_affinity(&self, new_cores: Cores) {
@@ -556,14 +574,14 @@ mod affinity {
 
 #[cfg(feature = "batching")]
 mod batching {
+    use super::{Shared, TaskQueues};
     use crate::bee::{Queen, Worker};
-    use crate::hive::{LocalQueues, QueuePair, Shared};
 
-    impl<W, Q, P> Shared<W, Q, P>
+    impl<W, Q, T> Shared<Q, T>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        P: QueuePair<W>,
+        T: TaskQueues<W>,
     {
         /// Returns the local queue batch size.
         pub fn batch_size(&self) -> usize {
@@ -587,11 +605,12 @@ mod batching {
             if prev_batch_size == batch_size {
                 return prev_batch_size;
             }
-            let num_threads = self.config.num_threads.get_or_default();
+            let num_threads = self.num_threads();
             if num_threads == 0 {
                 return prev_batch_size;
             }
-            self.local_queues.resize(0, num_threads, batch_size, self);
+            self.task_queues
+                .resize_local(0, num_threads, batch_size, self);
             prev_batch_size
         }
     }
@@ -599,15 +618,16 @@ mod batching {
 
 #[cfg(feature = "retry")]
 mod retry {
-    use crate::bee::{Queen, Worker};
-    use crate::hive::{LocalQueues, OutcomeSender, QueuePair, Shared, Task, TaskId};
+    use crate::bee::{Queen, TaskId, Worker};
+    use crate::hive::inner::{Shared, Task, TaskQueues};
+    use crate::hive::OutcomeSender;
     use std::time::Instant;
 
-    impl<W, Q, P> Shared<W, Q, P>
+    impl<W, Q, T> Shared<Q, T>
     where
         W: Worker,
         Q: Queen<Kind = W>,
-        P: QueuePair<W>,
+        T: TaskQueues<W>,
     {
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
         /// given `ctx` is less than the maximum number of retries.
@@ -633,7 +653,7 @@ mod retry {
                 .increment_left(1)
                 .expect("overflowed queued task counter");
             let task = Task::with_attempt(task_id, input, outcome_tx, attempt);
-            self.local_queues.retry(task, thread_index, self)
+            self.task_queues.retry(task, thread_index, self)
         }
     }
 }
@@ -642,17 +662,14 @@ mod retry {
 mod tests {
     use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
-    use crate::hive::queue::ChannelQueues;
+    use crate::hive::ChannelTaskQueues;
 
     type VoidThunkWorker = ThunkWorker<()>;
-    type VoidThunkWorkerShared = super::Shared<
-        VoidThunkWorker,
-        DefaultQueen<VoidThunkWorker>,
-        ChannelQueues<VoidThunkWorker>,
-    >;
+    type VoidThunkWorkerShared =
+        super::Shared<DefaultQueen<VoidThunkWorker>, ChannelTaskQueues<VoidThunkWorker>>;
 
     #[test]
-    fn test_sync_shared() {
+    fn test_sync_hared() {
         fn assert_sync<T: Sync>() {}
         assert_sync::<VoidThunkWorkerShared>();
     }

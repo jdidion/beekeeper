@@ -4,9 +4,7 @@
 //! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
 //! down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
-use crate::hive::{
-    Builder, ChannelGlobalQueue, ChannelQueues, DefaultLocalQueues, Outcome, OutcomeBatch,
-};
+use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeBatch};
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -30,9 +28,10 @@ where
     Inputs: IntoIterator<Item = I>,
     F: FnMut(I) -> O + Send + Sync + Clone + 'static,
 {
-    Builder::default()
+    ChannelBuilder::default()
         .num_threads(num_threads)
-        .build_with::<_, ChannelQueues<_>>(Caller::of(f))
+        .with_worker(Caller::of(f))
+        .build()
         .map(inputs)
         .map(Outcome::unwrap)
         .collect()
@@ -69,9 +68,10 @@ where
     Inputs: IntoIterator<Item = I>,
     F: FnMut(I) -> Result<O, E> + Send + Sync + Clone + 'static,
 {
-    Builder::default()
+    ChannelBuilder::default()
         .num_threads(num_threads)
-        .build_with::<_, ChannelQueues<_>>(OnceCaller::of(f))
+        .with_worker(OnceCaller::of(f))
+        .build()
         .map(inputs)
         .into()
 }
@@ -117,7 +117,7 @@ pub use retry::try_map_retryable;
 mod retry {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, ChannelQueues, OutcomeBatch};
+    use crate::hive::{Builder, ChannelBuilder, OutcomeBatch};
     use std::fmt::Debug;
 
     /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -158,10 +158,11 @@ mod retry {
         Inputs: IntoIterator<Item = I>,
         F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Send + Sync + Clone + 'static,
     {
-        Builder::default()
+        ChannelBuilder::default()
             .num_threads(num_threads)
             .max_retries(max_retries)
-            .build_with::<_, ChannelQueues<_>>(RetryCaller::of(f))
+            .with_worker(RetryCaller::of(f))
+            .build()
             .map(inputs)
             .into()
     }

@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 crossbeam-channel = "0.5.13"
 crossbeam-deque = "0.8.6"
+crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.20"
 num = "0.4.3"
 num_cpus = "1.16.0"
@@ -19,8 +20,6 @@ paste = "1.0.15"
 thiserror = "1.0.63"
 # required with the `affinity` feature
 core_affinity = { version = "0.8.1", optional = true }
-# required with the `batching` feature
-crossbeam-queue = { version = "0.3.12", optional = true }
 # required with alternate outcome channel implementations that can be enabled with features
 flume = { version = "0.11.1", optional = true }
 loole = { version = "0.4.0", optional = true }
@@ -39,7 +38,7 @@ harness = false
 [features]
 default = ["affinity", "batching", "retry"]
 affinity = ["dep:core_affinity"]
-batching = ["dep:crossbeam-queue"]
+batching = []
 retry = []
 crossbeam = []
 flume = ["dep:flume"]

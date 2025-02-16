@@ -124,3 +124,25 @@ impl<'a, I> Context<'a, I> {
         self.attempt
     }
 }
+
+#[cfg(test)]
+pub mod mock {
+    use super::{TaskContext, TaskId};
+    use std::cell::RefCell;
+
+    #[derive(Debug, Default)]
+    pub struct MockTaskContext(RefCell<TaskId>);
+
+    impl<I> TaskContext<I> for MockTaskContext {
+        fn should_cancel_tasks(&self) -> bool {
+            false
+        }
+
+        fn submit_task(&self, _: I) -> super::TaskId {
+            let mut task_id = self.0.borrow_mut();
+            let cur_id = *task_id;
+            *task_id += 1;
+            cur_id
+        }
+    }
+}
