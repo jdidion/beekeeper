@@ -1,9 +1,9 @@
-use super::Outcome;
+use super::{DerefOutcomes, Outcome};
 use crate::bee::{TaskId, Worker};
 use crossbeam_queue::SegQueue;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 
 pub struct OutcomeQueue<W: Worker> {
     queue: SegQueue<Outcome<W>>,
@@ -53,5 +53,15 @@ impl<W: Worker> Default for OutcomeQueue<W> {
             queue: Default::default(),
             outcomes: Default::default(),
         }
+    }
+}
+
+impl<W: Worker> DerefOutcomes<W> for OutcomeQueue<W> {
+    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>> {
+        self.outcomes.lock()
+    }
+
+    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
+        self.outcomes.lock()
     }
 }

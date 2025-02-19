@@ -19,12 +19,12 @@ The general theme of this release is performance improvement by eliminating thre
   * Added the `TaskQueues` trait, which enables `Hive` to be specialized for different implementations of global (i.e., sending tasks from the `Hive` to worker threads) and local (i.e., worker thread-specific) queues.
     * `ChannelTaskQueues` implements the existing behavior, using a channel for sending tasks.
     * `WorkstealingTaskQueues` has been added to implement the workstealing pattern, based on `crossbeam::dequeue`.
-  * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks. This feature is only used by `ChannelTaskQueues`.
+  * Added the `batching` feature, which enables `ChannelTaskQueues` to use worker-thread local queues to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
   * Added the `Context::submit` method, which enables tasks to submit new tasks to the `Hive`.
 * Other
   * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention.
   * Switched to storing `Outcome`s in the hive using a data structure that does not require locking when inserting, which should reduce thread contention when using `*_store` operations.
-  * Switched to using `crossbeam_channel` for the task input channel in `ChannelTaskQueues`.
+  * Switched to using `crossbeam_channel` for the task input channel in `ChannelTaskQueues`. These are multi-produer, multi-consumer channels (mpmc; as opposed to `std::mpsc`, which is single-consumer), which means it is no longer necessary for worker threads to aquire a Mutex lock on the channel receiver when getting tasks.
 
 ## 0.2.1
 

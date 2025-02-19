@@ -137,6 +137,31 @@ pub trait Builder: BuilderConfig + Sized {
         self
     }
 
+    /// Sets the worker thread batch size.
+    ///
+    /// This may have no effect if the `batching` feature is disabled, or if the `TaskQueues`
+    /// implementation used for this hive does not support local batching.
+    ///
+    /// If `batch_limit` is `0`, batching is effectively disabled, but note that the performance
+    /// may be worse than with the `batching` feature disabled.
+    fn batch_limit(mut self, batch_limit: usize) -> Self {
+        if batch_limit == 0 {
+            self.config(Token).batch_limit.set(None);
+        } else {
+            self.config(Token).batch_limit.set(Some(batch_limit));
+        }
+        self
+    }
+
+    /// Sets the worker thread batch size to the global default value.
+    fn with_default_batch_limit(mut self) -> Self {
+        let _ = self
+            .config(Token)
+            .batch_limit
+            .set(super::config::DEFAULTS.lock().batch_limit.get());
+        self
+    }
+
     /// Sets set list of CPU core indices to which threads in the `Hive` should be pinned.
     ///
     /// Core indices are integers in the range `0..N`, where `N` is the number of available CPU
@@ -185,28 +210,6 @@ pub trait Builder: BuilderConfig + Sized {
             .config(Token)
             .affinity
             .set(Some(crate::hive::cores::Cores::all()));
-        self
-    }
-
-    /// Sets the worker thread batch size. If `batch_size` is `0`, batching is disabled, but
-    /// note that the performance may be worse than with the `batching` feature disabled.
-    #[cfg(feature = "batching")]
-    fn batch_size(mut self, batch_size: usize) -> Self {
-        if batch_size == 0 {
-            self.config(Token).batch_size.set(None);
-        } else {
-            self.config(Token).batch_size.set(Some(batch_size));
-        }
-        self
-    }
-
-    /// Sets the worker thread batch size to the global default value.
-    #[cfg(feature = "batching")]
-    fn with_default_batch_size(mut self) -> Self {
-        let _ = self
-            .config(Token)
-            .batch_size
-            .set(super::config::DEFAULTS.lock().batch_size.get());
         self
     }
 
@@ -298,10 +301,10 @@ pub trait Builder: BuilderConfig + Sized {
     /// ```
     #[cfg(feature = "retry")]
     fn retry_factor(mut self, duration: std::time::Duration) -> Self {
-        let _ = if duration == std::time::Duration::ZERO {
-            self.config(Token).retry_factor.set(None)
+        if duration == std::time::Duration::ZERO {
+            let _ = self.config(Token).retry_factor.set(None);
         } else {
-            self.config(Token).set_retry_factor_from(duration)
+            let _ = self.config(Token).set_retry_factor_from(duration);
         };
         self
     }

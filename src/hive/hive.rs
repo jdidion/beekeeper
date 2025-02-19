@@ -1,9 +1,8 @@
 use super::{
     ChannelBuilder, ChannelTaskQueues, Config, DerefOutcomes, Husk, Outcome, OutcomeBatch,
-    OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues,
+    OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues, WorkerQueues,
 };
 use crate::bee::{DefaultQueen, Queen, TaskContext, TaskId, Worker};
-use crossbeam_utils::Backoff;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -46,13 +45,15 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
             Self::init_thread(thread_index, &shared);
             // create a Sentinel that will spawn a new thread on panic until it is cancelled
             let sentinel = Sentinel::new(thread_index, Arc::clone(&shared));
+            // get the thread-local interface to the task queues
+            let worker_queues = shared.worker_queues(thread_index);
             // create a new worker to process tasks
             let mut worker = shared.create_worker();
             // execute the main loop: get the next task to process, which decrements the queued
             // counter and increments the active counter
-            while let Some(task) = shared.get_next_task(thread_index) {
+            while let Some(task) = shared.get_next_task(&worker_queues) {
                 // execute the task and dispose of the outcome
-                Self::execute(task, thread_index, &mut worker, &shared);
+                Self::execute(task, &mut worker, &worker_queues, &shared);
                 // finish the task - decrements the active counter and notifies other threads
                 shared.finish_task(false);
             }
@@ -91,6 +92,20 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     pub fn use_all_cores(&self) -> Result<usize, Poisoned> {
         let num_threads = num_cpus::get().saturating_sub(self.max_workers());
         self.grow(num_threads)
+    }
+
+    /// Returns the batch limit for worker threads.
+    pub fn worker_batch_limit(&self) -> usize {
+        self.shared().worker_batch_limit()
+    }
+
+    /// Sets the batch limit for worker threads.
+    ///
+    /// Depending on this hive's `TaskQueues` implementation, this method may:
+    /// * have no effect (if it does not support local batching)
+    /// * block the current thread until all worker thread queues can be resized.
+    pub fn set_worker_batch_limit(&self, batch_limit: usize) {
+        self.shared().set_worker_batch_limit(batch_limit);
     }
 
     /// Sends one `input` to the `Hive` for procesing and returns the result, blocking until the
@@ -518,6 +533,42 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         self.shared().take_outcomes()
     }
 
+    fn try_close(mut self) -> Option<Shared<Q, T>> {
+        if self.shared().num_referrers() > 1 {
+            return None;
+        }
+        // take the inner value and replace it with `None`
+        let shared = self.0.take().unwrap();
+        // close the global queue to prevent new tasks from being submitted
+        shared.close_task_queues();
+        // wait for all tasks to finish
+        shared.wait_on_done();
+        // unwrap the Arc and return the inner Shared value
+        Some(super::unwrap_arc(shared))
+    }
+
+    /// Consumes this `Hive` and attempts to shut it down gracefully.
+    ///
+    /// All unprocessed tasks and stored outcomes are discarded.
+    ///
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method returns
+    /// `false`.
+    ///
+    /// Note that it is not necessary to call this method explicitly - all resources are dropped
+    /// automatically when the last clone of the hive is dropped.
+    pub fn close(self) -> bool {
+        self.try_close().is_some()
+    }
+
+    /// Consumes this `Hive` and attempts to convert any remaining unprocessed tasks into
+    /// `Unprocessed` outcomes and either sends each to its outcome channel or adds it to the
+    /// stored outcomes.
+    ///
+    /// Returns a map of stored outcomes.
+    pub fn try_into_outcomes(self) -> Option<HashMap<TaskId, Outcome<W>>> {
+        self.try_close().map(|shared| shared.into_outcomes())
+    }
+
     /// Consumes this `Hive` and attempts to return a [`Husk`] containing the remnants of this
     /// `Hive`, including any stored task outcomes, and all the data necessary to create a new
     /// `Hive`.
@@ -526,33 +577,8 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// returns `None` since it cannot take exclusive ownership of the internal shared data.
     ///
     /// This method first joins on the `Hive` to wait for all tasks to finish.
-    pub fn try_into_husk(mut self) -> Option<Husk<Q>> {
-        if self.shared().num_referrers() > 1 {
-            return None;
-        }
-        // take the inner value and replace it with `None`
-        let mut shared = self.0.take().unwrap();
-        // close the global queue to prevent new tasks from being submitted
-        shared.close();
-        // wait for all tasks to finish
-        shared.wait_on_done();
-        // wait for worker threads to drop, then take ownership of the shared data and convert it
-        // into a Husk
-        let mut backoff = None::<Backoff>;
-        loop {
-            // TODO: may want to have some timeout or other kind of limit to prevent this from
-            // looping forever if a worker thread somehow gets stuck, or if the `num_referrers`
-            // counter is corrupted
-            shared = match Arc::try_unwrap(shared) {
-                Ok(shared) => {
-                    return Some(shared.into_husk());
-                }
-                Err(shared) => {
-                    backoff.get_or_insert_with(Backoff::new).spin();
-                    shared
-                }
-            };
-        }
+    pub fn try_into_husk(self) -> Option<Husk<Q>> {
+        self.try_close().map(|shared| shared.into_husk())
     }
 }
 
@@ -767,37 +793,13 @@ mod affinity {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
-    use crate::bee::{Queen, Worker};
-    use crate::hive::{Hive, TaskQueues};
-
-    impl<W, Q, T> Hive<Q, T>
-    where
-        W: Worker,
-        Q: Queen<Kind = W>,
-        T: TaskQueues<W>,
-    {
-        /// Returns the batch size for worker threads.
-        pub fn worker_batch_size(&self) -> usize {
-            self.shared().batch_size()
-        }
-
-        /// Sets the batch size for worker threads. This will block the current thread until all
-        /// worker thread queues can be resized.
-        pub fn set_worker_batch_size(&self, batch_size: usize) {
-            self.shared().set_batch_size(batch_size);
-        }
-    }
-}
-
 struct HiveTaskContext<'a, W, Q, T>
 where
     W: Worker,
     Q: Queen<Kind = W>,
     T: TaskQueues<W>,
 {
-    thread_index: usize,
+    worker_queues: &'a T::WorkerQueues,
     shared: &'a Arc<Shared<Q, T>>,
     outcome_tx: Option<&'a OutcomeSender<W>>,
 }
@@ -813,8 +815,10 @@ where
     }
 
     fn submit_task(&self, input: W::Input) -> TaskId {
-        self.shared
-            .send_one_local(input, self.outcome_tx, self.thread_index)
+        let task = self.shared.prepare_task(input, self.outcome_tx);
+        let task_id = task.id();
+        self.worker_queues.push(task);
+        task_id
     }
 }
 
@@ -844,13 +848,13 @@ mod no_retry {
     {
         pub(super) fn execute(
             task: Task<W>,
-            thread_index: usize,
             worker: &mut W,
+            worker_queues: &T::WorkerQueues,
             shared: &Arc<Shared<Q, T>>,
         ) {
             let (task_id, input, outcome_tx) = task.into_parts();
             let task_ctx = HiveTaskContext {
-                thread_index,
+                worker_queues,
                 shared,
                 outcome_tx: outcome_tx.as_ref(),
             };
@@ -869,6 +873,7 @@ mod retry {
     use crate::bee::{ApplyError, Context, Queen, Worker};
     use crate::hive::{Hive, Outcome, Shared, Task, TaskQueues};
     use std::sync::Arc;
+    use std::time::Duration;
 
     impl<W, Q, T> Hive<Q, T>
     where
@@ -876,15 +881,35 @@ mod retry {
         Q: Queen<Kind = W>,
         T: TaskQueues<W>,
     {
+        /// Returns the current retry limit for this hive.
+        pub fn worker_retry_limit(&self) -> u32 {
+            self.shared().worker_retry_limit()
+        }
+
+        /// Updates the retry limit for this hive and returns the previous value.
+        pub fn set_worker_retry_limit(&self, limit: u32) -> u32 {
+            self.shared().set_worker_retry_limit(limit)
+        }
+
+        /// Returns the current retry factor for this hive.
+        pub fn worker_retry_factor(&self) -> Duration {
+            self.shared().worker_retry_factor()
+        }
+
+        /// Updates the retry factor for this hive and returns the previous value.
+        pub fn set_worker_retry_factor(&self, duration: Duration) -> Duration {
+            self.shared().set_worker_retry_factor(duration)
+        }
+
         pub(super) fn execute(
             task: Task<W>,
-            thread_index: usize,
             worker: &mut W,
+            worker_queues: &T::WorkerQueues,
             shared: &Arc<Shared<Q, T>>,
         ) {
             let (task_id, input, attempt, outcome_tx) = task.into_parts();
             let task_ctx = HiveTaskContext {
-                thread_index,
+                worker_queues,
                 shared,
                 outcome_tx: outcome_tx.as_ref(),
             };
@@ -893,17 +918,31 @@ mod retry {
             // be the only place where a panic can occur
             let result = worker.apply(input, &ctx);
             let subtask_ids = ctx.into_subtask_ids();
-            match result {
-                Err(ApplyError::Retryable { input, .. })
+            #[cfg(feature = "retry")]
+            let result = match result {
+                Err(ApplyError::Retryable { input, error })
                     if subtask_ids.is_none() && shared.can_retry(attempt) =>
                 {
-                    shared.send_retry(task_id, input, outcome_tx, attempt + 1, thread_index);
+                    match shared.try_send_retry(
+                        task_id,
+                        input,
+                        outcome_tx.as_ref(),
+                        attempt + 1,
+                        worker_queues,
+                    ) {
+                        Ok(_) => return,
+                        Err(task) => Result::<W::Output, ApplyError<W::Input, W::Error>>::Err(
+                            ApplyError::Fatal {
+                                input: Some(task.into_parts().1),
+                                error,
+                            },
+                        ),
+                    }
                 }
-                result => {
-                    let outcome = Outcome::from_worker_result(result, task_id, subtask_ids);
-                    shared.send_or_store_outcome(outcome, outcome_tx);
-                }
-            }
+                result => result,
+            };
+            let outcome = Outcome::from_worker_result(result, task_id, subtask_ids);
+            shared.send_or_store_outcome(outcome, outcome_tx);
         }
     }
 }

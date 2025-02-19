@@ -8,7 +8,7 @@ mod task;
 
 pub mod set_config {
     #[cfg(feature = "batching")]
-    pub use super::config::set_batch_size_default;
+    pub use super::config::set_batch_limit_default;
     pub use super::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
     #[cfg(feature = "retry")]
     pub use super::config::{
@@ -17,7 +17,7 @@ pub mod set_config {
 }
 
 pub use self::builder::{Builder, BuilderConfig};
-pub use self::queue::{ChannelTaskQueues, TaskQueues};
+pub use self::queue::{ChannelTaskQueues, TaskQueues, WorkerQueues};
 
 use self::counter::DualCounter;
 use self::gate::{Gate, PhasedGate};
@@ -92,12 +92,11 @@ pub struct Config {
     thread_name: Any<String>,
     /// Stack size for each worker thread
     thread_stack_size: Usize,
+    /// Maximum number of tasks for a worker thread to take when receiving from the input channel
+    batch_limit: Usize,
     /// CPU cores to which worker threads can be pinned
     #[cfg(feature = "affinity")]
     affinity: Any<crate::hive::cores::Cores>,
-    /// Maximum number of tasks for a worker thread to take when receiving from the input channel
-    #[cfg(feature = "batching")]
-    batch_size: Usize,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
     max_retries: U32,

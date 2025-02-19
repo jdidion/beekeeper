@@ -1,5 +1,3 @@
-#[cfg(feature = "batching")]
-pub use self::batching::set_batch_size_default;
 #[cfg(feature = "retry")]
 pub use self::retry::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
@@ -10,6 +8,7 @@ use parking_lot::Mutex;
 use std::sync::LazyLock;
 
 const DEFAULT_NUM_THREADS: usize = 4;
+const DEFAULT_BATCH_LIMIT: usize = 10;
 
 pub static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
     let mut config = Config::empty();
@@ -28,6 +27,10 @@ pub fn set_num_threads_default_all() {
     set_num_threads_default(num_cpus::get());
 }
 
+pub fn set_batch_limit_default(batch_limit: usize) {
+    DEFAULTS.lock().batch_limit.set(Some(batch_limit));
+}
+
 /// Resets all builder defaults to their original values.
 pub fn reset_defaults() {
     let mut config = DEFAULTS.lock();
@@ -41,10 +44,9 @@ impl Config {
             num_threads: Default::default(),
             thread_name: Default::default(),
             thread_stack_size: Default::default(),
+            batch_limit: Default::default(),
             #[cfg(feature = "affinity")]
             affinity: Default::default(),
-            #[cfg(feature = "batching")]
-            batch_size: Default::default(),
             #[cfg(feature = "retry")]
             max_retries: Default::default(),
             #[cfg(feature = "retry")]
@@ -55,8 +57,7 @@ impl Config {
     /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
-        #[cfg(feature = "batching")]
-        self.set_batch_const_defaults();
+        self.batch_limit.set(Some(DEFAULT_BATCH_LIMIT));
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
     }
@@ -70,11 +71,11 @@ impl Config {
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_sync(),
             #[cfg(feature = "batching")]
-            batch_size: self.batch_size.into_sync_default(),
+            batch_limit: self.batch_limit.into_sync_default(),
             #[cfg(feature = "retry")]
-            max_retries: self.max_retries.into_sync(),
+            max_retries: self.max_retries.into_sync_default(),
             #[cfg(feature = "retry")]
-            retry_factor: self.retry_factor.into_sync(),
+            retry_factor: self.retry_factor.into_sync_default(),
         }
     }
 
@@ -88,7 +89,7 @@ impl Config {
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_unsync(),
             #[cfg(feature = "batching")]
-            batch_size: self.batch_size.into_unsync(),
+            batch_limit: self.batch_limit.into_unsync(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_unsync(),
             #[cfg(feature = "retry")]
@@ -143,23 +144,6 @@ mod tests {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
-    use super::{Config, DEFAULTS};
-
-    const DEFAULT_BATCH_SIZE: usize = 10;
-
-    pub fn set_batch_size_default(batch_size: usize) {
-        DEFAULTS.lock().batch_size.set(Some(batch_size));
-    }
-
-    impl Config {
-        pub(super) fn set_batch_const_defaults(&mut self) {
-            self.batch_size.set(Some(DEFAULT_BATCH_SIZE));
-        }
-    }
-}
-
 #[cfg(feature = "retry")]
 mod retry {
     use super::{Config, DEFAULTS};
@@ -184,8 +168,21 @@ mod retry {
     }
 
     impl Config {
-        pub fn set_retry_factor_from(&mut self, duration: Duration) -> Option<u64> {
-            self.retry_factor.set(Some(duration.as_nanos() as u64))
+        pub fn get_retry_factor_duration(&self) -> Option<Duration> {
+            self.retry_factor.get().map(Duration::from_nanos)
+        }
+
+        pub fn set_retry_factor_from(&mut self, duration: Duration) -> Option<Duration> {
+            self.retry_factor
+                .set(Some(duration.as_nanos() as u64))
+                .map(Duration::from_nanos)
+        }
+
+        pub fn try_set_retry_factor_from(&self, duration: Duration) -> Option<Duration> {
+            self.retry_factor
+                .try_set(duration.as_nanos() as u64)
+                .map(Duration::from_nanos)
+                .ok()
         }
 
         pub(super) fn set_retry_const_defaults(&mut self) {
@@ -202,12 +199,6 @@ mod retry {
         use crate::hive::inner::config::reset::Reset;
         use serial_test::serial;
         use std::time::Duration;
-
-        impl Config {
-            fn get_retry_factor_duration(&self) -> Option<Duration> {
-                self.retry_factor.get().map(Duration::from_nanos)
-            }
-        }
 
         #[test]
         #[serial]

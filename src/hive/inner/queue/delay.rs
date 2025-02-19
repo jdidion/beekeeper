@@ -7,20 +7,21 @@ use std::time::{Duration, Instant};
 ///
 /// This is implemented internally as a `UnsafeCell<BinaryHeap>`.
 ///
-/// SAFETY: This data structure is designed to enable the queue to be modified by a *single thread*
-/// using interior mutability. `UnsafeCell` is used for performance - this is safe so long as the
-/// queue is only accessed from a single thread at a time. This data structure is *not* thread-safe.
+/// SAFETY: This data structure is designed to enable the queue to be modified (using `push` and
+/// `try_pop`) by a *single thread* using interior mutability. The `drain` method is called by a
+/// different thread, but it first takes ownership of the queue and so will never be called
+/// concurrently with `push/pop`.
+///
+/// `UnsafeCell` is used for performance - this is safe so long as the queue is only accessed from
+/// a single thread at a time. This data structure is *not* thread-safe.
 #[derive(Debug)]
 pub struct DelayQueue<T>(UnsafeCell<BinaryHeap<Delayed<T>>>);
 
 impl<T> DelayQueue<T> {
-    /// Returns the number of items currently in the queue.
-    pub fn len(&self) -> usize {
-        unsafe { self.0.get().as_ref().unwrap().len() }
-    }
-
     /// Pushes an item onto the queue. Returns the `Instant` at which the item will be available,
     /// or an error with `item` if there was an error pushing the item.
+    ///
+    /// SAFETY: this method is only ever called within a single thread.
     pub fn push(&self, item: T, delay: Duration) -> Result<Instant, T> {
         unsafe {
             match self.0.get().as_mut() {
@@ -35,28 +36,20 @@ impl<T> DelayQueue<T> {
         }
     }
 
-    /// Returns the `Instant` at which the next item will be available. Returns `None` if the queue
-    /// is empty.
-    pub fn next_available(&self) -> Option<Instant> {
-        unsafe {
-            self.0
-                .get()
-                .as_ref()
-                .and_then(|queue| queue.peek().map(|head| head.until))
-        }
-    }
-
     /// Returns the item at the head of the queue, if one exists and is available (i.e., its delay
     /// has been exceeded), and removes it.
+    ///
+    /// SAFETY: this method is only ever called within a single thread.
     pub fn try_pop(&self) -> Option<T> {
         unsafe {
-            if self
-                .next_available()
-                .map(|until| until <= Instant::now())
+            let queue_ptr = self.0.get();
+            if queue_ptr
+                .as_ref()
+                .and_then(|queue| queue.peek())
+                .map(|head| head.until <= Instant::now())
                 .unwrap_or(false)
             {
-                self.0
-                    .get()
+                queue_ptr
                     .as_mut()
                     .and_then(|queue| queue.pop())
                     .map(|delayed| delayed.value)
@@ -66,9 +59,11 @@ impl<T> DelayQueue<T> {
         }
     }
 
-    /// Drains all items from the queue and returns them as an iterator.
-    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.0.get_mut().drain().map(|delayed| delayed.value)
+    /// Consumes this `DelayQueue` and drains all items from the queue into `sink`.
+    pub fn drain_into(self, sink: &mut Vec<T>) {
+        let mut queue = self.0.into_inner();
+        sink.reserve(queue.len());
+        sink.extend(queue.drain().map(|delayed| delayed.value))
     }
 }
 
@@ -125,6 +120,12 @@ mod tests {
     use super::DelayQueue;
     use std::{thread, time::Duration};
 
+    impl<T> DelayQueue<T> {
+        fn len(&self) -> usize {
+            unsafe { self.0.get().as_ref().unwrap().len() }
+        }
+    }
+
     #[test]
     fn test_works() {
         let queue = DelayQueue::default();
@@ -153,11 +154,12 @@ mod tests {
 
     #[test]
     fn test_into_vec() {
-        let mut queue = DelayQueue::default();
+        let queue = DelayQueue::default();
         queue.push(1, Duration::from_secs(1)).unwrap();
         queue.push(2, Duration::from_secs(2)).unwrap();
         queue.push(3, Duration::from_secs(3)).unwrap();
-        let mut v: Vec<_> = queue.drain().collect();
+        let mut v = Vec::new();
+        queue.drain_into(&mut v);
         v.sort();
         assert_eq!(v, vec![1, 2, 3]);
     }

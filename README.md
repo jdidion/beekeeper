@@ -337,9 +337,9 @@ if !exec_err_codes.is_empty() {
 
 ## Status
 
-The `beekeeper` API is generally considered to be stable, but additional real-world battle-testing
-is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for
-improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
+Early versions of this crate (< 0.3) had some fatal design flaws that needed to be corrected with breaking changes (see the [changelog](CHANGELOG.md)).
+
+As of version 0.3, the `beekeeper` API is generally considered to be stable, but additional real-world battle-testing is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
 
 ## Similar libraries
 

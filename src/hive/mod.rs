@@ -137,8 +137,8 @@
 //! queue. This behavior is activated by enabling the `batching` feature.
 //!
 //! With the `batching` feature enabled, `Builder` gains the
-//! [`batch_size`](crate::hive::Builder::batch_size) method for configuring size of worker threads'
-//! local queues, and `Hive` gains the [`set_worker_batch_size`](crate::hive::Hive::set_batch_size)
+//! [`batch_limit`](crate::hive::Builder::batch_limit) method for configuring size of worker threads'
+//! local queues, and `Hive` gains the [`set_worker_batch_limit`](crate::hive::Hive::set_batch_limit)
 //! method for changing the batch size of an existing `Hive`.
 //!
 //! ## Global defaults
@@ -152,7 +152,7 @@
 //! * `num_threads`
 //!     * [`set_num_threads_default`]: sets the default to a specific value
 //!     * [`set_num_threads_default_all`]: sets the default to all available CPU cores
-//! * [`batch_size`](crate::hive::set_batch_size_default) (requires `feature = "batching"`)
+//! * [`batch_limit`](crate::hive::set_BATCH_LIMIT_default) (requires `feature = "batching"`)
 //! * [`max_retries`](crate::hive::set_max_retries_default] (requires `feature = "retry"`)
 //! * [`retry_factor`](crate::hive::set_retry_factor_default] (requires `feature = "retry"`)
 //!
@@ -370,7 +370,7 @@ pub use self::husk::Husk;
 pub use self::inner::{set_config::*, Builder, ChannelTaskQueues};
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
-use self::inner::{Config, Shared, Task, TaskQueues};
+use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};
 use self::outcome::{DerefOutcomes, OutcomeQueue, OwnedOutcomes};
 use crate::bee::Worker;
 use crate::channel::{channel, Receiver, Sender};
@@ -393,6 +393,28 @@ pub mod prelude {
         outcome_channel, Builder, ChannelBuilder, ChannelTaskQueues, Hive, Husk, OpenBuilder,
         Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
     };
+}
+
+fn unwrap_arc<T>(mut arc: std::sync::Arc<T>) -> T {
+    // wait for worker threads to drop, then take ownership of the shared data and convert it
+    // into a Husk
+    let mut backoff = None::<crossbeam_utils::Backoff>;
+    loop {
+        // TODO: may want to have some timeout or other kind of limit to prevent this from
+        // looping forever if a worker thread somehow gets stuck, or if the `num_referrers`
+        // counter is corrupted
+        arc = match std::sync::Arc::try_unwrap(arc) {
+            Ok(inner) => {
+                return inner;
+            }
+            Err(arc) => {
+                backoff
+                    .get_or_insert_with(crossbeam_utils::Backoff::new)
+                    .spin();
+                arc
+            }
+        };
+    }
 }
 
 #[cfg(test)]
@@ -1768,12 +1790,12 @@ mod batching_tests {
     fn run_test(
         hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, ChannelTaskQueues<ThunkWorker<ThreadId>>>,
         num_threads: usize,
-        batch_size: usize,
+        batch_limit: usize,
     ) {
-        let tasks_per_thread = batch_size + 2;
+        let tasks_per_thread = batch_limit + 2;
         let (tx, rx) = crate::hive::outcome_channel();
-        // each worker should take `batch_size` tasks for its queue + 1 to work on immediately,
-        // meaning there should be `batch_size + 1` tasks associated with each thread ID
+        // each worker should take `batch_limit` tasks for its queue + 1 to work on immediately,
+        // meaning there should be `batch_limit + 1` tasks associated with each thread ID
         let barrier = IndexedBarrier::new(num_threads);
         let task_ids = launch_tasks(hive, num_threads, tasks_per_thread, &barrier, &tx);
         // start the first tasks
@@ -1790,45 +1812,45 @@ mod batching_tests {
     #[test]
     fn test_batching() {
         const NUM_THREADS: usize = 4;
-        const BATCH_SIZE: usize = 24;
+        const BATCH_LIMIT: usize = 24;
         let hive = ChannelBuilder::empty()
             .with_worker_default()
             .num_threads(NUM_THREADS)
-            .batch_size(BATCH_SIZE)
+            .batch_limit(BATCH_LIMIT)
             .build();
-        run_test(&hive, NUM_THREADS, BATCH_SIZE);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT);
     }
 
     #[test]
-    fn test_set_batch_size() {
+    fn test_set_batch_limit() {
         const NUM_THREADS: usize = 4;
-        const BATCH_SIZE_0: usize = 10;
-        const BATCH_SIZE_1: usize = 20;
-        const BATCH_SIZE_2: usize = 50;
+        const BATCH_LIMIT_0: usize = 10;
+        const BATCH_LIMIT_1: usize = 20;
+        const BATCH_LIMIT_2: usize = 50;
         let hive = ChannelBuilder::empty()
             .with_worker_default()
             .num_threads(NUM_THREADS)
-            .batch_size(BATCH_SIZE_0)
+            .batch_limit(BATCH_LIMIT_0)
             .build();
-        run_test(&hive, NUM_THREADS, BATCH_SIZE_0);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_0);
         // increase batch size
-        hive.set_worker_batch_size(BATCH_SIZE_2);
-        run_test(&hive, NUM_THREADS, BATCH_SIZE_2);
+        hive.set_worker_batch_limit(BATCH_LIMIT_2);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_2);
         // decrease batch size
-        hive.set_worker_batch_size(BATCH_SIZE_1);
-        run_test(&hive, NUM_THREADS, BATCH_SIZE_1);
+        hive.set_worker_batch_limit(BATCH_LIMIT_1);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_1);
     }
 
     #[test]
-    fn test_shrink_batch_size() {
+    fn test_shrink_batch_limit() {
         const NUM_THREADS: usize = 4;
         const NUM_TASKS_PER_THREAD: usize = 125;
-        const BATCH_SIZE_0: usize = 100;
-        const BATCH_SIZE_1: usize = 10;
+        const BATCH_LIMIT_0: usize = 100;
+        const BATCH_LIMIT_1: usize = 10;
         let hive = ChannelBuilder::empty()
             .with_worker_default()
             .num_threads(NUM_THREADS)
-            .batch_size(BATCH_SIZE_0)
+            .batch_limit(BATCH_LIMIT_0)
             .build();
         let (tx, rx) = crate::hive::outcome_channel();
         let barrier = IndexedBarrier::new(NUM_THREADS);
@@ -1836,13 +1858,13 @@ mod batching_tests {
         let total_tasks = NUM_THREADS * NUM_TASKS_PER_THREAD;
         assert_eq!(task_ids.len(), total_tasks);
         barrier.wait();
-        hive.set_worker_batch_size(BATCH_SIZE_1);
+        hive.set_worker_batch_limit(BATCH_LIMIT_1);
         // The number of tasks completed by each thread could be variable, so we want to ensure
-        // that a) each processed at least `BATCH_SIZE_0` tasks, and b) there are a total of
+        // that a) each processed at least `BATCH_LIMIT_0` tasks, and b) there are a total of
         // `NUM_TASKS` outputs with no errors
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
-        assert!(thread_counts.values().all(|count| *count > BATCH_SIZE_0));
+        assert!(thread_counts.values().all(|count| *count > BATCH_LIMIT_0));
         assert_eq!(thread_counts.values().sum::<usize>(), total_tasks);
     }
 }
