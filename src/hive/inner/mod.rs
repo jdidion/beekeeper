@@ -92,11 +92,12 @@ pub struct Config {
     thread_name: Any<String>,
     /// Stack size for each worker thread
     thread_stack_size: Usize,
-    /// Maximum number of tasks for a worker thread to take when receiving from the input channel
-    batch_limit: Usize,
     /// CPU cores to which worker threads can be pinned
     #[cfg(feature = "affinity")]
     affinity: Any<crate::hive::cores::Cores>,
+    /// Maximum number of tasks for a worker thread to take when receiving from the input channel
+    #[cfg(feature = "batching")]
+    batch_limit: Usize,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
     max_retries: U32,

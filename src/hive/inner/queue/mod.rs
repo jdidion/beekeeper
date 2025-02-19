@@ -1,13 +1,13 @@
 mod channel;
 #[cfg(feature = "retry")]
-mod delay;
-//mod workstealing;
+mod retry;
+mod workstealing;
 
 pub use self::channel::ChannelTaskQueues;
 
 use super::{Config, Task, Token};
 use crate::bee::Worker;
-use std::sync::Arc;
+use std::ops::Deref;
 
 /// Errors that may occur when trying to pop tasks from the global queue.
 #[derive(thiserror::Error, Debug)]
@@ -24,6 +24,7 @@ pub enum PopTaskError {
 /// This trait is sealed - it cannot be implemented outside of this crate.
 pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     type WorkerQueues: WorkerQueues<W>;
+    type WorkerQueuesTarget: Deref<Target = Self::WorkerQueues>;
 
     /// Returns a new instance.
     ///
@@ -37,7 +38,7 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     fn update_for_threads(&self, start_index: usize, end_index: usize, config: &Config);
 
     /// Returns a new `WorkerQueues` instance for a thread.
-    fn worker_queues(&self, thread_index: usize) -> Arc<Self::WorkerQueues>;
+    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueuesTarget;
 
     /// Tries to add a task to the global queue.
     ///

@@ -6,7 +6,6 @@ use crate::hive::{Husk, Outcome, OutcomeSender, SpawnError};
 use parking_lot::MutexGuard;
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
 use std::{fmt, iter};
 
@@ -148,7 +147,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Returns the `WorkerQueues` instance for the worker thread with the specified index.
-    pub fn worker_queues(&self, thread_index: usize) -> Arc<T::WorkerQueues> {
+    pub fn worker_queues(&self, thread_index: usize) -> T::WorkerQueuesTarget {
         self.task_queues.worker_queues(thread_index)
     }
 

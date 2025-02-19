@@ -44,9 +44,10 @@ impl Config {
             num_threads: Default::default(),
             thread_name: Default::default(),
             thread_stack_size: Default::default(),
-            batch_limit: Default::default(),
             #[cfg(feature = "affinity")]
             affinity: Default::default(),
+            #[cfg(feature = "batching")]
+            batch_limit: Default::default(),
             #[cfg(feature = "retry")]
             max_retries: Default::default(),
             #[cfg(feature = "retry")]

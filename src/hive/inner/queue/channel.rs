@@ -25,6 +25,7 @@ pub struct ChannelTaskQueues<W: Worker> {
 
 impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
     type WorkerQueues = ChannelWorkerQueues<W>;
+    type WorkerQueuesTarget = Arc<Self::WorkerQueues>;
 
     fn new(_: Token) -> Self {
         Self {
@@ -137,9 +138,7 @@ pub struct ChannelWorkerQueues<W: Worker> {
     local_batch: RwLock<crossbeam_queue::ArrayQueue<Task<W>>>,
     /// thread-local queues used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
-    local_retry: super::delay::DelayQueue<Task<W>>,
-    #[cfg(feature = "retry")]
-    retry_factor: crate::atomic::AtomicU64,
+    local_retry: super::retry::RetryQueue<W>,
 }
 
 impl<W: Worker> ChannelWorkerQueues<W> {
@@ -153,9 +152,7 @@ impl<W: Worker> ChannelWorkerQueues<W> {
                 config.batch_limit.get_or_default().max(1),
             )),
             #[cfg(feature = "retry")]
-            local_retry: Default::default(),
-            #[cfg(feature = "retry")]
-            retry_factor: crate::atomic::AtomicU64::new(config.retry_factor.get_or_default()),
+            local_retry: super::retry::RetryQueue::new(config.retry_factor.get_or_default()),
         }
     }
 
@@ -166,7 +163,7 @@ impl<W: Worker> ChannelWorkerQueues<W> {
         #[cfg(feature = "batching")]
         self.update_batch(config);
         #[cfg(feature = "retry")]
-        self.retry_factor.set(config.retry_factor.get_or_default());
+        self.local_retry.set_delay_factor(config.retry_factor.get_or_default());
     }
 
     /// Consumes this `ChannelWorkerQueues` and drains the tasks currently in the queues into
@@ -225,18 +222,7 @@ impl<W: Worker> WorkerQueues<W> for ChannelWorkerQueues<W> {
 
     #[cfg(feature = "retry")]
     fn try_push_retry(&self, task: Task<W>) -> Result<std::time::Instant, Task<W>> {
-        // compute the delay
-        let delay = 2u64
-            .checked_pow(task.attempt - 1)
-            .and_then(|multiplier| {
-                self.retry_factor
-                    .get()
-                    .checked_mul(multiplier)
-                    .or(Some(u64::MAX))
-                    .map(Duration::from_nanos)
-            })
-            .unwrap_or_default();
-        self.local_retry.push(task, delay)
+        self.local_retry.try_push(task)
     }
 }
 

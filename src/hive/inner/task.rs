@@ -66,3 +66,34 @@ impl<W: Worker> Task<W> {
         (self.id, self.input, self.attempt, self.outcome_tx)
     }
 }
+
+impl<I: Clone, W: Worker<Input = I>> Clone for Task<W> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            input: self.input.clone(),
+            outcome_tx: self.outcome_tx.clone(),
+            attempt: self.attempt.clone(),
+        }
+    }
+}
+
+impl<W: Worker> PartialEq for Task<W> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<W: Worker> Eq for Task<W> {}
+
+impl<W: Worker> PartialOrd for Task<W> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<W: Worker> Ord for Task<W> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
