@@ -17,7 +17,7 @@ pub mod set_config {
 }
 
 pub use self::builder::{Builder, BuilderConfig};
-pub use self::queue::{ChannelTaskQueues, TaskQueues, WorkerQueues};
+pub use self::queue::{ChannelTaskQueues, TaskQueues, WorkerQueues, WorkstealingTaskQueues};
 
 use self::counter::DualCounter;
 use self::gate::{Gate, PhasedGate};

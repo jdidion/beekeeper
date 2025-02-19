@@ -1,5 +1,5 @@
 use super::{Config, PopTaskError, Task, TaskQueues, Token, WorkerQueues};
-use crate::atomic::{Atomic, AtomicBool, AtomicUsize};
+use crate::atomic::{Atomic, AtomicBool};
 use crate::bee::Worker;
 use crossbeam_deque::{Injector, Stealer};
 use crossbeam_queue::SegQueue;
@@ -8,7 +8,7 @@ use rand::prelude::*;
 use std::ops::Deref;
 use std::sync::Arc;
 
-struct WorkstealingTaskQueues<W: Worker> {
+pub struct WorkstealingTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
     local: RwLock<Vec<Arc<LocalQueueShared<W>>>>,
 }
@@ -46,7 +46,7 @@ impl<W: Worker> TaskQueues<W> for WorkstealingTaskQueues<W> {
         let local_queue = crossbeam_deque::Worker::new_fifo();
         self.global.add_stealer(local_queue.stealer());
         let shared = &self.local.read()[thread_index];
-        WorkstealingWorkerQueues::new(local_queue, Arc::clone(&shared))
+        WorkstealingWorkerQueues::new(local_queue, Arc::clone(shared))
     }
 
     fn try_push_global(&self, task: Task<W>) -> Result<(), Task<W>> {
@@ -193,31 +193,31 @@ struct LocalQueueShared<W: Worker> {
     /// queue of abandon tasks
     local_abandoned: SegQueue<Task<W>>,
     #[cfg(feature = "batching")]
-    batch_limit: AtomicUsize,
+    batch_limit: crate::atomic::AtomicUsize,
     /// thread-local queues used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
     local_retry: super::retry::RetryQueue<W>,
 }
 
 impl<W: Worker> LocalQueueShared<W> {
-    fn new(thread_index: usize, global: &Arc<GlobalQueue<W>>, config: &Config) -> Self {
+    fn new(thread_index: usize, global: &Arc<GlobalQueue<W>>, _config: &Config) -> Self {
         Self {
             _thread_index: thread_index,
             global: Arc::clone(global),
             local_abandoned: Default::default(),
             #[cfg(feature = "batching")]
-            batch_limit: AtomicUsize::new(config.batch_limit.get_or_default()),
+            batch_limit: crate::atomic::AtomicUsize::new(_config.batch_limit.get_or_default()),
             #[cfg(feature = "retry")]
-            local_retry: super::retry::RetryQueue::new(config.retry_factor.get_or_default()),
+            local_retry: super::retry::RetryQueue::new(_config.retry_factor.get_or_default()),
         }
     }
 
-    fn update(&self, config: &Config) {
+    fn update(&self, _config: &Config) {
         #[cfg(feature = "batching")]
-        self.batch_limit.set(config.batch_limit.get_or_default());
+        self.batch_limit.set(_config.batch_limit.get_or_default());
         #[cfg(feature = "retry")]
         self.local_retry
-            .set_delay_factor(config.retry_factor.get_or_default());
+            .set_delay_factor(_config.retry_factor.get_or_default());
     }
 
     fn try_pop(

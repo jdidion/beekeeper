@@ -388,7 +388,7 @@ mod affinity {
     }
 }
 
-#[cfg(feature = "batching")]
+#[cfg(any(feature = "batching", feature = "retry"))]
 mod batching {
     use super::{Atomic, AtomicOption, MutError};
     use std::fmt::Debug;

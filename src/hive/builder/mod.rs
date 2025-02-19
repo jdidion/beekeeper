@@ -2,11 +2,11 @@
 //! which provides methods to set configuration parameters.
 //!
 //! * Open: has no type parameters; can only set config parameters. Has methods to create
-//! typed builders.
+//!   typed builders.
 //! * Bee-typed: has type parameters for the `Worker` and `Queen` types.
 //! * Queue-typed: builder instances that are specific to the `TaskQueues` type.
 //! * Fully-typed: builder that has type parameters for the `Worker`, `Queen`, and `TaskQueues`
-//! types. This is the only builder with a `build` method to create a `Hive`.
+//!   types. This is the only builder with a `build` method to create a `Hive`.
 //!
 //! Generic - Queue
 //!    |    /
@@ -17,11 +17,13 @@ mod bee;
 mod channel;
 mod full;
 mod open;
+mod workstealing;
 
 pub use bee::BeeBuilder;
 pub use channel::ChannelBuilder;
 pub use full::FullBuilder;
 pub use open::OpenBuilder;
+pub use workstealing::WorkstealingBuilder;
 
 use crate::hive::inner::{BuilderConfig, Token};
 

@@ -367,7 +367,7 @@ mod outcome;
 pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder};
 pub use self::hive::{Hive, Poisoned};
 pub use self::husk::Husk;
-pub use self::inner::{set_config::*, Builder, ChannelTaskQueues};
+pub use self::inner::{set_config::*, Builder, ChannelTaskQueues, WorkstealingTaskQueues};
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
 use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};

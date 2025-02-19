@@ -4,6 +4,7 @@ mod retry;
 mod workstealing;
 
 pub use self::channel::ChannelTaskQueues;
+pub use self::workstealing::WorkstealingTaskQueues;
 
 use super::{Config, Task, Token};
 use crate::bee::Worker;

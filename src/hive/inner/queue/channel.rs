@@ -115,6 +115,7 @@ impl<W: Worker> GlobalQueue<W> {
         }
     }
 
+    #[cfg(feature = "batching")]
     fn try_iter(&self) -> impl Iterator<Item = Task<W>> + '_ {
         self.global_rx.try_iter()
     }
@@ -142,28 +143,29 @@ pub struct ChannelWorkerQueues<W: Worker> {
 }
 
 impl<W: Worker> ChannelWorkerQueues<W> {
-    fn new(thread_index: usize, global_queue: &Arc<GlobalQueue<W>>, config: &Config) -> Self {
+    fn new(thread_index: usize, global_queue: &Arc<GlobalQueue<W>>, _config: &Config) -> Self {
         Self {
             _thread_index: thread_index,
             global: Arc::clone(global_queue),
             local_abandoned: Default::default(),
             #[cfg(feature = "batching")]
             local_batch: RwLock::new(crossbeam_queue::ArrayQueue::new(
-                config.batch_limit.get_or_default().max(1),
+                _config.batch_limit.get_or_default().max(1),
             )),
             #[cfg(feature = "retry")]
-            local_retry: super::retry::RetryQueue::new(config.retry_factor.get_or_default()),
+            local_retry: super::retry::RetryQueue::new(_config.retry_factor.get_or_default()),
         }
     }
 
     /// Updates the local queues based on the provided `config`:
     /// If `batching` is enabled, resizes the batch queue if necessary.
     /// If `retry` is enabled, updates the retry factor.
-    fn update(&self, config: &Config) {
+    fn update(&self, _config: &Config) {
         #[cfg(feature = "batching")]
-        self.update_batch(config);
+        self.update_batch(_config);
         #[cfg(feature = "retry")]
-        self.local_retry.set_delay_factor(config.retry_factor.get_or_default());
+        self.local_retry
+            .set_delay_factor(_config.retry_factor.get_or_default());
     }
 
     /// Consumes this `ChannelWorkerQueues` and drains the tasks currently in the queues into

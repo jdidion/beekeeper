@@ -15,7 +15,7 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
     pub fn empty<I: Into<Q>>(queen: Q) -> Self {
         Self {
             config: Config::empty(),
-            queen: queen.into(),
+            queen,
             _queues: PhantomData,
         }
     }

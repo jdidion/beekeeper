@@ -1,4 +1,4 @@
-use super::{BeeBuilder, BuilderConfig, ChannelBuilder, Token};
+use super::{BeeBuilder, BuilderConfig, ChannelBuilder, Token, WorkstealingBuilder};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut, Worker};
 use crate::hive::Config;
 
@@ -261,6 +261,10 @@ impl OpenBuilder {
     /// configuration.
     pub fn with_channel_queues(self) -> ChannelBuilder {
         ChannelBuilder::from(self.0)
+    }
+
+    pub fn with_workstealing_queues(self) -> WorkstealingBuilder {
+        WorkstealingBuilder::from(self.0)
     }
 }
 

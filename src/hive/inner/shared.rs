@@ -359,39 +359,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         self.no_work_notify_all();
     }
 
-    /// Returns the local queue batch size.
-    pub fn worker_batch_limit(&self) -> usize {
-        self.config.batch_limit.get().unwrap_or_default()
-    }
-
-    /// Changes the local queue batch size. This requires allocating a new queue for each
-    /// worker thread.
-    ///
-    /// Note: this method will block the current thread waiting for all local queues to become
-    /// writable; if `batch_limit` is less than the current batch size, this method will also
-    /// block while any thread's queue length is > `batch_limit` before moving the elements.
-    ///
-    /// TODO: this needs to be moved to an extension that is specific to channel hive
-    pub fn set_worker_batch_limit(&self, batch_limit: usize) -> usize {
-        // update the batch size first so any new threads spawned won't need to have their
-        // queues resized
-        let prev_batch_limit = self
-            .config
-            .batch_limit
-            .try_set(batch_limit)
-            .unwrap_or_default();
-        if prev_batch_limit == batch_limit {
-            return prev_batch_limit;
-        }
-        let num_threads = self.num_threads();
-        if num_threads == 0 {
-            return prev_batch_limit;
-        }
-        self.task_queues
-            .update_for_threads(0, num_threads, &self.config);
-        prev_batch_limit
-    }
-
     /// Returns a reference to the `Queen`.
     ///
     /// Note that, if the queen is a `QueenMut`, the returned value will be a `QueenCell`, and it
@@ -607,6 +574,53 @@ mod affinity {
                 .affinity
                 .get()
                 .and_then(|cores| cores.get(thread_index))
+        }
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use super::Shared;
+    use crate::bee::{Queen, Worker};
+    use crate::hive::TaskQueues;
+
+    impl<W, Q, T> Shared<Q, T>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        T: TaskQueues<W>,
+    {
+        /// Returns the local queue batch size.
+        pub fn worker_batch_limit(&self) -> usize {
+            self.config.batch_limit.get().unwrap_or_default()
+        }
+
+        /// Changes the local queue batch size. This requires allocating a new queue for each
+        /// worker thread.
+        ///
+        /// Note: this method will block the current thread waiting for all local queues to become
+        /// writable; if `batch_limit` is less than the current batch size, this method will also
+        /// block while any thread's queue length is > `batch_limit` before moving the elements.
+        ///
+        /// TODO: this needs to be moved to an extension that is specific to channel hive
+        pub fn set_worker_batch_limit(&self, batch_limit: usize) -> usize {
+            // update the batch size first so any new threads spawned won't need to have their
+            // queues resized
+            let prev_batch_limit = self
+                .config
+                .batch_limit
+                .try_set(batch_limit)
+                .unwrap_or_default();
+            if prev_batch_limit == batch_limit {
+                return prev_batch_limit;
+            }
+            let num_threads = self.num_threads();
+            if num_threads == 0 {
+                return prev_batch_limit;
+            }
+            self.task_queues
+                .update_for_threads(0, num_threads, &self.config);
+            prev_batch_limit
         }
     }
 }

@@ -1,6 +1,6 @@
 use super::{BuilderConfig, FullBuilder, Token};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut, Worker};
-use crate::hive::{ChannelTaskQueues, Config, TaskQueues};
+use crate::hive::{ChannelTaskQueues, Config, TaskQueues, WorkstealingTaskQueues};
 
 /// A Builder for creating `Hive` instances for specific [`Worker`] and [`TaskQueues`] types.
 #[derive(Clone, Default)]
@@ -14,7 +14,7 @@ impl<Q: Queen> BeeBuilder<Q> {
     pub fn empty<I: Into<Q>>(queen: Q) -> Self {
         Self {
             config: Config::empty(),
-            queen: queen.into(),
+            queen,
         }
     }
 
@@ -23,16 +23,13 @@ impl<Q: Queen> BeeBuilder<Q> {
     pub fn preset<I: Into<Q>>(queen: Q) -> Self {
         Self {
             config: Config::default(),
-            queen: queen.into(),
+            queen,
         }
     }
 
     /// Creates a new `BeeBuilder` from an existing `config` and a `queen`.
     pub(super) fn from(config: Config, queen: Q) -> Self {
-        Self {
-            config,
-            queen: queen.into(),
-        }
+        Self { config, queen }
     }
 
     /// Creates a new `FullBuilder` with the current configuration and queen and specified
@@ -44,6 +41,10 @@ impl<Q: Queen> BeeBuilder<Q> {
     /// Creates a new `FullBuilder` with the current configuration and queen and channel-based
     /// task queues.
     pub fn with_channel_queues(self) -> FullBuilder<Q, ChannelTaskQueues<Q::Kind>> {
+        FullBuilder::from(self.config, self.queen)
+    }
+
+    pub fn with_workstealing_queues(self) -> FullBuilder<Q, WorkstealingTaskQueues<Q::Kind>> {
         FullBuilder::from(self.config, self.queen)
     }
 }

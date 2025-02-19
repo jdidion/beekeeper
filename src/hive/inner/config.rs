@@ -1,3 +1,5 @@
+#[cfg(feature = "batching")]
+pub use self::batching::set_batch_limit_default;
 #[cfg(feature = "retry")]
 pub use self::retry::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
@@ -8,7 +10,6 @@ use parking_lot::Mutex;
 use std::sync::LazyLock;
 
 const DEFAULT_NUM_THREADS: usize = 4;
-const DEFAULT_BATCH_LIMIT: usize = 10;
 
 pub static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
     let mut config = Config::empty();
@@ -25,10 +26,6 @@ pub fn set_num_threads_default(num_threads: usize) {
 /// the number of available CPU cores.
 pub fn set_num_threads_default_all() {
     set_num_threads_default(num_cpus::get());
-}
-
-pub fn set_batch_limit_default(batch_limit: usize) {
-    DEFAULTS.lock().batch_limit.set(Some(batch_limit));
 }
 
 /// Resets all builder defaults to their original values.
@@ -58,7 +55,8 @@ impl Config {
     /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
-        self.batch_limit.set(Some(DEFAULT_BATCH_LIMIT));
+        #[cfg(feature = "batching")]
+        self.set_batch_const_defaults();
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
     }
@@ -142,6 +140,23 @@ mod tests {
 
         let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(super::DEFAULT_NUM_THREADS));
+    }
+}
+
+#[cfg(feature = "batching")]
+mod batching {
+    use super::{Config, DEFAULTS};
+
+    const DEFAULT_BATCH_LIMIT: usize = 10;
+
+    pub fn set_batch_limit_default(batch_limit: usize) {
+        DEFAULTS.lock().batch_limit.set(Some(batch_limit));
+    }
+
+    impl Config {
+        pub(super) fn set_batch_const_defaults(&mut self) {
+            self.batch_limit.set(Some(DEFAULT_BATCH_LIMIT));
+        }
     }
 }
 

@@ -94,20 +94,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         self.grow(num_threads)
     }
 
-    /// Returns the batch limit for worker threads.
-    pub fn worker_batch_limit(&self) -> usize {
-        self.shared().worker_batch_limit()
-    }
-
-    /// Sets the batch limit for worker threads.
-    ///
-    /// Depending on this hive's `TaskQueues` implementation, this method may:
-    /// * have no effect (if it does not support local batching)
-    /// * block the current thread until all worker thread queues can be resized.
-    pub fn set_worker_batch_limit(&self, batch_limit: usize) {
-        self.shared().set_worker_batch_limit(batch_limit);
-    }
-
     /// Sends one `input` to the `Hive` for procesing and returns the result, blocking until the
     /// result is available. Creates a channel to send the input and receive the outcome. Returns
     /// an [`Outcome`] with the task output or an error.
@@ -391,7 +377,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Returns a read-only reference to the [`Queen`].
     pub fn queen(&self) -> &Q {
-        &self.shared().queen()
+        self.shared().queen()
     }
 
     /// Returns the number of worker threads that have been requested, i.e., the maximum number of
@@ -793,43 +779,30 @@ mod affinity {
     }
 }
 
-struct HiveTaskContext<'a, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    worker_queues: &'a T::WorkerQueues,
-    shared: &'a Arc<Shared<Q, T>>,
-    outcome_tx: Option<&'a OutcomeSender<W>>,
-}
+#[cfg(feature = "batching")]
+mod batching {
+    use crate::bee::{Queen, Worker};
+    use crate::hive::{Hive, TaskQueues};
 
-impl<W, Q, T> TaskContext<W::Input> for HiveTaskContext<'_, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn should_cancel_tasks(&self) -> bool {
-        self.shared.is_suspended()
-    }
+    impl<W, Q, T> Hive<Q, T>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        T: TaskQueues<W>,
+    {
+        /// Returns the batch limit for worker threads.
+        pub fn worker_batch_limit(&self) -> usize {
+            self.shared().worker_batch_limit()
+        }
 
-    fn submit_task(&self, input: W::Input) -> TaskId {
-        let task = self.shared.prepare_task(input, self.outcome_tx);
-        let task_id = task.id();
-        self.worker_queues.push(task);
-        task_id
-    }
-}
-
-impl<W, Q, T> fmt::Debug for HiveTaskContext<'_, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HiveTaskContext").finish()
+        /// Sets the batch limit for worker threads.
+        ///
+        /// Depending on this hive's `TaskQueues` implementation, this method may:
+        /// * have no effect (if it does not support local batching)
+        /// * block the current thread until all worker thread queues can be resized.
+        pub fn set_worker_batch_limit(&self, batch_limit: usize) {
+            self.shared().set_worker_batch_limit(batch_limit);
+        }
     }
 }
 
@@ -944,6 +917,46 @@ mod retry {
             let outcome = Outcome::from_worker_result(result, task_id, subtask_ids);
             shared.send_or_store_outcome(outcome, outcome_tx);
         }
+    }
+}
+
+struct HiveTaskContext<'a, W, Q, T>
+where
+    W: Worker,
+    Q: Queen<Kind = W>,
+    T: TaskQueues<W>,
+{
+    worker_queues: &'a T::WorkerQueues,
+    shared: &'a Arc<Shared<Q, T>>,
+    outcome_tx: Option<&'a OutcomeSender<W>>,
+}
+
+impl<W, Q, T> TaskContext<W::Input> for HiveTaskContext<'_, W, Q, T>
+where
+    W: Worker,
+    Q: Queen<Kind = W>,
+    T: TaskQueues<W>,
+{
+    fn should_cancel_tasks(&self) -> bool {
+        self.shared.is_suspended()
+    }
+
+    fn submit_task(&self, input: W::Input) -> TaskId {
+        let task = self.shared.prepare_task(input, self.outcome_tx);
+        let task_id = task.id();
+        self.worker_queues.push(task);
+        task_id
+    }
+}
+
+impl<W, Q, T> fmt::Debug for HiveTaskContext<'_, W, Q, T>
+where
+    W: Worker,
+    Q: Queen<Kind = W>,
+    T: TaskQueues<W>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HiveTaskContext").finish()
     }
 }
 
