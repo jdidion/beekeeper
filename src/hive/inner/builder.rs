@@ -180,7 +180,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// ```
     #[cfg(feature = "affinity")]
     fn core_affinity<C: Into<crate::hive::cores::Cores>>(mut self, affinity: C) -> Self {
-        let _ = self.config(Token).affinity.set(Some(affinity.into()));
+        let _ = self.config_ref(Token).affinity.set(Some(affinity.into()));
         self
     }
 
@@ -190,7 +190,7 @@ pub trait Builder: BuilderConfig + Sized {
     #[cfg(feature = "affinity")]
     fn with_default_core_affinity(mut self) -> Self {
         let _ = self
-            .config(Token)
+            .config_ref(Token)
             .affinity
             .set(Some(crate::hive::cores::Cores::all()));
         self
