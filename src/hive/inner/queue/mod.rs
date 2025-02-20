@@ -1,15 +1,15 @@
 mod channel;
-mod status;
 #[cfg(feature = "retry")]
 mod retry;
+mod status;
 mod workstealing;
 
 pub use self::channel::ChannelTaskQueues;
 pub use self::workstealing::WorkstealingTaskQueues;
 
-use self::status::Status;
 #[cfg(feature = "retry")]
 use self::retry::RetryQueue;
+use self::status::Status;
 use super::{Config, Task, Token};
 use crate::bee::Worker;
 
