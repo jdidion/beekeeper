@@ -140,6 +140,7 @@ mod tests {
     use crate::hive::ChannelTaskQueues;
     use crate::hive::{
         outcome_channel, Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, OutcomeStore,
+        TaskQueuesBuilder,
     };
 
     #[test]

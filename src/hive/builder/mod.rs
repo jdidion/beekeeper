@@ -40,16 +40,40 @@
 //!       only the first `num_threads` indices will be used.
 //!
 mod bee;
-mod channel;
 mod full;
 mod open;
-mod workstealing;
+mod queue;
 
 pub use bee::BeeBuilder;
-pub use channel::ChannelBuilder;
 pub use full::FullBuilder;
 pub use open::OpenBuilder;
-pub use workstealing::WorkstealingBuilder;
+pub use queue::channel::ChannelBuilder;
+pub use queue::workstealing::WorkstealingBuilder;
+pub use queue::TaskQueuesBuilder;
+
+pub fn open(with_defaults: bool) -> OpenBuilder {
+    if with_defaults {
+        OpenBuilder::default()
+    } else {
+        OpenBuilder::empty()
+    }
+}
+
+pub fn channel(with_defaults: bool) -> ChannelBuilder {
+    if with_defaults {
+        ChannelBuilder::default()
+    } else {
+        ChannelBuilder::empty()
+    }
+}
+
+pub fn workstealing(with_defaults: bool) -> WorkstealingBuilder {
+    if with_defaults {
+        WorkstealingBuilder::default()
+    } else {
+        WorkstealingBuilder::empty()
+    }
+}
 
 use crate::hive::inner::{BuilderConfig, Token};
 

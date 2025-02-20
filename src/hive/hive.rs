@@ -1,6 +1,7 @@
 use super::{
     ChannelBuilder, ChannelTaskQueues, Config, DerefOutcomes, Husk, Outcome, OutcomeBatch,
-    OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues, WorkerQueues,
+    OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues, TaskQueuesBuilder,
+    WorkerQueues,
 };
 use crate::bee::{DefaultQueen, Queen, TaskContext, TaskId, Worker};
 use std::borrow::Borrow;
@@ -1003,7 +1004,9 @@ where
 mod tests {
     use super::Poisoned;
     use crate::bee::stock::{Caller, Thunk, ThunkWorker};
-    use crate::hive::{outcome_channel, Builder, ChannelBuilder, Outcome, OutcomeIteratorExt};
+    use crate::hive::{
+        outcome_channel, Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder,
+    };
     use std::collections::HashMap;
     use std::thread;
     use std::time::Duration;

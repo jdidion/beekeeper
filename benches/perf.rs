@@ -1,5 +1,5 @@
 use beekeeper::bee::stock::EchoWorker;
-use beekeeper::hive::{outcome_channel, Builder, ChannelBuilder};
+use beekeeper::hive::{outcome_channel, Builder, ChannelBuilder, TaskQueuesBuilder};
 use divan::{bench, black_box_drop, AllocProfiler, Bencher};
 use itertools::iproduct;
 

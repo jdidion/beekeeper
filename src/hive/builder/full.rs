@@ -42,7 +42,7 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
 }
 
 impl<Q: Queen, T: TaskQueues<Q::Kind>> BuilderConfig for FullBuilder<Q, T> {
-    fn config(&mut self, _: Token) -> &mut Config {
+    fn config_ref(&mut self, _: Token) -> &mut Config {
         &mut self.config
     }
 }

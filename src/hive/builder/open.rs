@@ -254,7 +254,7 @@ impl OpenBuilder {
 }
 
 impl BuilderConfig for OpenBuilder {
-    fn config(&mut self, _: Token) -> &mut Config {
+    fn config_ref(&mut self, _: Token) -> &mut Config {
         &mut self.0
     }
 }

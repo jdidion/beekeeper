@@ -3,7 +3,7 @@ use super::{Config, Token};
 /// Private (sealed) trait depended on by `Builder` that must be implemented by builder types.
 pub trait BuilderConfig {
     /// Returns a reference to the underlying `Config`.
-    fn config(&mut self, token: Token) -> &mut Config;
+    fn config_ref(&mut self, token: Token) -> &mut Config;
 }
 
 /// Trait that provides `Builder` types with methods for setting configuration parameters.
@@ -36,14 +36,14 @@ pub trait Builder: BuilderConfig + Sized {
     /// # }
     /// ```
     fn num_threads(mut self, num: usize) -> Self {
-        let _ = self.config(Token).num_threads.set(Some(num));
+        let _ = self.config_ref(Token).num_threads.set(Some(num));
         self
     }
 
     /// Sets the number of worker threads to the global default value.
     fn with_default_num_threads(mut self) -> Self {
         let _ = self
-            .config(Token)
+            .config_ref(Token)
             .num_threads
             .set(super::config::DEFAULTS.lock().num_threads.get());
         self
@@ -73,7 +73,10 @@ pub trait Builder: BuilderConfig + Sized {
     /// # }
     /// ```
     fn with_thread_per_core(mut self) -> Self {
-        let _ = self.config(Token).num_threads.set(Some(num_cpus::get()));
+        let _ = self
+            .config_ref(Token)
+            .num_threads
+            .set(Some(num_cpus::get()));
         self
     }
 
@@ -104,7 +107,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// # }
     /// ```
     fn thread_name<T: Into<String>>(mut self, name: T) -> Self {
-        let _ = self.config(Token).thread_name.set(Some(name.into()));
+        let _ = self.config_ref(Token).thread_name.set(Some(name.into()));
         self
     }
 
@@ -137,7 +140,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// # }
     /// ```
     fn thread_stack_size(mut self, size: usize) -> Self {
-        let _ = self.config(Token).thread_stack_size.set(Some(size));
+        let _ = self.config_ref(Token).thread_stack_size.set(Some(size));
         self
     }
 
@@ -203,9 +206,9 @@ pub trait Builder: BuilderConfig + Sized {
     #[cfg(feature = "batching")]
     fn batch_limit(mut self, batch_limit: usize) -> Self {
         if batch_limit == 0 {
-            self.config(Token).batch_limit.set(None);
+            self.config_ref(Token).batch_limit.set(None);
         } else {
-            self.config(Token).batch_limit.set(Some(batch_limit));
+            self.config_ref(Token).batch_limit.set(Some(batch_limit));
         }
         self
     }
@@ -214,7 +217,7 @@ pub trait Builder: BuilderConfig + Sized {
     #[cfg(feature = "batching")]
     fn with_default_batch_limit(mut self) -> Self {
         let _ = self
-            .config(Token)
+            .config_ref(Token)
             .batch_limit
             .set(super::config::DEFAULTS.lock().batch_limit.get());
         self
@@ -264,9 +267,9 @@ pub trait Builder: BuilderConfig + Sized {
     #[cfg(feature = "retry")]
     fn max_retries(mut self, limit: u32) -> Self {
         let _ = if limit == 0 {
-            self.config(Token).max_retries.set(None)
+            self.config_ref(Token).max_retries.set(None)
         } else {
-            self.config(Token).max_retries.set(Some(limit))
+            self.config_ref(Token).max_retries.set(Some(limit))
         };
         self
     }
@@ -311,9 +314,9 @@ pub trait Builder: BuilderConfig + Sized {
     #[cfg(feature = "retry")]
     fn retry_factor(mut self, duration: std::time::Duration) -> Self {
         if duration == std::time::Duration::ZERO {
-            let _ = self.config(Token).retry_factor.set(None);
+            let _ = self.config_ref(Token).retry_factor.set(None);
         } else {
-            let _ = self.config(Token).set_retry_factor_from(duration);
+            let _ = self.config_ref(Token).set_retry_factor_from(duration);
         };
         self
     }
@@ -323,11 +326,11 @@ pub trait Builder: BuilderConfig + Sized {
     fn with_default_retries(mut self) -> Self {
         let defaults = super::config::DEFAULTS.lock();
         let _ = self
-            .config(Token)
+            .config_ref(Token)
             .max_retries
             .set(defaults.max_retries.get());
         let _ = self
-            .config(Token)
+            .config_ref(Token)
             .retry_factor
             .set(defaults.retry_factor.get());
         self

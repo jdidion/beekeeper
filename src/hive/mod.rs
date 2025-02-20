@@ -389,7 +389,10 @@ mod husk;
 mod inner;
 mod outcome;
 
-pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder};
+pub use self::builder::{
+    channel as channel_builder, open as open_builder, workstealing as workstealing_builder,
+};
+pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder, TaskQueuesBuilder};
 pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
 pub use self::inner::{set_config::*, Builder, ChannelTaskQueues, WorkstealingTaskQueues};
@@ -415,8 +418,8 @@ pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
 
 pub mod prelude {
     pub use super::{
-        outcome_channel, Builder, ChannelBuilder, ChannelTaskQueues, Hive, Husk, OpenBuilder,
-        Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
+        channel_builder, open_builder, outcome_channel, workstealing_builder, Builder, Hive, Husk,
+        Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned, TaskQueuesBuilder,
     };
 }
 
@@ -460,7 +463,7 @@ mod util {
 mod tests {
     use super::{
         Builder, ChannelBuilder, ChannelTaskQueues, Hive, OpenBuilder, Outcome, OutcomeIteratorExt,
-        OutcomeStore,
+        OutcomeStore, TaskQueuesBuilder,
     };
     use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
@@ -1779,7 +1782,7 @@ mod batching_tests {
     use crate::bee::DefaultQueen;
     use crate::hive::{
         Builder, ChannelBuilder, ChannelTaskQueues, Hive, OutcomeIteratorExt, OutcomeReceiver,
-        OutcomeSender,
+        OutcomeSender, TaskQueuesBuilder,
     };
     use std::collections::HashMap;
     use std::thread::{self, ThreadId};
@@ -1919,7 +1922,7 @@ mod batching_tests {
 mod retry_tests {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeIteratorExt};
+    use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder};
     use std::time::{Duration, SystemTime};
 
     fn echo_time(i: usize, ctx: &Context<usize>) -> Result<String, ApplyError<usize, String>> {

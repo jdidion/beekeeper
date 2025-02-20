@@ -4,7 +4,7 @@
 //! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
 //! down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
-use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeBatch};
+use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeBatch, TaskQueuesBuilder};
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -117,7 +117,7 @@ pub use retry::try_map_retryable;
 mod retry {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, ChannelBuilder, OutcomeBatch};
+    use crate::hive::{Builder, ChannelBuilder, OutcomeBatch, TaskQueuesBuilder};
     use std::fmt::Debug;
 
     /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the

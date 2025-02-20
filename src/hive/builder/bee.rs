@@ -122,7 +122,7 @@ impl<W: Worker + Send + Sync + Default> BeeBuilder<DefaultQueen<W>> {
 }
 
 impl<Q: Queen> BuilderConfig for BeeBuilder<Q> {
-    fn config(&mut self, _: Token) -> &mut Config {
+    fn config_ref(&mut self, _: Token) -> &mut Config {
         &mut self.config
     }
 }
