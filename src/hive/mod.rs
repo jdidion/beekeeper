@@ -1736,11 +1736,11 @@ mod tests {
 #[cfg(all(test, feature = "affinity"))]
 mod affinity_tests {
     use crate::bee::stock::{Thunk, ThunkWorker};
-    use crate::hive::{Builder, ChannelBuilder};
+    use crate::hive::{Builder, TaskQueuesBuilder};
 
     #[test]
     fn test_affinity() {
-        let hive = ChannelBuilder::empty()
+        let hive = crate::hive::channel_builder(false)
             .thread_name("affinity example")
             .num_threads(2)
             .core_affinity(0..2)
@@ -1758,7 +1758,7 @@ mod affinity_tests {
 
     #[test]
     fn test_use_all_cores() {
-        let hive = ChannelBuilder::empty()
+        let hive = crate::hive::channel_builder(false)
             .thread_name("affinity example")
             .with_thread_per_core()
             .with_default_core_affinity()
