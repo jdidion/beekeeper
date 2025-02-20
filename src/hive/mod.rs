@@ -1049,11 +1049,13 @@ mod tests {
     #[test]
     fn test_swarm_send() {
         let hive = thunk_hive::<u8>(8, false);
+        #[cfg(feature = "batching")]
+        assert_eq!(hive.worker_batch_limit(), 0);
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.swarm_send(
             (0..8u8).map(|i| {
                 Thunk::of(move || {
-                    thread::sleep(Duration::from_millis((8 - i as u64) * 100));
+                    thread::sleep(Duration::from_millis((8 - i as u64) * 200));
                     i
                 })
             }),
