@@ -237,7 +237,7 @@ impl<W: Worker> LocalQueueShared<W> {
         // fall back to requesting a task from the global queue
         #[cfg(not(feature = "batching"))]
         {
-            self.global.try_pop()
+            global.try_pop()
         }
     }
 
