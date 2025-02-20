@@ -142,6 +142,7 @@ macro_rules! atomic_int {
 }
 
 atomic!(bool);
+atomic_int!(u8);
 atomic_int!(u32);
 atomic_int!(u64);
 atomic_int!(usize);
@@ -458,6 +459,7 @@ mod tests {
         };
     }
 
+    test_numeric_type!(AtomicU8);
     test_numeric_type!(AtomicU32);
     test_numeric_type!(AtomicU64);
     test_numeric_type!(AtomicUsize);

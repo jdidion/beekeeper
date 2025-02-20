@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(queue.try_pop(), Some(task2));
         assert_eq!(queue.len(), 1);
 
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(2));
         assert_eq!(queue.try_pop(), Some(task3));
         assert_eq!(queue.len(), 0);
 

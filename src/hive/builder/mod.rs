@@ -1,5 +1,4 @@
-//! There are a few different builder types. All builders implement the `BuilderConfig` trait,
-//! which provides methods to set configuration parameters.
+//! There are a few different builder types.
 //!
 //! * Open: has no type parameters; can only set config parameters. Has methods to create
 //!   typed builders.
@@ -13,6 +12,33 @@
 //!   Bee  /
 //!    |  /
 //!   Full
+//!
+//! All builders implement the `BuilderConfig` trait, which provides methods to set configuration
+//! parameters. The configuration options available:
+//! * [`Builder::num_threads`]: number of worker threads that will be spawned by the built `Hive`.
+//!     * [`Builder::with_default_num_threads`] will set `num_threads` to the global default value.
+//!     * [`Builder::with_thread_per_core`] will set `num_threads` to the number of available CPU
+//!       cores.
+//! * [`Builder::thread_name`]: thread name for each of the threads spawned by the built `Hive`. By
+//!   default, threads are unnamed.
+//! * [`Builder::thread_stack_size`]: stack size (in bytes) for each of the threads spawned by the
+//!   built `Hive`. See the
+//!   [`std::thread`](https://doc.rust-lang.org/stable/std/thread/index.html#stack-size)
+//!   documentation for details on the default stack size.
+//!
+//! The following configuration options are available when the `retry` feature is enabled:
+//! * [`Builder::max_retries`]: maximum number of times a `Worker` will retry an
+//!   [`ApplyError::Retryable`](crate::bee::ApplyError#Retryable) before giving up.
+//! * [`Builder::retry_factor`]: [`Duration`](std::time::Duration) factor for exponential backoff
+//!   when retrying an `ApplyError::Retryable` error.
+//! * [`Builder::with_default_retries`] sets the retry options to the global defaults, while
+//!   [`Builder::with_no_retries`] disabled retrying.
+//!
+//! The following configuration options are available when the `affinity` feature is enabled:
+//! * [`Builder::core_affinity`]: List of CPU core indices to which the threads should be pinned.
+//!     * [`Builder::with_default_core_affinity`] will set the list to all CPU core indices, though
+//!       only the first `num_threads` indices will be used.
+//!
 mod bee;
 mod channel;
 mod full;

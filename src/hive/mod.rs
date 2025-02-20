@@ -32,24 +32,25 @@
 //! the `Builder`.
 //!
 //! ```
-//! use beekeeper::hive::Builder;
+//! use beekeeper::hive::{Builder, ChannelBuilder};
 //! # type MyWorker1 = beekeeper::bee::stock::EchoWorker<usize>;
 //! # type MyWorker2 = beekeeper::bee::stock::EchoWorker<u32>;
 //!
-//! let builder1 = Builder::default();
+//! let builder1 = ChannelBuilder::default();
 //! let builder2 = builder1.clone();
 //!
-//! let hive1 = builder1.build_with_default::<MyWorker1>();
-//! let hive2 = builder2.build_with_default::<MyWorker2>();
+//! let hive1 = builder1.with_worker_default::<MyWorker1>().build();
+//! let hive2 = builder2.with_worker_default::<MyWorker2>().build();
 //! ```
 //!
 //! If you want a `Hive` with the global defaults for a `Worker` type that implements `Default`,
-//! you can call [`Hive::default`](crate::hive::Hive::default) rather than use a `Builder`.
+//! you can call [`DefaultHive::<W>::default`](crate::hive::Hive::default) rather than use a
+//! `Builder`.
 //!
 //! ```
-//! # use beekeeper::hive::Hive;
+//! # use beekeeper::hive::DefaultHive;
 //! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
-//! let hive: Hive<MyWorker, _> = Hive::default();
+//! let hive = DefaultHive::<MyWorker>::default();
 //! ```
 //!
 //! ## Thread affinity (requires `feature = "affinity"`)
@@ -78,14 +79,15 @@
 //! started with no core affinity.
 //!
 //! ```
-//! use beekeeper::hive::Builder;
+//! use beekeeper::hive::{Builder, ChannelBuilder};
 //! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
 //!
-//! let hive = Builder::new()
+//! let hive = ChannelBuilder::empty()
 //!     .num_threads(4)
 //!     // 16 cores will be available for pinning but only 4 will be used initially
 //!     .core_affinity(0..16)
-//!     .build_with_default::<MyWorker>();
+//!     .with_worker_default::<MyWorker>()
+//!     .build();
 //!
 //! // increase the number of threads by 12 - the new threads will use the additiona
 //! // 12 available cores for pinning
@@ -266,13 +268,13 @@
 //! task IDs.
 //!
 //! ```
-//! use beekeeper::hive::{Hive, OutcomeIteratorExt, outcome_channel};
+//! use beekeeper::hive::{DefaultHive, OutcomeIteratorExt, outcome_channel};
 //! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
 //!
-//! let hive: Hive<MyWorker, _> = Hive::default();
+//! let hive = DefaultHive::<MyWorker>::default();
 //! let (tx, rx) = outcome_channel::<MyWorker>();
-//! let batch1 = hive.swarm_send(0..10, tx.clone());
-//! let batch2 = hive.swarm_send(10..20, tx.clone());
+//! let batch1 = hive.swarm_send(0..10, &tx);
+//! let batch2 = hive.swarm_send(10..20, tx);
 //! let outputs: Vec<_> = rx.into_iter()
 //!     .select_ordered_outputs(batch1.into_iter().chain(batch2.into_iter()))
 //!     .collect();
@@ -287,10 +289,10 @@
 //! (see below), which provides a common interface for accessing stored `Outcome`s.
 //!
 //! ```
-//! use beekeeper::hive::{Hive, OutcomeStore};
+//! use beekeeper::hive::{DefaultHive, OutcomeStore};
 //! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
 //!
-//! let hive: Hive<MyWorker, _> = Hive::default();
+//! let hive = DefaultHive::<MyWorker>::default();
 //! let (outcomes, sum) = hive.scan(0..10, 0, |sum, i| {
 //!     *sum += i;
 //!     i * 2
@@ -365,7 +367,7 @@ mod inner;
 mod outcome;
 
 pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder};
-pub use self::hive::{Hive, Poisoned};
+pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
 pub use self::inner::{set_config::*, Builder, ChannelTaskQueues, WorkstealingTaskQueues};
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
@@ -505,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn test_grow() {
+    fn test_grow_from_nonzero() {
         let hive = void_thunk_hive(TEST_TASKS, false);
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
@@ -523,7 +525,7 @@ mod tests {
         }
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().1, total_threads as u64);
-        let husk = hive.try_into_husk().unwrap();
+        let husk = hive.try_into_husk(false).unwrap();
         assert_eq!(husk.iter_successes().count(), total_threads);
     }
 
@@ -636,7 +638,7 @@ mod tests {
         hive.join();
         // Ensure that none of the threads have panicked
         assert_eq!(hive.num_panics(), TEST_TASKS);
-        let husk = hive.try_into_husk().unwrap();
+        let husk = hive.try_into_husk(false).unwrap();
         assert_eq!(husk.num_panics(), TEST_TASKS);
     }
 
@@ -789,7 +791,7 @@ mod tests {
         let debug = format!("{:?}", hive);
         assert_eq!(
                 debug,
-                "Hive { task_tx: Sender { .. }, shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
+                "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
             );
 
         let hive: THive<usize> = ChannelBuilder::empty()
@@ -800,7 +802,7 @@ mod tests {
         let debug = format!("{:?}", hive);
         assert_eq!(
                 debug,
-                "Hive { task_tx: Sender { .. }, shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
+                "Hive { shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
             );
 
         let hive = thunk_hive(4, true);
@@ -809,7 +811,7 @@ mod tests {
         let debug = format!("{:?}", hive);
         assert_eq!(
                 debug,
-                "Hive { task_tx: Sender { .. }, shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 1 } }"
+                "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 1 } }"
             );
     }
 
@@ -975,7 +977,7 @@ mod tests {
                     i
                 })
             }),
-            &tx,
+            tx,
         );
         let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
@@ -1055,7 +1057,7 @@ mod tests {
                     i
                 })
             }),
-            &tx,
+            tx,
         );
         let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
@@ -1127,7 +1129,7 @@ mod tests {
             .num_threads(4)
             .build();
         let (tx, rx) = super::outcome_channel();
-        let (mut task_ids, state) = hive.scan_send(0..10, &tx, 0, |acc, i| {
+        let (mut task_ids, state) = hive.scan_send(0..10, tx, 0, |acc, i| {
             *acc += i;
             *acc
         });
@@ -1163,7 +1165,7 @@ mod tests {
             .num_threads(4)
             .build();
         let (tx, rx) = super::outcome_channel();
-        let (results, state) = hive.try_scan_send(0..10, &tx, 0, |acc, i| {
+        let (results, state) = hive.try_scan_send(0..10, tx, 0, |acc, i| {
             *acc += i;
             Ok::<_, String>(*acc)
         });
@@ -1302,7 +1304,7 @@ mod tests {
         let hive1 = thunk_hive::<u8>(8, false);
         let task_ids = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
-        let mut husk1 = hive1.try_into_husk().unwrap();
+        let mut husk1 = hive1.try_into_husk(false).unwrap();
         for i in task_ids.iter() {
             assert!(husk1.outcomes_deref().get(i).unwrap().is_success());
             assert!(matches!(husk1.get(*i), Some(Outcome::Success { .. })));
@@ -1321,7 +1323,7 @@ mod tests {
             })
         }));
         hive2.join();
-        let mut husk2 = hive2.try_into_husk().unwrap();
+        let mut husk2 = hive2.try_into_husk(false).unwrap();
 
         let mut outputs1 = husk1
             .remove_all()
@@ -1345,7 +1347,7 @@ mod tests {
             })
         }));
         hive3.join();
-        let husk3 = hive3.try_into_husk().unwrap();
+        let husk3 = hive3.try_into_husk(false).unwrap();
         let (_, outcomes3) = husk3.into_parts();
         let mut outputs3 = outcomes3
             .into_iter()
@@ -1660,7 +1662,12 @@ mod tests {
         assert_eq!(output, b"abcdefgh");
 
         // shutdown the hive, use the Queen to wait on child processes, and report errors
-        let mut queen = hive.try_into_husk().unwrap().into_parts().0.into_inner();
+        let mut queen = hive
+            .try_into_husk(false)
+            .unwrap()
+            .into_parts()
+            .0
+            .into_inner();
         let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
             queen.wait_for_all().into_iter().partition(Result::is_ok);
         if !wait_err.is_empty() {

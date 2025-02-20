@@ -152,7 +152,7 @@ mod tests {
         let mut task_ids = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
-        let mut husk = hive.try_into_husk().unwrap();
+        let mut husk = hive.try_into_husk(false).unwrap();
         assert!(husk.has_unprocessed());
         for i in task_ids.iter() {
             assert!(husk.get(*i).unwrap().is_unprocessed());
@@ -178,12 +178,12 @@ mod tests {
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.try_into_husk().unwrap();
+        let husk1 = hive1.try_into_husk(false).unwrap();
         let (hive2, _) = husk1.into_hive_swarm_store_unprocessed::<ChannelTaskQueues<_>>();
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
-        let husk2 = hive2.try_into_husk().unwrap();
+        let husk2 = hive2.try_into_husk(false).unwrap();
         assert!(!husk2.has_unprocessed());
         assert!(husk2.has_successes());
         assert_eq!(husk2.iter_successes().count(), 10);
@@ -199,13 +199,13 @@ mod tests {
         let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
-        let husk1 = hive1.try_into_husk().unwrap();
+        let husk1 = hive1.try_into_husk(false).unwrap();
         let (tx, rx) = outcome_channel();
         let (hive2, task_ids) = husk1.into_hive_swarm_send_unprocessed::<ChannelTaskQueues<_>>(&tx);
         // now spin up worker threads to process the tasks
         hive2.grow(8).expect("error spawning threads");
         hive2.join();
-        let husk2 = hive2.try_into_husk().unwrap();
+        let husk2 = hive2.try_into_husk(false).unwrap();
         assert!(husk2.is_empty());
         let mut outputs = rx
             .select_ordered(task_ids)
@@ -223,7 +223,7 @@ mod tests {
             .build();
         hive.map_store((0..10).map(|i| Thunk::of(move || i)));
         hive.join();
-        let mut outputs = hive.try_into_husk().unwrap().into_parts().1.unwrap();
+        let mut outputs = hive.try_into_husk(false).unwrap().into_parts().1.unwrap();
         outputs.sort();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>());
     }
@@ -239,7 +239,7 @@ mod tests {
             (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
         );
         hive.join();
-        let (_, result) = hive.try_into_husk().unwrap().into_parts();
+        let (_, result) = hive.try_into_husk(false).unwrap().into_parts();
         let _ = result.ok_or_unwrap_errors(true);
     }
 }

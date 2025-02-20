@@ -78,7 +78,7 @@ impl<Q: QueenMut> From<Q> for QueenCell<Q> {
 ///     type Output = u8;
 ///     type Error = ();
 ///
-///     fn apply(&mut self, input: u8, _: &Context) -> WorkerResult<Self> {
+///     fn apply(&mut self, input: u8, _: &Context<Self::Input>) -> WorkerResult<Self> {
 ///         Ok(self.0.saturating_add(input))
 ///     }
 /// }
@@ -88,7 +88,7 @@ impl<Q: QueenMut> From<Q> for QueenCell<Q> {
 /// impl Queen for MyQueen {
 ///     type Kind = MyWorker;
 ///
-///     fn create(&mut self) -> Self::Kind {
+///     fn create(&self) -> Self::Kind {
 ///         MyWorker::default()
 ///     }
 /// }

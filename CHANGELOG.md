@@ -15,6 +15,7 @@ The general theme of this release is performance improvement by eliminating thre
     * `BeeBuilder` and `FullBuilder` are intermediate types that generally should not be instantiated directly.
   * `beekeeper::bee::Queen::create` now takes `&self` rather than `&mut self`. There is a new type, `beekeeper::bee::QueenMut`, with a `create(&mut self)` method, and needs to be wrapped in a `beekeeper::bee::QueenCell` to implement the `Queen` trait. This enables the `Hive` to create new workers without locking in the case of a `Queen` that does not need mutable state.
   * `beekeeper::bee::Context` now takes a generic parameter that must be input type of the `Worker`.
+  * `beekeeper::hive::Hive::try_into_husk` now has an `urgent` parameter to indicate whether queued tasks should be abandoned when shutting down the hive (`true`) or if they should be allowed to finish processing (`false`).
 * Features
   * Added the `TaskQueues` trait, which enables `Hive` to be specialized for different implementations of global (i.e., sending tasks from the `Hive` to worker threads) and local (i.e., worker thread-specific) queues.
     * `ChannelTaskQueues` implements the existing behavior, using a channel for sending tasks.

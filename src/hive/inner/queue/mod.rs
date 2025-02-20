@@ -1,4 +1,5 @@
 mod channel;
+mod closed;
 #[cfg(feature = "retry")]
 mod retry;
 mod workstealing;
@@ -6,9 +7,11 @@ mod workstealing;
 pub use self::channel::ChannelTaskQueues;
 pub use self::workstealing::WorkstealingTaskQueues;
 
+use self::closed::Closed;
+#[cfg(feature = "retry")]
+use self::retry::RetryQueue;
 use super::{Config, Task, Token};
 use crate::bee::Worker;
-use std::ops::Deref;
 
 /// Errors that may occur when trying to pop tasks from the global queue.
 #[derive(thiserror::Error, Debug)]
@@ -25,7 +28,6 @@ pub enum PopTaskError {
 /// This trait is sealed - it cannot be implemented outside of this crate.
 pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     type WorkerQueues: WorkerQueues<W>;
-    type WorkerQueuesTarget: Deref<Target = Self::WorkerQueues>;
 
     /// Returns a new instance.
     ///
@@ -39,7 +41,7 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     fn update_for_threads(&self, start_index: usize, end_index: usize, config: &Config);
 
     /// Returns a new `WorkerQueues` instance for a thread.
-    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueuesTarget;
+    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueues;
 
     /// Tries to add a task to the global queue.
     ///
@@ -48,13 +50,17 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
 
     /// Closes this `GlobalQueue` so no more tasks may be pushed.
     ///
+    /// If `urgent` is `true`, this also prevents queued tasks from being popped.
+    ///
     /// The private `Token` is used to prevent this method from being called externally.
-    fn close(&self, token: Token);
+    fn close(&self, urgent: bool, token: Token);
 
     /// Drains all tasks from all global and local queues and returns them as a `Vec`.
     ///
     /// This is a destructive operation - if `close` has not been called, it will be called before
     /// draining the queues.
+    ///
+    /// This method panics if `close` has not been called.
     fn drain(self) -> Vec<Task<W>>;
 }
 

@@ -3,6 +3,7 @@ use super::{
     OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues, WorkerQueues,
 };
 use crate::bee::{DefaultQueen, Queen, TaskContext, TaskId, Worker};
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -100,13 +101,14 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     pub fn apply(&self, input: W::Input) -> Outcome<W> {
         let (tx, rx) = super::outcome_channel();
         let task_id = self.shared().send_one_global(input, Some(&tx));
+        drop(tx);
         rx.recv().unwrap_or_else(|_| Outcome::Missing { task_id })
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its ID. The [`Outcome`] of
     /// the task will be sent to `tx` upon completion.
-    pub fn apply_send(&self, input: W::Input, tx: &OutcomeSender<W>) -> TaskId {
-        self.shared().send_one_global(input, Some(tx))
+    pub fn apply_send<S: Borrow<OutcomeSender<W>>>(&self, input: W::Input, tx: S) -> TaskId {
+        self.shared().send_one_global(input, Some(tx.borrow()))
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its ID immediately. The
@@ -127,6 +129,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     {
         let (tx, rx) = super::outcome_channel();
         let task_ids = self.shared().send_batch_global(batch, Some(&tx));
+        drop(tx);
         rx.select_ordered(task_ids)
     }
 
@@ -152,12 +155,14 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// This method is more efficient than [`map_send`](Self::map_send) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm_send<I>(&self, batch: I, outcome_tx: &OutcomeSender<W>) -> Vec<TaskId>
+    pub fn swarm_send<I, S>(&self, batch: I, outcome_tx: S) -> Vec<TaskId>
     where
+        S: Borrow<OutcomeSender<W>>,
         I: IntoIterator<Item = W::Input>,
         I::IntoIter: ExactSizeIterator,
     {
-        self.shared().send_batch_global(batch, Some(outcome_tx))
+        self.shared()
+            .send_batch_global(batch, Some(outcome_tx.borrow()))
     }
 
     /// Sends a `batch` of inputs to the `Hive` for processing, and returns a [`Vec`] of task IDs.
@@ -185,6 +190,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
             .into_iter()
             .map(|task| self.apply_send(task, &tx))
             .collect();
+        drop(tx);
         rx.select_ordered(task_ids)
     }
 
@@ -203,6 +209,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
             .into_iter()
             .map(|task| self.apply_send(task, &tx))
             .collect();
+        drop(tx);
         rx.select_unordered(task_ids)
     }
 
@@ -211,14 +218,14 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_send`](Self::swarm_send) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_send(
+    pub fn map_send<S: Borrow<OutcomeSender<W>>>(
         &self,
         inputs: impl IntoIterator<Item = W::Input>,
-        tx: &OutcomeSender<W>,
+        tx: S,
     ) -> Vec<TaskId> {
         inputs
             .into_iter()
-            .map(|input| self.apply_send(input, tx))
+            .map(|input| self.apply_send(input, tx.borrow()))
             .collect()
     }
 
@@ -237,7 +244,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing.
     /// Returns an [`OutcomeBatch`] of the outputs and the final state value.
-    pub fn scan<St, I, F>(
+    pub fn scan<I, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
         init: St,
@@ -248,6 +255,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     {
         let (tx, rx) = super::outcome_channel();
         let (task_ids, fold_value) = self.scan_send(items, &tx, init, f);
+        drop(tx);
         let outcomes = rx.select_unordered(task_ids).into();
         (outcomes, fold_value)
     }
@@ -256,7 +264,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
     /// or an error. Returns an [`OutcomeBatch`] of the outputs, a [`Vec`] of errors, and the final
     /// state value.
-    pub fn try_scan<St, I, E, F>(
+    pub fn try_scan<I, E, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
         init: St,
@@ -276,6 +284,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
                 (task_ids, errors, acc)
             },
         );
+        drop(tx);
         let outcomes = rx.select_unordered(task_ids).into();
         (outcomes, errors, fold_value)
     }
@@ -284,21 +293,22 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// The outputs are sent to `tx` in the order they become available. Returns a [`Vec`] of the
     /// task IDs and the final state value.
-    pub fn scan_send<St, I, F>(
+    pub fn scan_send<I, S, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
-        tx: &OutcomeSender<W>,
+        tx: S,
         init: St,
         mut f: F,
     ) -> (Vec<TaskId>, St)
     where
+        S: Borrow<OutcomeSender<W>>,
         F: FnMut(&mut St, I) -> W::Input,
     {
         items
             .into_iter()
             .fold((Vec::new(), init), |(mut task_ids, mut acc), item| {
                 let input = f(&mut acc, item);
-                task_ids.push(self.apply_send(input, tx));
+                task_ids.push(self.apply_send(input, tx.borrow()));
                 (task_ids, acc)
             })
     }
@@ -308,20 +318,21 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. The outputs are sent to `tx` in the order they become available. This
     /// function returns the final state value and a [`Vec`] of results, where each result is
     /// either a task ID or an error.
-    pub fn try_scan_send<St, I, E, F>(
+    pub fn try_scan_send<I, E, S, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
-        tx: &OutcomeSender<W>,
+        tx: S,
         init: St,
         mut f: F,
     ) -> (Vec<Result<TaskId, E>>, St)
     where
+        S: Borrow<OutcomeSender<W>>,
         F: FnMut(&mut St, I) -> Result<W::Input, E>,
     {
         items
             .into_iter()
             .fold((Vec::new(), init), |(mut results, mut acc), inp| {
-                results.push(f(&mut acc, inp).map(|input| self.apply_send(input, tx)));
+                results.push(f(&mut acc, inp).map(|input| self.apply_send(input, tx.borrow())));
                 (results, acc)
             })
     }
@@ -330,7 +341,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// This function returns the final state value and a [`Vec`] of task IDs. The [`Outcome`]s of
     /// the tasks are retained and available for later retrieval.
-    pub fn scan_store<St, I, F>(
+    pub fn scan_store<I, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
         init: St,
@@ -353,7 +364,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. This function returns the final value of the state value and a [`Vec`] of
     /// results, where each result is either a task ID or an error. The [`Outcome`]s of the
     /// tasks are retained and available for later retrieval.
-    pub fn try_scan_store<St, I, F, E>(
+    pub fn try_scan_store<I, E, St, F>(
         &self,
         items: impl IntoIterator<Item = I>,
         init: St,
@@ -451,14 +462,15 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::Builder;
+    /// use beekeeper::hive::{Builder, ChannelBuilder};
     /// use std::thread;
     /// use std::time::Duration;
     ///
     /// # fn main() {
-    /// let hive = Builder::new()
+    /// let hive = ChannelBuilder::empty()
     ///     .num_threads(4)
-    ///     .build_with_default::<ThunkWorker<()>>();
+    ///     .with_worker_default::<ThunkWorker<()>>()
+    ///     .build();
     /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be started.
     /// // There should be 4 active tasks and 6 queued tasks.
@@ -519,14 +531,22 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         self.shared().take_outcomes()
     }
 
-    fn try_close(mut self) -> Option<Shared<Q, T>> {
+    /// Consumes this `Hive` and attempts to acquire the shared data object.
+    ///
+    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
+    /// worker threads are also prevented from taking any more tasks from the queues; otherwise,
+    /// this method blocks while all queued are processed.
+    ///
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method returns
+    /// `None`.
+    fn try_close(mut self, urgent: bool) -> Option<Shared<Q, T>> {
         if self.shared().num_referrers() > 1 {
             return None;
         }
         // take the inner value and replace it with `None`
         let shared = self.0.take().unwrap();
         // close the global queue to prevent new tasks from being submitted
-        shared.close_task_queues();
+        shared.close_task_queues(urgent);
         // wait for all tasks to finish
         shared.wait_on_done();
         // unwrap the Arc and return the inner Shared value
@@ -535,24 +555,33 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Consumes this `Hive` and attempts to shut it down gracefully.
     ///
-    /// All unprocessed tasks and stored outcomes are discarded.
-    ///
     /// If this `Hive` has been cloned, and those clones have not been dropped, this method returns
     /// `false`.
     ///
+    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
+    /// worker threads are also prevented from taking any more tasks from the queues, and all
+    /// queued tasks are converted to `Unprocessed` outcomes and sent or discarded; otherwise,
+    /// this method blocks while all queued tasks are processed.
+    ///
     /// Note that it is not necessary to call this method explicitly - all resources are dropped
     /// automatically when the last clone of the hive is dropped.
-    pub fn close(self) -> bool {
-        self.try_close().is_some()
+    pub fn close(self, urgent: bool) -> bool {
+        self.try_close(urgent).is_some()
     }
 
-    /// Consumes this `Hive` and attempts to convert any remaining unprocessed tasks into
-    /// `Unprocessed` outcomes and either sends each to its outcome channel or adds it to the
-    /// stored outcomes.
+    /// Consumes this `Hive` and returns a map of stored outcomes.
     ///
-    /// Returns a map of stored outcomes.
-    pub fn try_into_outcomes(self) -> Option<HashMap<TaskId, Outcome<W>>> {
-        self.try_close().map(|shared| shared.into_outcomes())
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method
+    /// returns `None` since it cannot take exclusive ownership of the internal shared data.
+    ///
+    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
+    /// worker threads are also prevented from taking any more tasks from the queues, and all
+    /// queued tasks are converted to `Unprocessed` outcomes and sent or stored; otherwise,
+    /// this method blocks while all queued tasks are processed.
+    ///
+    /// This method first joins on the `Hive` to wait for all tasks to finish.
+    pub fn try_into_outcomes(self, urgent: bool) -> Option<HashMap<TaskId, Outcome<W>>> {
+        self.try_close(urgent).map(|shared| shared.into_outcomes())
     }
 
     /// Consumes this `Hive` and attempts to return a [`Husk`] containing the remnants of this
@@ -562,13 +591,20 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// If this `Hive` has been cloned, and those clones have not been dropped, this method
     /// returns `None` since it cannot take exclusive ownership of the internal shared data.
     ///
+    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
+    /// worker threads are also prevented from taking any more tasks from the queues, and all
+    /// queued tasks are converted to `Unprocessed` outcomes and sent or stored; otherwise,
+    /// this method blocks while all queued tasks are processed.
+    ///
     /// This method first joins on the `Hive` to wait for all tasks to finish.
-    pub fn try_into_husk(self) -> Option<Husk<Q>> {
-        self.try_close().map(|shared| shared.into_husk())
+    pub fn try_into_husk(self, urgent: bool) -> Option<Husk<Q>> {
+        self.try_close(urgent).map(|shared| shared.into_husk())
     }
 }
 
-impl<W: Worker + Send + Sync + Default> Default for Hive<DefaultQueen<W>, ChannelTaskQueues<W>> {
+pub type DefaultHive<W> = Hive<DefaultQueen<W>, ChannelTaskQueues<W>>;
+
+impl<W: Worker + Send + Sync + Default> Default for DefaultHive<W> {
     fn default() -> Self {
         ChannelBuilder::default().with_worker_default().build()
     }

@@ -147,7 +147,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Returns the `WorkerQueues` instance for the worker thread with the specified index.
-    pub fn worker_queues(&self, thread_index: usize) -> T::WorkerQueuesTarget {
+    pub fn worker_queues(&self, thread_index: usize) -> T::WorkerQueues {
         self.task_queues.worker_queues(thread_index)
     }
 
@@ -421,7 +421,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     /// 3. Resumes the hive if it is suspendend, which enables blocked worker threads to terminate.
     pub fn poison(&self) {
         self.poisoned.set(true);
-        self.close_task_queues();
+        self.close_task_queues(true);
         self.set_suspended(false);
     }
 
@@ -487,15 +487,14 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Close the tasks queues so no more tasks can be added.
-    pub fn close_task_queues(&self) {
-        self.task_queues.close(Token);
+    pub fn close_task_queues(&self, urgent: bool) {
+        self.task_queues.close(urgent, Token);
     }
 
     fn flush(
         task_queues: T,
         mut outcomes: HashMap<TaskId, Outcome<W>>,
     ) -> HashMap<TaskId, Outcome<W>> {
-        task_queues.close(Token);
         for task in task_queues.drain().into_iter() {
             let task_id = task.id();
             let (outcome, outcome_tx) = task.into_unprocessed();

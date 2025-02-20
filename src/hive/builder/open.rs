@@ -4,41 +4,22 @@ use crate::hive::Config;
 
 /// A builder for a [`Hive`](crate::hive::Hive).
 ///
-/// Calling [`Builder::new()`] creates an unconfigured `Builder`, while calling
-/// [`Builder::default()`] creates a `Builder` with fields preset to the global default values.
+/// Calling [`OpenBuilder::empty()`] creates an unconfigured `Builder`, while calling
+/// [`OpenBuilder::default()`] creates a `Builder` with fields preset to the global default values.
 /// Global defaults can be changed using the
 /// [`beekeeper::hive::set_*_default`](crate::hive#functions) functions.
 ///
-/// The configuration options available:
-/// * [`Builder::num_threads`]: number of worker threads that will be spawned by the built `Hive`.
-///     * [`Builder::with_default_num_threads`] will set `num_threads` to the global default value.
-///     * [`Builder::with_thread_per_core`] will set `num_threads` to the number of available CPU
-///       cores.
-/// * [`Builder::thread_name`]: thread name for each of the threads spawned by the built `Hive`. By
-///   default, threads are unnamed.
-/// * [`Builder::thread_stack_size`]: stack size (in bytes) for each of the threads spawned by the
-///   built `Hive`. See the
-///   [`std::thread`](https://doc.rust-lang.org/stable/std/thread/index.html#stack-size)
-///   documentation for details on the default stack size.
+/// See the [module documentation](crate::hive::builder) for details on the available configuration
+/// options.
 ///
-/// The following configuration options are available when the `retry` feature is enabled:
-/// * [`Builder::max_retries`]: maximum number of times a `Worker` will retry an
-///   [`ApplyError::Retryable`](crate::bee::ApplyError#Retryable) before giving up.
-/// * [`Builder::retry_factor`]: [`Duration`](std::time::Duration) factor for exponential backoff
-///   when retrying an `ApplyError::Retryable` error.
-/// * [`Builder::with_default_retries`] sets the retry options to the global defaults, while
-///   [`Builder::with_no_retries`] disabled retrying.
+/// This builder needs to be specialized to both the `Queen` and `TaskQueues` types. You can do
+/// this in either order.
 ///
-/// The following configuration options are available when the `affinity` feature is enabled:
-/// * [`Builder::core_affinity`]: List of CPU core indices to which the threads should be pinned.
-///     * [`Builder::with_default_core_affinity`] will set the list to all CPU core indices, though
-///       only the first `num_threads` indices will be used.
-///
-/// To create the [`Hive`], call one of the `build*` methods:
-/// * [`Builder::build`] requires a [`Queen`] instance.
-/// * [`Builder::build_default`] requires a [`Queen`] type that implements [`Default`].
-/// * [`Builder::build_with`] requires a [`Worker`] instance that implements [`Clone`].
-/// * [`Builder::build_with_default`] requires a [`Worker`] type that implements [`Default`].
+/// * Calling one of the `with_queen*` methods returns a `BeeBuilder` specialized to a `Queen`.
+/// * Calling `with_worker` or `with_worker_default` returns a `BeeBuilder` specialized to a
+///   `CloneQueen` or `DefaultQueen` (respectively) for a specific `Worker` type.
+/// * Calling `with_channel_queues` or `with_workstealing_queues` returns a `ChannelBuilder` or
+///   `WorkstealingBuilder` specialized to a `TaskQueues` type.
 ///
 /// # Examples
 ///
@@ -46,9 +27,10 @@ use crate::hive::Config;
 /// a 8 MB stack size:
 ///
 /// ```
+/// # use beekeeper::hive::{Builder, OpenBuilder};
 /// type MyWorker = beekeeper::bee::stock::ThunkWorker<()>;
 ///
-/// let hive = beekeeper::hive::Builder::empty()
+/// let hive = OpenBuilder::empty()
 ///     .num_threads(8)
 ///     .thread_stack_size(8_000_000)
 ///     .with_worker_default::<MyWorker>()
@@ -70,8 +52,8 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, Hive};
-    /// # use beekeeper::bee::{Context, Queen, Worker, WorkerResult};
+    /// # use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// # use beekeeper::bee::{Context, QueenMut, Worker, WorkerResult};
     ///
     /// #[derive(Debug)]
     /// struct CounterWorker {
@@ -95,7 +77,7 @@ impl OpenBuilder {
     ///     type Output = String;
     ///     type Error = ();
     ///
-    ///     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    ///     fn apply(&mut self, input: Self::Input, _: &Context<usize>) -> WorkerResult<Self> {
     ///         self.input_count += 1;
     ///         self.input_sum += input;
     ///         let s = format!(
@@ -111,7 +93,7 @@ impl OpenBuilder {
     ///     num_workers: usize
     /// }
     ///
-    /// impl Queen for CounterQueen {
+    /// impl QueenMut for CounterQueen {
     ///     type Kind = CounterWorker;
     ///
     ///     fn create(&mut self) -> Self::Kind {
@@ -121,16 +103,17 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = Builder::new()
+    /// let hive = ChannelBuilder::empty()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build(CounterQueen::default());
+    ///     .with_queen_mut_default::<CounterQueen>()
+    ///     .build();
     ///
     /// for i in 0..100 {
     ///     hive.apply_store(i);
     /// }
-    /// let husk = hive.try_into_husk().unwrap();
-    /// assert_eq!(husk.queen().num_workers, 8);
+    /// let husk = hive.try_into_husk(false).unwrap();
+    /// assert_eq!(husk.queen().get().num_workers, 8);
     /// # }
     /// ```
     pub fn with_queen<Q: Queen, I: Into<Q>>(self, queen: I) -> BeeBuilder<Q> {
@@ -155,7 +138,7 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, OutcomeIteratorExt};
+    /// # use beekeeper::hive::{Builder, ChannelBuilder, OutcomeIteratorExt};
     /// # use beekeeper::bee::{Context, Worker, WorkerResult};
     ///
     /// #[derive(Debug, Clone)]
@@ -173,13 +156,13 @@ impl OpenBuilder {
     ///     type Output = isize;
     ///     type Error = ();
     ///
-    ///     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    ///     fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
     ///         let (operand, operator) = input;
     ///         let value = match operator % 4 {
-    ///             0 => operand + self.config(Token),
-    ///             1 => operand - self.config(Token),
-    ///             2 => operand * self.config(Token),
-    ///             3 => operand / self.config(Token),
+    ///             0 => operand + self.0,
+    ///             1 => operand - self.0,
+    ///             2 => operand * self.0,
+    ///             3 => operand / self.0,
     ///             _ => unreachable!(),
     ///         };
     ///         Ok(value)
@@ -187,10 +170,11 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = Builder::new()
+    /// let hive = ChannelBuilder::empty()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build_with(MathWorker(5isize));
+    ///     .with_worker(MathWorker(5isize))
+    ///     .build();
     ///
     /// let sum: isize = hive
     ///     .map((0..100).zip((0..4).cycle()))
@@ -212,7 +196,7 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, OutcomeIteratorExt};
+    /// # use beekeeper::hive::{Builder, ChannelBuilder, OutcomeIteratorExt};
     /// # use beekeeper::bee::{Context, Worker,  WorkerResult};
     /// # use std::num::NonZeroIsize;
     ///
@@ -224,13 +208,13 @@ impl OpenBuilder {
     ///     type Output = isize;
     ///     type Error = ();
     ///
-    ///     fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    ///     fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
     ///         let (operand, operator) = input;
     ///         let result = match operator % 4 {
-    ///             0 => self.config(Token) + operand.get(),
-    ///             1 => self.config(Token) - operand.get(),
-    ///             2 => self.config(Token) * operand.get(),
-    ///             3 => self.config(Token) / operand.get(),
+    ///             0 => self.0 + operand.get(),
+    ///             1 => self.0 - operand.get(),
+    ///             2 => self.0 * operand.get(),
+    ///             3 => self.0 / operand.get(),
     ///             _ => unreachable!(),
     ///         };
     ///         Ok(result)
@@ -238,10 +222,11 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = Builder::new()
+    /// let hive = ChannelBuilder::empty()
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
-    ///     .build_with_default::<MathWorker>();
+    ///     .with_worker_default::<MathWorker>()
+    ///     .build();
     ///
     /// let sum: isize = hive
     ///     .map((1..=100).map(|i| NonZeroIsize::new(i).unwrap()).zip((0..4).cycle()))
