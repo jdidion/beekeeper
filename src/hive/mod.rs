@@ -183,7 +183,8 @@
 //!
 //! Each group of functions has multiple variants:
 //! * The methods that end with `_send` all take a channel sender as a second argument and will
-//!   deliver results to that channel as they become available.
+//!   deliver results to that channel as they become available. See the note below on proper use of
+//!   channels.
 //! * The methods that end with `_store` are all non-blocking functions that return the task IDs
 //!   associated with the submitted tasks and will store the task results in the hive. The outcomes
 //!   can be retrieved from the hive later by their IDs, e.g., using `remove_success`.
@@ -211,6 +212,28 @@
 //!
 //! You can create an instance of the enabled outcome channel type using the [`outcome_channel`]
 //! function.
+//!
+//! `Hive` as several methods (with the `_send` suffix) for submitting tasks whose outcomes will be
+//! delivered to a user-specified channel. Note that, for these methods, the `tx` parameter is of
+//! type `Borrow<Sender<Outcome<W>>`, which allows you to pass in either a value or a reference.
+//! Passing a value causes the `Sender` to be dropped after the call; passing a reference allows
+//! you to use the same `Sender` for multiple `_send` calls, but you need to explicitly drop the
+//! sender (e.g., `drop(tx)`), pass it by value to the last `_send` call, or be careful about how
+//! you obtain outcomes from the `Receiver`. Methods such as `recv` and `iter` will block until the
+//! `Sender` is dropped. Since `Receiver` implements `Iterator`, you can use the methods of
+//! [`OutcomeIteratorExt`] to iterate over the outcomes for specific task IDs.
+//!
+//! ```no_run
+//! use beekeeper::hive::prelude::*;
+//! let (tx, rx) = outcome_channel();
+//! let hive = ...
+//! let task_ids = hive.map_send(0..10, tx);
+//! rx.select_unordered_outputs(task_ids).for_each(|output| ...);
+//! ```
+//!
+//! You should *not* pass clones of the `Sender` to `_send` methods as this results in slightly
+//! worse performance and still has the requirement that you manually drop the original `Sender`
+//! value.
 //!
 //! # Retrieving outcomes
 //!

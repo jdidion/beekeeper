@@ -108,8 +108,7 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_unordered` suffix instead return an unordered iterator, which may be
   more performant than the ordered iterator
 * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
-  channel as they are completed.
-    * Note that, for these methods, the `tx` parameter is of type `Borrow<Sender<_>>`, which allows you to pass in either a value or a reference. Passing a value causes the `Sender` to be dropped after the call, while passing a reference allows you to use the same `Sender` for multiple `_send` calls. Note that in the later case, you need to explicitly drop the sender (e.g., `drop(tx)`), pass it by value to the last `_send` call, or be careful about how you obtain outcomes from the `Receiver` as methods such as `recv` and `iter` will block until the `Sender` is dropped. You should *not* pass clones of the `Sender` to `_send` methods as this results in slightly worse performance and still has the requirement that you manually drop the original `Sender` value.
+  channel as they are completed (see this [note](https://docs.rs/beekeeper/latest/beekeeper/hive/index.html#outcome-channels)).
 * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
   retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.take_stored) method, using
   one of the `remove*` methods (which requires
