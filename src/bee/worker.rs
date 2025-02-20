@@ -133,7 +133,11 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply_ref(&mut self, input: &Self::Input, _: &Context<Self::Input>) -> RefWorkerResult<Self> {
+        fn apply_ref(
+            &mut self,
+            input: &Self::Input,
+            _: &Context<Self::Input>,
+        ) -> RefWorkerResult<Self> {
             match *input {
                 0 => Err(ApplyRefError::Retryable(())),
                 1 => Err(ApplyRefError::Fatal(())),
