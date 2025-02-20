@@ -1,5 +1,5 @@
 mod channel;
-mod closed;
+mod status;
 #[cfg(feature = "retry")]
 mod retry;
 mod workstealing;
@@ -7,7 +7,7 @@ mod workstealing;
 pub use self::channel::ChannelTaskQueues;
 pub use self::workstealing::WorkstealingTaskQueues;
 
-use self::closed::Closed;
+use self::status::Status;
 #[cfg(feature = "retry")]
 use self::retry::RetryQueue;
 use super::{Config, Task, Token};
@@ -40,13 +40,13 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     /// Updates the queue settings from `config` for the given range of worker threads.
     fn update_for_threads(&self, start_index: usize, end_index: usize, config: &Config);
 
-    /// Returns a new `WorkerQueues` instance for a thread.
-    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueues;
-
     /// Tries to add a task to the global queue.
     ///
     /// Returns an error with the task if the queue is disconnected.
     fn try_push_global(&self, task: Task<W>) -> Result<(), Task<W>>;
+
+    /// Returns a `WorkerQueues` instance for the worker thread with the given `index`.
+    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueues;
 
     /// Closes this `GlobalQueue` so no more tasks may be pushed.
     ///
@@ -55,10 +55,8 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
     /// The private `Token` is used to prevent this method from being called externally.
     fn close(&self, urgent: bool, token: Token);
 
-    /// Drains all tasks from all global and local queues and returns them as a `Vec`.
-    ///
-    /// This is a destructive operation - if `close` has not been called, it will be called before
-    /// draining the queues.
+    /// Consumes this `TaskQueues` and Drains all tasks from all global and local queues and
+    /// returns them as a `Vec`.
     ///
     /// This method panics if `close` has not been called.
     fn drain(self) -> Vec<Task<W>>;
@@ -69,7 +67,8 @@ pub trait TaskQueues<W: Worker>: Sized + Send + Sync + 'static {
 pub trait WorkerQueues<W: Worker> {
     /// Attempts to add a task to the local queue if space is available, otherwise adds it to the
     /// global queue. If adding to the global queue fails, the task is added to a local "abandoned"
-    /// queue from which it may be popped or will otherwise be converted.
+    /// queue from which it may be popped or will otherwise be converted to an `Unprocessed`
+    /// outcome.
     fn push(&self, task: Task<W>);
 
     /// Attempts to remove a task from the local queue for the given worker thread index. If there
@@ -79,7 +78,7 @@ pub trait WorkerQueues<W: Worker> {
     /// Returns an error if a task is not available, where each implementation may have a different
     /// definition of "available".
     ///
-    /// Also returns an error if the queue is empty or disconnected.
+    /// Also returns an error if the queues are closed.
     fn try_pop(&self) -> Result<Task<W>, PopTaskError>;
 
     /// Attempts to add `task` to the local retry queue.

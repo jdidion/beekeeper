@@ -4,9 +4,9 @@ const OPEN: u8 = 0;
 const CLOSED_PUSH: u8 = 1;
 const CLOSED_POP: u8 = 2;
 
-pub struct Closed(AtomicU8);
+pub struct Status(AtomicU8);
 
-impl Closed {
+impl Status {
     pub fn is_closed(&self) -> bool {
         self.0.get() > OPEN
     }
@@ -24,7 +24,7 @@ impl Closed {
     }
 }
 
-impl Default for Closed {
+impl Default for Status {
     fn default() -> Self {
         Self(AtomicU8::new(OPEN))
     }

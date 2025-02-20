@@ -1,7 +1,7 @@
 //! Implementation of `TaskQueues` that uses `crossbeam` channels for the global queue (i.e., for
 //! sending tasks from the `Hive` to the worker threads) and a default implementation of local
 //! queues that depends on which combination of the `retry` and `batching` features are enabled.
-use super::{Closed, Config, PopTaskError, Task, TaskQueues, Token, WorkerQueues};
+use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues};
 use crate::bee::Worker;
 use crossbeam_channel::RecvTimeoutError;
 use crossbeam_queue::SegQueue;
@@ -9,7 +9,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 
-// time to wait in between polling the retry queue and then the task receiver
+// time to wait when polling the global queue
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Type alias for the input task channel sender
@@ -48,12 +48,12 @@ impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
             .for_each(|queue| queue.update(&self.global, config));
     }
 
-    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueues {
-        ChannelWorkerQueues::new(&self.global, &self.local.read()[thread_index])
-    }
-
     fn try_push_global(&self, task: Task<W>) -> Result<(), Task<W>> {
         self.global.try_push(task)
+    }
+
+    fn worker_queues(&self, thread_index: usize) -> Self::WorkerQueues {
+        ChannelWorkerQueues::new(&self.global, &self.local.read()[thread_index])
     }
 
     fn close(&self, urgent: bool, _: Token) {
@@ -65,10 +65,12 @@ impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
             panic!("close must be called before drain");
         }
         let mut tasks = Vec::new();
-        let global = crate::hive::unwrap_arc(self.global);
+        let global = crate::hive::unwrap_arc(self.global)
+            .unwrap_or_else(|_| panic!("timeout waiting to take ownership of global queue"));
         global.drain_into(&mut tasks);
         for local in self.local.into_inner().into_iter() {
-            let local = crate::hive::unwrap_arc(local);
+            let local = crate::hive::unwrap_arc(local)
+                .unwrap_or_else(|_| panic!("timeout waiting to take ownership of local queue"));
             local.drain_into(&mut tasks);
         }
         tasks
@@ -78,7 +80,7 @@ impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
 pub struct GlobalQueue<W: Worker> {
     global_tx: TaskSender<W>,
     global_rx: TaskReceiver<W>,
-    closed: Closed,
+    status: Status,
 }
 
 impl<W: Worker> GlobalQueue<W> {
@@ -87,13 +89,13 @@ impl<W: Worker> GlobalQueue<W> {
         Self {
             global_tx: tx,
             global_rx: rx,
-            closed: Default::default(),
+            status: Default::default(),
         }
     }
 
     #[inline]
     fn try_push(&self, task: Task<W>) -> Result<(), Task<W>> {
-        if !self.closed.can_push() {
+        if !self.status.can_push() {
             return Err(task);
         }
         self.global_tx.send(task).map_err(|err| err.into_inner())
@@ -111,22 +113,23 @@ impl<W: Worker> GlobalQueue<W> {
         }
     }
 
-    #[cfg(feature = "batching")]
-    fn try_iter(&self) -> impl Iterator<Item = Task<W>> + '_ {
-        self.global_rx.try_iter()
-    }
-
     #[inline]
     fn is_closed(&self) -> bool {
-        self.closed.is_closed()
+        self.status.is_closed()
     }
 
     fn close(&self, urgent: bool) {
-        self.closed.set(urgent);
+        self.status.set(urgent);
     }
 
     fn drain_into(self, tasks: &mut Vec<Task<W>>) {
+        tasks.reserve(self.global_rx.len());
         tasks.extend(self.global_rx.try_iter());
+    }
+
+    #[cfg(feature = "batching")]
+    fn try_iter(&self) -> impl Iterator<Item = Task<W>> + '_ {
+        self.global_rx.try_iter()
     }
 }
 
@@ -216,7 +219,7 @@ impl<W: Worker> LocalQueueShared<W> {
 
     #[inline]
     fn try_pop(&self, global: &GlobalQueue<W>) -> Result<Task<W>, PopTaskError> {
-        if !global.closed.can_pop() {
+        if !global.status.can_pop() {
             return Err(PopTaskError::Closed);
         }
         // first try to get a previously abandoned task

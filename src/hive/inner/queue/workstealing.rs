@@ -4,7 +4,7 @@
 //! tries to steal a task from the global queue and falls back to stealing from another worker
 //! thread. If the `batching` feature is enabled, a worker thread will try to fill its local queue
 //! up to the limit when stealing from the global queue.
-use super::{Closed, Config, PopTaskError, Task, TaskQueues, Token, WorkerQueues};
+use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues};
 #[cfg(feature = "batching")]
 use crate::atomic::Atomic;
 use crate::bee::Worker;
@@ -63,10 +63,12 @@ impl<W: Worker> TaskQueues<W> for WorkstealingTaskQueues<W> {
             panic!("close must be called before drain");
         }
         let mut tasks = Vec::new();
-        let global = crate::hive::unwrap_arc(self.global);
+        let global = crate::hive::unwrap_arc(self.global)
+            .unwrap_or_else(|_| panic!("timeout waiting to take ownership of global queue"));
         global.drain_into(&mut tasks);
         for local in self.local.into_inner().into_iter() {
-            let local = crate::hive::unwrap_arc(local);
+            let local = crate::hive::unwrap_arc(local)
+                .unwrap_or_else(|_| panic!("timeout waiting to take ownership of local queue"));
             local.drain_into(&mut tasks);
         }
         tasks
@@ -76,7 +78,7 @@ impl<W: Worker> TaskQueues<W> for WorkstealingTaskQueues<W> {
 pub struct GlobalQueue<W: Worker> {
     queue: Injector<Task<W>>,
     stealers: RwLock<Vec<Stealer<Task<W>>>>,
-    closed: Closed,
+    status: Status,
 }
 
 impl<W: Worker> GlobalQueue<W> {
@@ -84,7 +86,7 @@ impl<W: Worker> GlobalQueue<W> {
         Self {
             queue: Injector::new(),
             stealers: Default::default(),
-            closed: Default::default(),
+            status: Default::default(),
         }
     }
 
@@ -93,7 +95,7 @@ impl<W: Worker> GlobalQueue<W> {
     }
 
     fn try_push(&self, task: Task<W>) -> Result<(), Task<W>> {
-        if !self.closed.can_push() {
+        if !self.status.can_push() {
             return Err(task);
         }
         self.queue.push(task);
@@ -141,11 +143,11 @@ impl<W: Worker> GlobalQueue<W> {
     }
 
     fn is_closed(&self) -> bool {
-        self.closed.is_closed()
+        self.status.is_closed()
     }
 
     fn close(&self, urgent: bool) {
-        self.closed.set(urgent);
+        self.status.set(urgent);
     }
 
     fn drain_into(self, tasks: &mut Vec<Task<W>>) {
@@ -242,7 +244,7 @@ impl<W: Worker> LocalQueueShared<W> {
         global: &GlobalQueue<W>,
         local_batch: &crossbeam_deque::Worker<Task<W>>,
     ) -> Result<Task<W>, PopTaskError> {
-        if !global.closed.can_pop() {
+        if !global.status.can_pop() {
             return Err(PopTaskError::Closed);
         }
         // first try to get a previously abandoned task

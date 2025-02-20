@@ -397,17 +397,20 @@ pub mod prelude {
     };
 }
 
-fn unwrap_arc<T>(mut arc: std::sync::Arc<T>) -> T {
+/// Utility function to loop (with exponential backoff) waiting for other references to `arc` to
+/// drop so it can be unwrapped into its inner value.
+///
+/// If `arc` cannot be unwrapped with a certain number of loops (with an exponentially increasing
+/// amount of time between each iteration), `arc` is returned as an error.
+fn unwrap_arc<T>(mut arc: std::sync::Arc<T>) -> Result<T, std::sync::Arc<T>> {
+    const MAX_LOOPS: usize = 100;
     // wait for worker threads to drop, then take ownership of the shared data and convert it
     // into a Husk
     let mut backoff = None::<crossbeam_utils::Backoff>;
-    loop {
-        // TODO: may want to have some timeout or other kind of limit to prevent this from
-        // looping forever if a worker thread somehow gets stuck, or if the `num_referrers`
-        // counter is corrupted
+    for _ in 0..MAX_LOOPS {
         arc = match std::sync::Arc::try_unwrap(arc) {
             Ok(inner) => {
-                return inner;
+                return Ok(inner);
             }
             Err(arc) => {
                 backoff
@@ -417,6 +420,7 @@ fn unwrap_arc<T>(mut arc: std::sync::Arc<T>) -> T {
             }
         };
     }
+    Err(arc)
 }
 
 #[cfg(test)]

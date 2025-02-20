@@ -6,9 +6,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
-/// A queue where each item has an associated `Instant` at which it will be available.
+/// A task queue where each task has an associated `Instant` at which it will be available.
 ///
-/// This is implemented internally as a `UnsafeCell<BinaryHeap>`.
+/// This is implemented internally as `UnsafeCell<BinaryHeap>`.
 ///
 /// SAFETY: This data structure is designed to enable the queue to be modified (using `push` and
 /// `try_pop`) by a *single thread* using interior mutability. The `drain` method is called by a
@@ -24,6 +24,7 @@ pub struct RetryQueue<W: Worker> {
 }
 
 impl<W: Worker> RetryQueue<W> {
+    /// Creates a new `RetryQueue` with the given `delay_factor` (in nanoseconds).
     pub fn new(delay_factor: u64) -> Self {
         Self {
             inner: UnsafeCell::new(BinaryHeap::new()),
@@ -31,30 +32,31 @@ impl<W: Worker> RetryQueue<W> {
         }
     }
 
+    /// Changes the delay factor for the queue.
     pub fn set_delay_factor(&self, delay_factor: u64) {
         self.delay_factor.set(delay_factor);
     }
 
-    /// Pushes an item onto the queue. Returns the `Instant` at which the item will be available,
-    /// or an error with `item` if there was an error pushing the item.
+    /// Pushes an item onto the queue. Returns the `Instant` at which the task will be available,
+    /// or an error with `task` if there was an error pushing it.
     ///
     /// SAFETY: this method is only ever called within a single thread.
     pub fn try_push(&self, task: Task<W>) -> Result<Instant, Task<W>> {
-        // compute the delay
-        let delay = 2u64
-            .checked_pow(task.attempt - 1)
-            .and_then(|multiplier| {
-                self.delay_factor
-                    .get()
-                    .checked_mul(multiplier)
-                    .or(Some(u64::MAX))
-                    .map(Duration::from_nanos)
-            })
-            .unwrap_or_default();
         unsafe {
             match self.inner.get().as_mut() {
                 Some(queue) => {
-                    let delayed = Delayed::new(task, delay);
+                    // compute the delay
+                    let delay = 2u64
+                        .checked_pow(task.attempt - 1)
+                        .and_then(|multiplier| {
+                            self.delay_factor
+                                .get()
+                                .checked_mul(multiplier)
+                                .or(Some(u64::MAX))
+                                .map(Duration::from_nanos)
+                        })
+                        .unwrap_or_default();
+                    let delayed = DelayedTask::new(task, delay);
                     let until = delayed.until;
                     queue.push(delayed);
                     Ok(until)
@@ -64,7 +66,7 @@ impl<W: Worker> RetryQueue<W> {
         }
     }
 
-    /// Returns the item at the head of the queue, if one exists and is available (i.e., its delay
+    /// Returns the task at the head of the queue, if one exists and is available (i.e., its delay
     /// has been exceeded), and removes it.
     ///
     /// SAFETY: this method is only ever called within a single thread.
@@ -87,7 +89,7 @@ impl<W: Worker> RetryQueue<W> {
         }
     }
 
-    /// Consumes this `RetryQueue` and drains all items from the queue into `sink`.
+    /// Consumes this `RetryQueue` and drains all tasks from the queue into `sink`.
     pub fn drain_into(self, sink: &mut Vec<Task<W>>) {
         let mut queue = self.inner.into_inner();
         sink.reserve(queue.len());
@@ -97,17 +99,15 @@ impl<W: Worker> RetryQueue<W> {
 
 unsafe impl<W: Worker> Sync for RetryQueue<W> {}
 
-type DelayedTask<W> = Delayed<Task<W>>;
-
-#[derive(Debug)]
-struct Delayed<T> {
-    value: T,
+/// Wrapper for a Task with an associated `Instant` at which it will be available.
+struct DelayedTask<W: Worker> {
+    value: Task<W>,
     until: Instant,
 }
 
-impl<T> Delayed<T> {
-    pub fn new(value: T, delay: Duration) -> Self {
-        Delayed {
+impl<W: Worker> DelayedTask<W> {
+    pub fn new(value: Task<W>, delay: Duration) -> Self {
+        Self {
             value,
             until: Instant::now() + delay,
         }
@@ -119,25 +119,25 @@ impl<T> Delayed<T> {
 ///
 /// Earlier entries have higher priority (should be popped first), so they are Greater that later
 /// entries.
-impl<T> Ord for Delayed<T> {
-    fn cmp(&self, other: &Delayed<T>) -> Ordering {
+impl<W: Worker> Ord for DelayedTask<W> {
+    fn cmp(&self, other: &DelayedTask<W>) -> Ordering {
         other.until.cmp(&self.until)
     }
 }
 
-impl<T> PartialOrd for Delayed<T> {
-    fn partial_cmp(&self, other: &Delayed<T>) -> Option<Ordering> {
+impl<W: Worker> PartialOrd for DelayedTask<W> {
+    fn partial_cmp(&self, other: &DelayedTask<W>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<T> PartialEq for Delayed<T> {
-    fn eq(&self, other: &Delayed<T>) -> bool {
+impl<W: Worker> PartialEq for DelayedTask<W> {
+    fn eq(&self, other: &DelayedTask<W>) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl<T> Eq for Delayed<T> {}
+impl<W: Worker> Eq for DelayedTask<W> {}
 
 #[cfg(test)]
 mod tests {
