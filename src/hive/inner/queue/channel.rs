@@ -65,11 +65,11 @@ impl<W: Worker> TaskQueues<W> for ChannelTaskQueues<W> {
             panic!("close must be called before drain");
         }
         let mut tasks = Vec::new();
-        let global = crate::hive::unwrap_arc(self.global)
+        let global = crate::hive::util::unwrap_arc(self.global)
             .unwrap_or_else(|_| panic!("timeout waiting to take ownership of global queue"));
         global.drain_into(&mut tasks);
         for local in self.local.into_inner().into_iter() {
-            let local = crate::hive::unwrap_arc(local)
+            let local = crate::hive::util::unwrap_arc(local)
                 .unwrap_or_else(|_| panic!("timeout waiting to take ownership of local queue"));
             local.drain_into(&mut tasks);
         }

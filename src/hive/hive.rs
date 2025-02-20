@@ -550,7 +550,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         // wait for all tasks to finish
         shared.wait_on_done();
         // unwrap the Arc and return the inner Shared value
-        Some(super::unwrap_arc(shared).expect("timeout waiting to take ownership of shared data"))
+        Some(
+            super::util::unwrap_arc(shared)
+                .expect("timeout waiting to take ownership of shared data"),
+        )
     }
 
     /// Consumes this `Hive` and attempts to shut it down gracefully.
