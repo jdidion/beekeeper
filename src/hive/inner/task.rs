@@ -1,0 +1,121 @@
+use super::Task;
+use crate::bee::{TaskId, Worker};
+use crate::hive::{Outcome, OutcomeSender};
+
+impl<W: Worker> Task<W> {
+    /// Returns the ID of this task.
+    pub fn id(&self) -> TaskId {
+        self.id
+    }
+
+    /// Consumes this `Task` and returns a `Outcome::Unprocessed` outcome with the input and ID,
+    /// and the outcome sender.
+    pub fn into_unprocessed(self) -> (Outcome<W>, Option<OutcomeSender<W>>) {
+        let outcome = Outcome::Unprocessed {
+            input: self.input,
+            task_id: self.id,
+        };
+        (outcome, self.outcome_tx)
+    }
+}
+
+#[cfg(not(feature = "retry"))]
+mod no_retry {
+    use super::Task;
+    use crate::bee::{TaskId, Worker};
+    use crate::hive::OutcomeSender;
+
+    impl<W: Worker> Task<W> {
+        /// Creates a new `Task`.
+        pub fn new(id: TaskId, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Self {
+            Task {
+                id,
+                input,
+                outcome_tx,
+            }
+        }
+
+        pub fn into_parts(self) -> (TaskId, W::Input, Option<OutcomeSender<W>>) {
+            (self.id, self.input, self.outcome_tx)
+        }
+    }
+
+    impl<I: Clone, W: Worker<Input = I>> Clone for Task<W> {
+        fn clone(&self) -> Self {
+            Self {
+                id: self.id.clone(),
+                input: self.input.clone(),
+                outcome_tx: self.outcome_tx.clone(),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "retry")]
+mod retry {
+    use super::Task;
+    use crate::bee::{TaskId, Worker};
+    use crate::hive::OutcomeSender;
+
+    impl<W: Worker> Task<W> {
+        /// Creates a new `Task`.
+        pub fn new(id: TaskId, input: W::Input, outcome_tx: Option<OutcomeSender<W>>) -> Self {
+            Task {
+                id,
+                input,
+                outcome_tx,
+                attempt: 0,
+            }
+        }
+
+        /// Creates a new `Task`.
+        pub fn with_attempt(
+            id: TaskId,
+            input: W::Input,
+            outcome_tx: Option<OutcomeSender<W>>,
+            attempt: u32,
+        ) -> Self {
+            Task {
+                id,
+                input,
+                outcome_tx,
+                attempt,
+            }
+        }
+
+        pub fn into_parts(self) -> (TaskId, W::Input, u32, Option<OutcomeSender<W>>) {
+            (self.id, self.input, self.attempt, self.outcome_tx)
+        }
+    }
+
+    impl<I: Clone, W: Worker<Input = I>> Clone for Task<W> {
+        fn clone(&self) -> Self {
+            Self {
+                id: self.id,
+                input: self.input.clone(),
+                outcome_tx: self.outcome_tx.clone(),
+                attempt: self.attempt,
+            }
+        }
+    }
+}
+
+impl<W: Worker> PartialEq for Task<W> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<W: Worker> Eq for Task<W> {}
+
+impl<W: Worker> PartialOrd for Task<W> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<W: Worker> Ord for Task<W> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}

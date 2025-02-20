@@ -1,14 +1,64 @@
 //! The Queen bee trait.
 use super::Worker;
+use parking_lot::RwLock;
 use std::marker::PhantomData;
+use std::ops::Deref;
 
-/// A trait for stateful factories that create `Worker`s.
+/// A trait for factories that create `Worker`s.
 pub trait Queen: Send + Sync + 'static {
     /// The kind of `Worker` created by this factory.
     type Kind: Worker;
 
-    /// Returns a new instance of `Self::Kind`.
+    /// Creates and returns a new instance of `Self::Kind`, *immutably*.
+    fn create(&self) -> Self::Kind;
+}
+
+/// A trait for mutable factories that create `Worker`s.
+pub trait QueenMut: Send + Sync + 'static {
+    /// The kind of `Worker` created by this factory.
+    type Kind: Worker;
+
+    /// Creates and returns a new instance of `Self::Kind`, *immutably*.
     fn create(&mut self) -> Self::Kind;
+}
+
+/// A wrapper for a `MutQueen` that implements `Queen`.
+///
+/// Interior mutability is enabled using an `RwLock`.
+pub struct QueenCell<Q: QueenMut>(RwLock<Q>);
+
+impl<Q: QueenMut> QueenCell<Q> {
+    pub fn new(mut_queen: Q) -> Self {
+        Self(RwLock::new(mut_queen))
+    }
+
+    pub fn get(&self) -> impl Deref<Target = Q> + '_ {
+        self.0.read()
+    }
+
+    pub fn into_inner(self) -> Q {
+        self.0.into_inner()
+    }
+}
+
+impl<Q: QueenMut> Queen for QueenCell<Q> {
+    type Kind = Q::Kind;
+
+    fn create(&self) -> Self::Kind {
+        self.0.write().create()
+    }
+}
+
+impl<Q: QueenMut + Default> Default for QueenCell<Q> {
+    fn default() -> Self {
+        Self::new(Q::default())
+    }
+}
+
+impl<Q: QueenMut> From<Q> for QueenCell<Q> {
+    fn from(queen: Q) -> Self {
+        Self::new(queen)
+    }
 }
 
 /// A `Queen` that can create a `Worker` type that implements `Default`.
@@ -28,7 +78,7 @@ pub trait Queen: Send + Sync + 'static {
 ///     type Output = u8;
 ///     type Error = ();
 ///
-///     fn apply(&mut self, input: u8, _: &Context) -> WorkerResult<Self> {
+///     fn apply(&mut self, input: u8, _: &Context<Self::Input>) -> WorkerResult<Self> {
 ///         Ok(self.0.saturating_add(input))
 ///     }
 /// }
@@ -38,7 +88,7 @@ pub trait Queen: Send + Sync + 'static {
 /// impl Queen for MyQueen {
 ///     type Kind = MyWorker;
 ///
-///     fn create(&mut self) -> Self::Kind {
+///     fn create(&self) -> Self::Kind {
 ///         MyWorker::default()
 ///     }
 /// }
@@ -49,7 +99,7 @@ pub struct DefaultQueen<W>(PhantomData<W>);
 impl<W: Worker + Send + Sync + Default> Queen for DefaultQueen<W> {
     type Kind = W;
 
-    fn create(&mut self) -> Self::Kind {
+    fn create(&self) -> Self::Kind {
         Self::Kind::default()
     }
 }
@@ -68,7 +118,7 @@ impl<W: Worker + Clone> CloneQueen<W> {
 impl<W: Worker + Send + Sync + Clone> Queen for CloneQueen<W> {
     type Kind = W;
 
-    fn create(&mut self) -> Self::Kind {
+    fn create(&self) -> Self::Kind {
         self.0.clone()
     }
 }

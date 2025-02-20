@@ -96,6 +96,15 @@
 //!   more performant than the ordered iterator
 //! * The methods with the `_send` suffix accept a channel [`Sender`](crate::channel::Sender) and
 //!   send the `Outcome`s to that channel as they are completed
+//!     * Note that, for these methods, the `tx` parameter is of type `Borrow<Sender<_>>`, which
+//!       allows you to pass in either a value or a reference. Passing a value causes the `Sender`
+//!       to be dropped after the call, while passing a reference allows you to use the same
+//!       `Sender` for multiple `_send` calls. Note that in the later case, you need to explicitly
+//!       drop the sender (e.g., `drop(tx)`), pass it by value to the last `_send` call, or be
+//!       careful about how you obtain outcomes from the `Receiver` as methods such as `recv` and
+//!       `iter` will block until the `Sender` is dropped. You should *not* pass clones of the
+//!       `Sender` to `_send` methods as this results in slightly worse performance and still has
+//!       the requirement that you manually drop the original `Sender` value.
 //! * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
 //!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive::take_stored) method,
 //!   using one of the `remove*` methods (which requires
@@ -151,10 +160,11 @@
 //! # fn main() {
 //! // create a hive to process `Thunk`s - no-argument closures with the
 //! // same return type (`i32`)
-//! let hive = Builder::new()
+//! let hive = ChannelBuilder::empty()
 //!     .num_threads(4)
 //!     .thread_name("thunk_hive")
-//!     .build_with_default::<ThunkWorker<i32>>();
+//!     .with_worker_default::<ThunkWorker<i32>>()
+//!     .build();
 //!
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
@@ -220,7 +230,7 @@
 //!     fn apply(
 //!         &mut self,
 //!         input: Self::Input,
-//!         _: &Context
+//!         _: &Context<u8>
 //!     ) -> WorkerResult<Self> {
 //!         self.write_char(input).map_err(|error| {
 //!             ApplyError::Fatal { input: Some(input), error }
@@ -242,7 +252,7 @@
 //!     }
 //! }
 //!
-//! impl Queen for CatQueen {
+//! impl QueenMut for CatQueen {
 //!     type Kind = CatWorker;
 //!
 //!     fn create(&mut self) -> Self::Kind {
@@ -277,9 +287,10 @@
 //!
 //! # fn main() {
 //! // build the Hive
-//! let hive = Builder::new()
+//! let hive = ChannelBuilder::empty()
 //!     .num_threads(4)
-//!     .build_default::<CatQueen>();
+//!     .with_queen_mut_default::<CatQueen>()
+//!     .build();
 //!
 //! // prepare inputs
 //! let inputs = (0..8).map(|i| 97 + i);
@@ -300,9 +311,9 @@
 //!
 //! // shutdown the hive, use the Queen to wait on child processes, and
 //! // report errors
-//! let (mut queen, _outcomes) = hive.try_into_husk().unwrap().into_parts();
+//! let (queen, _outcomes) = hive.try_into_husk(false).unwrap().into_parts();
 //! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
-//!     queen.wait_for_all().into_iter().partition(Result::is_ok);
+//!     queen.into_inner().wait_for_all().into_iter().partition(Result::is_ok);
 //! if !wait_err.is_empty() {
 //!     panic!(
 //!         "Error(s) occurred while waiting for child processes: {:?}",

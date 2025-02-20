@@ -108,7 +108,8 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_unordered` suffix instead return an unordered iterator, which may be
   more performant than the ordered iterator
 * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
-  channel as they are completed
+  channel as they are completed.
+    * Note that, for these methods, the `tx` parameter is of type `Borrow<Sender<_>>`, which allows you to pass in either a value or a reference. Passing a value causes the `Sender` to be dropped after the call, while passing a reference allows you to use the same `Sender` for multiple `_send` calls. Note that in the later case, you need to explicitly drop the sender (e.g., `drop(tx)`), pass it by value to the last `_send` call, or be careful about how you obtain outcomes from the `Receiver` as methods such as `recv` and `iter` will block until the `Sender` is dropped. You should *not* pass clones of the `Sender` to `_send` methods as this results in slightly worse performance and still has the requirement that you manually drop the original `Sender` value.
 * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
   retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.take_stored) method, using
   one of the `remove*` methods (which requires
@@ -337,9 +338,9 @@ if !exec_err_codes.is_empty() {
 
 ## Status
 
-The `beekeeper` API is generally considered to be stable, but additional real-world battle-testing
-is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for
-improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
+Early versions of this crate (< 0.3) had some fatal design flaws that needed to be corrected with breaking changes (see the [changelog](CHANGELOG.md)).
+
+As of version 0.3, the `beekeeper` API is generally considered to be stable, but additional real-world battle-testing is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
 
 ## Similar libraries
 
