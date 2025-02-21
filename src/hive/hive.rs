@@ -463,12 +463,12 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder};
+    /// use beekeeper::hive::prelude::*;
     /// use std::thread;
     /// use std::time::Duration;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(4)
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();

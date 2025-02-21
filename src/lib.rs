@@ -151,7 +151,7 @@
 //! # fn main() {
 //! // create a hive to process `Thunk`s - no-argument closures with the
 //! // same return type (`i32`)
-//! let hive = ChannelBuilder::empty()
+//! let hive = channel_builder(false)
 //!     .num_threads(4)
 //!     .thread_name("thunk_hive")
 //!     .with_worker_default::<ThunkWorker<i32>>()
@@ -278,7 +278,7 @@
 //!
 //! # fn main() {
 //! // build the Hive
-//! let hive = ChannelBuilder::empty()
+//! let hive = channel_builder(false)
 //!     .num_threads(4)
 //!     .with_queen_mut_default::<CatQueen>()
 //!     .build();

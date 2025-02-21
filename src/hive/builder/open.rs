@@ -52,7 +52,7 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// # use beekeeper::hive::prelude::*;
     /// # use beekeeper::bee::{Context, QueenMut, Worker, WorkerResult};
     ///
     /// #[derive(Debug)]
@@ -103,7 +103,7 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
     ///     .with_queen_mut_default::<CounterQueen>()
@@ -138,7 +138,7 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, ChannelBuilder, OutcomeIteratorExt};
+    /// # use beekeeper::hive::prelude::*;
     /// # use beekeeper::bee::{Context, Worker, WorkerResult};
     ///
     /// #[derive(Debug, Clone)]
@@ -170,7 +170,7 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
     ///     .with_worker(MathWorker(5isize))
@@ -196,7 +196,7 @@ impl OpenBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use beekeeper::hive::{Builder, ChannelBuilder, OutcomeIteratorExt};
+    /// # use beekeeper::hive::prelude::*;
     /// # use beekeeper::bee::{Context, Worker,  WorkerResult};
     /// # use std::num::NonZeroIsize;
     ///
@@ -222,7 +222,7 @@ impl OpenBuilder {
     /// }
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(8)
     ///     .thread_stack_size(4_000_000)
     ///     .with_worker_default::<MathWorker>()

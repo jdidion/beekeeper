@@ -20,10 +20,10 @@ pub trait Builder: BuilderConfig + Sized {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(8)
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();
@@ -57,10 +57,10 @@ pub trait Builder: BuilderConfig + Sized {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .with_thread_per_core()
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();
@@ -89,11 +89,11 @@ pub trait Builder: BuilderConfig + Sized {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     /// use std::thread;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::default()
+    /// let hive = channel_builder(true)
     ///     .thread_name("foo")
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();
@@ -123,10 +123,10 @@ pub trait Builder: BuilderConfig + Sized {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::default()
+    /// let hive = channel_builder(true)
     ///     .thread_stack_size(4_000_000)
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();
@@ -161,10 +161,10 @@ pub trait Builder: BuilderConfig + Sized {
     ///
     /// ```
     /// use beekeeper::bee::stock::{Thunk, ThunkWorker};
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::empty()
+    /// let hive = channel_builder(false)
     ///     .num_threads(4)
     ///     .core_affinity(0..4)
     ///     .with_worker_default::<ThunkWorker<()>>()
@@ -237,7 +237,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// ```
     /// use beekeeper::bee::{ApplyError, Context};
     /// use beekeeper::bee::stock::RetryCaller;
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     /// use std::time;
     ///
     /// fn sometimes_fail(
@@ -253,7 +253,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// }
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::default()
+    /// let hive = channel_builder(true)
     ///     .max_retries(3)
     ///     .with_worker(RetryCaller::of(sometimes_fail))
     ///     .build();
@@ -284,7 +284,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// ```
     /// use beekeeper::bee::{ApplyError, Context};
     /// use beekeeper::bee::stock::RetryCaller;
-    /// use beekeeper::hive::{Builder, ChannelBuilder, Hive};
+    /// use beekeeper::hive::prelude::*;
     /// use std::time;
     ///
     /// fn echo_time(i: usize, ctx: &Context<usize>) -> Result<String, ApplyError<usize, String>> {
@@ -299,7 +299,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// }
     ///
     /// # fn main() {
-    /// let hive = ChannelBuilder::default()
+    /// let hive = channel_builder(true)
     ///     .max_retries(3)
     ///     .retry_factor(time::Duration::from_secs(1))
     ///     .with_worker(RetryCaller::of(echo_time))

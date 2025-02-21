@@ -32,11 +32,11 @@
 //! the `Builder`.
 //!
 //! ```
-//! use beekeeper::hive::{Builder, ChannelBuilder};
+//! use beekeeper::hive::prelude::*;
 //! # type MyWorker1 = beekeeper::bee::stock::EchoWorker<usize>;
 //! # type MyWorker2 = beekeeper::bee::stock::EchoWorker<u32>;
 //!
-//! let builder1 = ChannelBuilder::default();
+//! let builder1 = channel_builder(true);
 //! let builder2 = builder1.clone();
 //!
 //! let hive1 = builder1.with_worker_default::<MyWorker1>().build();
@@ -79,10 +79,10 @@
 //! started with no core affinity.
 //!
 //! ```
-//! use beekeeper::hive::{Builder, ChannelBuilder};
+//! use beekeeper::hive::prelude::*;
 //! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
 //!
-//! let hive = ChannelBuilder::empty()
+//! let hive = channel_builder(false)
 //!     .num_threads(4)
 //!     // 16 cores will be available for pinning but only 4 will be used initially
 //!     .core_affinity(0..16)
@@ -223,7 +223,7 @@
 //! `Sender` is dropped. Since `Receiver` implements `Iterator`, you can use the methods of
 //! [`OutcomeIteratorExt`] to iterate over the outcomes for specific task IDs.
 //!
-//! ```no_run
+//! ```rust,ignore
 //! use beekeeper::hive::prelude::*;
 //! let (tx, rx) = outcome_channel();
 //! let hive = ...
