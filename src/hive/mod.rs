@@ -461,9 +461,10 @@ mod util {
 
 #[cfg(test)]
 mod tests {
+    use super::inner::TaskQueues;
     use super::{
-        Builder, ChannelBuilder, ChannelTaskQueues, Hive, OpenBuilder, Outcome, OutcomeIteratorExt,
-        OutcomeStore, TaskQueuesBuilder,
+        channel_builder, workstealing_builder, Builder, ChannelTaskQueues, Hive, Outcome,
+        OutcomeIteratorExt, OutcomeStore, TaskQueuesBuilder, WorkstealingTaskQueues,
     };
     use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
@@ -473,6 +474,7 @@ mod tests {
     };
     use crate::channel::{Message, ReceiverExt};
     use crate::hive::outcome::DerefOutcomes;
+    use rstest::*;
     use std::fmt::Debug;
     use std::io::{self, BufRead, BufReader, Write};
     use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -488,33 +490,37 @@ mod tests {
     const SHORT_TASK: Duration = Duration::from_secs(2);
     const LONG_TASK: Duration = Duration::from_secs(5);
 
-    type TWrk<T> = ThunkWorker<T>;
-    type THive<T> = Hive<DefaultQueen<TWrk<T>>, ChannelTaskQueues<TWrk<T>>>;
+    type TWrk<I> = ThunkWorker<I>;
 
     /// Convenience function that returns a `Hive` configured with the global defaults, and the
     /// specified number of workers that execute `Thunk<T>`s, i.e. closures that return `T`.
-    pub fn thunk_hive<T: Send + Sync + Debug + 'static>(
-        num_threads: usize,
-        with_defaults: bool,
-    ) -> THive<T> {
-        let builder = if with_defaults {
-            ChannelBuilder::default()
-        } else {
-            ChannelBuilder::empty()
-        };
+    pub fn thunk_hive<I, T, B>(num_threads: usize, builder: B) -> Hive<DefaultQueen<TWrk<I>>, T>
+    where
+        I: Send + Sync + Debug + 'static,
+        T: TaskQueues<TWrk<I>>,
+        B: TaskQueuesBuilder<TaskQueues<TWrk<I>> = T>,
+    {
         builder
             .num_threads(num_threads)
             .with_queen_default()
             .build()
     }
 
-    pub fn void_thunk_hive(num_threads: usize, with_defaults: bool) -> THive<()> {
-        thunk_hive(num_threads, with_defaults)
+    pub fn void_thunk_hive<T, B>(num_threads: usize, builder: B) -> Hive<DefaultQueen<TWrk<()>>, T>
+    where
+        T: TaskQueues<TWrk<()>>,
+        B: TaskQueuesBuilder<TaskQueues<TWrk<()>> = T>,
+    {
+        thunk_hive(num_threads, builder)
     }
 
-    #[test]
-    fn test_works() {
-        let hive = thunk_hive(TEST_TASKS, true);
+    #[rstest]
+    fn test_works<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive(TEST_TASKS, builder_factory(true));
         let (tx, rx) = mpsc::channel();
         assert_eq!(hive.max_workers(), TEST_TASKS);
         assert_eq!(hive.alive_workers(), TEST_TASKS);
@@ -528,9 +534,14 @@ mod tests {
         assert_eq!(rx.iter().take(TEST_TASKS).sum::<usize>(), TEST_TASKS);
     }
 
-    #[test]
-    fn test_grow_from_zero() {
-        let hive = thunk_hive::<u8>(0, true);
+    #[rstest]
+    fn test_grow_from_zero<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(0, builder_factory(true));
         // check that with 0 threads no tasks are scheduled
         let (tx, rx) = super::outcome_channel();
         let _ = hive.apply_send(Thunk::of(|| 0), &tx);
@@ -546,9 +557,14 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_grow_from_nonzero() {
-        let hive = void_thunk_hive(TEST_TASKS, false);
+    #[rstest]
+    fn test_grow_from_nonzero<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(TEST_TASKS, builder_factory(false));
         // queue some long-running tasks
         for _ in 0..TEST_TASKS {
             hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
@@ -569,9 +585,13 @@ mod tests {
         assert_eq!(husk.iter_successes().count(), total_threads);
     }
 
-    #[test]
-    fn test_suspend() {
-        let hive = void_thunk_hive(TEST_TASKS, false);
+    #[rstest]
+    fn test_suspend<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(TEST_TASKS, builder_factory(false));
         // queue some long-running tasks
         let total_tasks = 2 * TEST_TASKS;
         for _ in 0..total_tasks {
@@ -617,9 +637,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_suspend_with_cancelled_tasks() {
-        let hive: Hive<_, _> = ChannelBuilder::empty()
+    #[rstest]
+    fn test_suspend_with_cancelled_tasks<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<_, _> = builder_factory(false)
             .num_threads(TEST_TASKS)
             .with_worker_default::<MyRefWorker>()
             .build();
@@ -635,9 +660,14 @@ mod tests {
         assert_eq!(hive.num_successes(), TEST_TASKS);
     }
 
-    #[test]
-    fn test_num_tasks_active() {
-        let hive = void_thunk_hive(TEST_TASKS, false);
+    #[rstest]
+    fn test_num_tasks_active<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(TEST_TASKS, builder_factory(false));
         for _ in 0..2 * TEST_TASKS {
             hive.apply_store(Thunk::of(|| loop {
                 thread::sleep(LONG_TASK)
@@ -649,9 +679,13 @@ mod tests {
         assert_eq!(num_threads, TEST_TASKS);
     }
 
-    #[test]
-    fn test_all_threads() {
-        let hive: THive<()> = ChannelBuilder::empty()
+    #[rstest]
+    fn test_all_threads<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<DefaultQueen<TWrk<()>>, _> = builder_factory(false)
             .with_queen_default()
             .with_thread_per_core()
             .build();
@@ -667,9 +701,13 @@ mod tests {
         assert_eq!(num_threads, num_threads);
     }
 
-    #[test]
-    fn test_panic() {
-        let hive = thunk_hive(TEST_TASKS, true);
+    #[rstest]
+    fn test_panic<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive(TEST_TASKS, builder_factory(true));
         let (tx, _) = super::outcome_channel();
         // Panic all the existing threads.
         for _ in 0..TEST_TASKS {
@@ -682,9 +720,13 @@ mod tests {
         assert_eq!(husk.num_panics(), TEST_TASKS);
     }
 
-    #[test]
-    fn test_catch_panic() {
-        let hive: Hive<_, _> = ChannelBuilder::empty()
+    #[rstest]
+    fn test_catch_panic<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<_, _> = builder_factory(false)
             .with_worker(RefCaller::of(|_: &u8| -> Result<u8, String> {
                 panic!("intentional panic")
             }))
@@ -704,9 +746,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
-        let hive = void_thunk_hive(TEST_TASKS, false);
+    #[rstest]
+    fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(TEST_TASKS, builder_factory(false));
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
         let waiter_count = Arc::new(AtomicUsize::new(0));
 
@@ -733,11 +780,16 @@ mod tests {
         waiter.wait();
     }
 
-    #[test]
-    fn test_massive_task_creation() {
+    #[rstest]
+    fn test_massive_task_creation<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         let test_tasks = 4_200_000;
 
-        let hive = thunk_hive(TEST_TASKS, true);
+        let hive = thunk_hive(TEST_TASKS, builder_factory(true));
         let b0 = IndexedBarrier::new(TEST_TASKS);
         let b1 = IndexedBarrier::new(TEST_TASKS);
 
@@ -771,10 +823,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_name() {
+    #[rstest]
+    fn test_name<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         let name = "test";
-        let hive: THive<()> = ChannelBuilder::empty()
+        let hive: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name(name.to_owned())
             .num_threads(2)
@@ -803,11 +859,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_stack_size() {
+    #[rstest]
+    fn test_stack_size<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         let stack_size = 4_000_000;
 
-        let hive: THive<usize> = ChannelBuilder::empty()
+        let hive: Hive<DefaultQueen<TWrk<usize>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .num_threads(1)
             .thread_stack_size(stack_size)
@@ -825,16 +885,20 @@ mod tests {
         assert!(actual_stack_size < (stack_size as f64 * 1.01));
     }
 
-    #[test]
-    fn test_debug() {
-        let hive = void_thunk_hive(4, true);
+    #[rstest]
+    fn test_debug<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(4, builder_factory(true));
         let debug = format!("{:?}", hive);
         assert_eq!(
                 debug,
                 "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
             );
 
-        let hive: THive<usize> = ChannelBuilder::empty()
+        let hive: Hive<DefaultQueen<TWrk<usize>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name("hello")
             .num_threads(4)
@@ -845,7 +909,7 @@ mod tests {
                 "Hive { shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
             );
 
-        let hive = thunk_hive(4, true);
+        let hive = thunk_hive(4, builder_factory(true));
         hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         thread::sleep(ONE_SEC);
         let debug = format!("{:?}", hive);
@@ -855,9 +919,13 @@ mod tests {
             );
     }
 
-    #[test]
-    fn test_repeated_join() {
-        let hive: THive<()> = ChannelBuilder::empty()
+    #[rstest]
+    fn test_repeated_join<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name("repeated join test")
             .num_threads(8)
@@ -887,8 +955,12 @@ mod tests {
         assert_eq!(84, test_count.load(Ordering::Relaxed));
     }
 
-    #[test]
-    fn test_multi_join() {
+    #[rstest]
+    fn test_multi_join<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         // Toggle the following lines to debug the deadlock
         // fn error(_s: String) {
         //     use ::std::io::Write;
@@ -899,12 +971,12 @@ mod tests {
         //         .expect("Failed to write to stderr");
         // }
 
-        let hive0: THive<()> = ChannelBuilder::empty()
+        let hive0: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name("multi join pool0")
             .num_threads(4)
             .build();
-        let hive1: THive<()> = ChannelBuilder::empty()
+        let hive1: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name("multi join pool1")
             .num_threads(4)
@@ -940,23 +1012,31 @@ mod tests {
         assert_eq!(rx.into_iter().sum::<u32>(), (0..8).sum());
     }
 
-    #[test]
-    fn test_empty_hive() {
+    #[rstest]
+    fn test_empty_hive<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         // Joining an empty hive must return imminently
         // TODO: run this in a thread and kill it after a timeout to prevent hanging the tests
-        let hive = void_thunk_hive(4, true);
+        let hive = void_thunk_hive(4, builder_factory(true));
         hive.join();
     }
 
-    #[test]
-    fn test_no_fun_or_joy() {
+    #[rstest]
+    fn test_no_fun_or_joy<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         // What happens when you keep adding tasks after a join
 
         fn sleepy_function() {
             thread::sleep(LONG_TASK);
         }
 
-        let hive: THive<()> = ChannelBuilder::empty()
+        let hive: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
             .thread_name("no fun or joy")
             .num_threads(8)
@@ -976,9 +1056,13 @@ mod tests {
         hive.join();
     }
 
-    #[test]
-    fn test_map() {
-        let hive = thunk_hive::<u8>(2, false);
+    #[rstest]
+    fn test_map<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(2, builder_factory(false));
         let outputs: Vec<_> = hive
             .map((0..10u8).map(|i| {
                 Thunk::of(move || {
@@ -991,9 +1075,13 @@ mod tests {
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
 
-    #[test]
-    fn test_map_unordered() {
-        let hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_map_unordered<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let outputs: Vec<_> = hive
             .map_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
@@ -1006,9 +1094,13 @@ mod tests {
         assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
     }
 
-    #[test]
-    fn test_map_send() {
-        let hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_map_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.map_send(
             (0..8u8).map(|i| {
@@ -1032,9 +1124,13 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_map_store() {
-        let mut hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_map_store<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let mut hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let mut task_ids = hive.map_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1056,9 +1152,13 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_swarm() {
-        let hive = thunk_hive::<u8>(2, false);
+    #[rstest]
+    fn test_swarm<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(2, builder_factory(false));
         let outputs: Vec<_> = hive
             .swarm((0..10u8).map(|i| {
                 Thunk::of(move || {
@@ -1071,9 +1171,14 @@ mod tests {
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
 
-    #[test]
-    fn test_swarm_unordered() {
-        let hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_swarm_unordered<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let outputs: Vec<_> = hive
             .swarm_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
@@ -1086,9 +1191,13 @@ mod tests {
         assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
     }
 
-    #[test]
-    fn test_swarm_send() {
-        let hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_swarm_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         #[cfg(feature = "batching")]
         assert_eq!(hive.worker_batch_limit(), 0);
         let (tx, rx) = super::outcome_channel();
@@ -1114,9 +1223,13 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_swarm_store() {
-        let mut hive = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_swarm_store<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let mut hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let mut task_ids = hive.swarm_store((0..8u8).map(|i| {
             Thunk::of(move || {
                 thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1138,9 +1251,13 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_scan() {
-        let hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_scan<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(Caller::of(|i| i * i))
             .num_threads(4)
             .build();
@@ -1164,9 +1281,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_scan_send() {
-        let hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_scan_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(Caller::of(|i| i * i))
             .num_threads(4)
             .build();
@@ -1200,9 +1321,13 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_try_scan_send() {
-        let hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_try_scan_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(Caller::of(|i| i * i))
             .num_threads(4)
             .build();
@@ -1237,10 +1362,15 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
+    #[rstest]
     #[should_panic]
-    fn test_try_scan_send_fail() {
-        let hive = ChannelBuilder::empty()
+    fn test_try_scan_send_fail<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(OnceCaller::of(|i: i32| Ok::<_, String>(i * i)))
             .num_threads(4)
             .build();
@@ -1253,9 +1383,13 @@ mod tests {
             .collect::<Vec<_>>();
     }
 
-    #[test]
-    fn test_scan_store() {
-        let mut hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_scan_store<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let mut hive = builder_factory(false)
             .with_worker(Caller::of(|i| i * i))
             .num_threads(4)
             .build();
@@ -1289,9 +1423,14 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
-    fn test_try_scan_store() {
-        let mut hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_try_scan_store<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let mut hive = builder_factory(false)
             .with_worker(Caller::of(|i| i * i))
             .num_threads(4)
             .build();
@@ -1326,10 +1465,15 @@ mod tests {
         assert_eq!(task_ids, outcome_task_ids);
     }
 
-    #[test]
+    #[rstest]
     #[should_panic]
-    fn test_try_scan_store_fail() {
-        let hive = ChannelBuilder::empty()
+    fn test_try_scan_store_fail<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(OnceCaller::of(|i: i32| Ok::<i32, String>(i * i)))
             .num_threads(4)
             .build();
@@ -1341,9 +1485,13 @@ mod tests {
             .collect::<Vec<_>>();
     }
 
-    #[test]
-    fn test_husk() {
-        let hive1 = thunk_hive::<u8>(8, false);
+    #[rstest]
+    fn test_husk<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive1 = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let task_ids = hive1.map_store((0..8u8).map(|i| Thunk::of(move || i)));
         hive1.join();
         let mut husk1 = hive1.try_into_husk(false).unwrap();
@@ -1399,9 +1547,13 @@ mod tests {
         assert_eq!(outputs1, outputs3);
     }
 
-    #[test]
-    fn test_clone() {
-        let hive: THive<()> = ChannelBuilder::empty()
+    #[rstest]
+    fn test_clone<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
             .with_worker_default()
             .thread_name("clone example")
             .num_threads(2)
@@ -1462,19 +1614,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_send() {
+    #[rstest]
+    fn test_channel_hive_send() {
         fn assert_send<T: Send>() {}
-        assert_send::<THive<()>>();
+        assert_send::<Hive<DefaultQueen<TWrk<()>>, ChannelTaskQueues<_>>>();
     }
 
-    #[test]
-    fn test_cloned_eq() {
-        let a = thunk_hive::<()>(2, true);
+    #[rstest]
+    fn test_workstealing_hive_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Hive<DefaultQueen<TWrk<()>>, WorkstealingTaskQueues<_>>>();
+    }
+
+    #[rstest]
+    fn test_cloned_eq<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let a = thunk_hive::<(), _, _>(2, builder_factory(true));
         assert_eq!(a, a.clone());
     }
 
-    #[test]
+    #[rstest]
     /// When a thread joins on a pool, it blocks until all tasks have completed. If a second thread
     /// adds tasks to the pool and then joins before all the tasks have completed, both threads
     /// will wait for all tasks to complete. However, as soon as all tasks have completed, all
@@ -1484,14 +1646,18 @@ mod tests {
     ///
     /// In this example, this means the waiting threads will exit the join in groups of four
     /// because the waiter pool has four processes.
-    fn test_join_wavesurfer() {
+    fn test_join_wavesurfer<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         let n_waves = 4;
         let n_workers = 4;
         let (tx, rx) = mpsc::channel();
-        let builder = OpenBuilder::empty()
+        let builder = builder_factory(false)
             .num_threads(n_workers)
-            .thread_name("join wavesurfer")
-            .with_channel_queues();
+            .thread_name("join wavesurfer");
         let waiter_hive = builder
             .clone()
             .with_worker_default::<ThunkWorker<()>>()
@@ -1574,10 +1740,14 @@ mod tests {
     // cargo-llvm-cov doesn't yet support doctests in stable, so we need to duplicate them in
     // unit tests to get coverage
 
-    #[test]
-    fn doctest_lib_2() {
+    #[rstest]
+    fn doctest_lib_2<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         // create a hive to process `Thunk`s - no-argument closures with the same return type (`i32`)
-        let hive: THive<i32> = ChannelBuilder::empty()
+        let hive: Hive<DefaultQueen<TWrk<i32>>, B::TaskQueues<_>> = builder_factory(false)
             .with_worker_default()
             .num_threads(4)
             .thread_name("thunk_hive")
@@ -1597,8 +1767,12 @@ mod tests {
         assert_eq!(-285, outputs2.into_iter().sum());
     }
 
-    #[test]
-    fn doctest_lib_3() {
+    #[rstest]
+    fn doctest_lib_3<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         #[derive(Debug)]
         struct CatWorker {
             stdin: ChildStdin,
@@ -1681,7 +1855,7 @@ mod tests {
         }
 
         // build the Hive
-        let hive = ChannelBuilder::empty()
+        let hive = builder_factory(false)
             .with_queen_mut_default::<CatQueen>()
             .num_threads(4)
             .build();
@@ -1736,11 +1910,16 @@ mod tests {
 #[cfg(all(test, feature = "affinity"))]
 mod affinity_tests {
     use crate::bee::stock::{Thunk, ThunkWorker};
-    use crate::hive::{Builder, TaskQueuesBuilder};
+    use crate::hive::{channel_builder, workstealing_builder, Builder, TaskQueuesBuilder};
+    use rstest::*;
 
-    #[test]
-    fn test_affinity() {
-        let hive = crate::hive::channel_builder(false)
+    #[rstest]
+    fn test_affinity<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .thread_name("affinity example")
             .num_threads(2)
             .core_affinity(0..2)
@@ -1756,7 +1935,7 @@ mod affinity_tests {
         }));
     }
 
-    #[test]
+    #[rstest]
     fn test_use_all_cores() {
         let hive = crate::hive::channel_builder(false)
             .thread_name("affinity example")
@@ -1781,15 +1960,16 @@ mod batching_tests {
     use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::bee::DefaultQueen;
     use crate::hive::{
-        Builder, ChannelBuilder, ChannelTaskQueues, Hive, OutcomeIteratorExt, OutcomeReceiver,
-        OutcomeSender, TaskQueuesBuilder,
+        channel_builder, workstealing_builder, Builder, Hive, OutcomeIteratorExt, OutcomeReceiver,
+        OutcomeSender, TaskQueues, TaskQueuesBuilder,
     };
+    use rstest::*;
     use std::collections::HashMap;
     use std::thread::{self, ThreadId};
     use std::time::Duration;
 
-    fn launch_tasks(
-        hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, ChannelTaskQueues<ThunkWorker<ThreadId>>>,
+    fn launch_tasks<T: TaskQueues<ThunkWorker<ThreadId>>>(
+        hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, T>,
         num_threads: usize,
         num_tasks_per_thread: usize,
         barrier: &IndexedBarrier,
@@ -1836,8 +2016,8 @@ mod batching_tests {
             })
     }
 
-    fn run_test(
-        hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, ChannelTaskQueues<ThunkWorker<ThreadId>>>,
+    fn run_test<T: TaskQueues<ThunkWorker<ThreadId>>>(
+        hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, T>,
         num_threads: usize,
         batch_limit: usize,
     ) {
@@ -1858,11 +2038,15 @@ mod batching_tests {
             .all(|&count| count == tasks_per_thread));
     }
 
-    #[test]
-    fn test_batching() {
+    #[rstest]
+    fn test_batching<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT: usize = 24;
-        let hive = ChannelBuilder::empty()
+        let hive = builder_factory(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT)
@@ -1870,13 +2054,18 @@ mod batching_tests {
         run_test(&hive, NUM_THREADS, BATCH_LIMIT);
     }
 
-    #[test]
-    fn test_set_batch_limit() {
+    #[rstest]
+    fn test_set_batch_limit<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT_0: usize = 10;
         const BATCH_LIMIT_1: usize = 20;
         const BATCH_LIMIT_2: usize = 50;
-        let hive = ChannelBuilder::empty()
+        let hive = builder_factory(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT_0)
@@ -1890,13 +2079,18 @@ mod batching_tests {
         run_test(&hive, NUM_THREADS, BATCH_LIMIT_1);
     }
 
-    #[test]
-    fn test_shrink_batch_limit() {
+    #[rstest]
+    fn test_shrink_batch_limit<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         const NUM_THREADS: usize = 4;
         const NUM_TASKS_PER_THREAD: usize = 125;
         const BATCH_LIMIT_0: usize = 100;
         const BATCH_LIMIT_1: usize = 10;
-        let hive = ChannelBuilder::empty()
+        let hive = builder_factory(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT_0)
@@ -1922,7 +2116,11 @@ mod batching_tests {
 mod retry_tests {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder};
+    use crate::hive::{
+        channel_builder, workstealing_builder, Builder, Outcome, OutcomeIteratorExt,
+        TaskQueuesBuilder,
+    };
+    use rstest::*;
     use std::time::{Duration, SystemTime};
 
     fn echo_time(i: usize, ctx: &Context<usize>) -> Result<String, ApplyError<usize, String>> {
@@ -1939,9 +2137,13 @@ mod retry_tests {
         }
     }
 
-    #[test]
-    fn test_retries() {
-        let hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_retries<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(RetryCaller::of(echo_time))
             .with_thread_per_core()
             .max_retries(3)
@@ -1952,8 +2154,12 @@ mod retry_tests {
         assert_eq!(v.unwrap().len(), 10);
     }
 
-    #[test]
-    fn test_retries_fail() {
+    #[rstest]
+    fn test_retries_fail<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
         fn sometimes_fail(
             i: usize,
             _: &Context<usize>,
@@ -1972,7 +2178,7 @@ mod retry_tests {
             }
         }
 
-        let hive = ChannelBuilder::empty()
+        let hive = builder_factory(false)
             .with_worker(RetryCaller::of(sometimes_fail))
             .with_thread_per_core()
             .max_retries(3)
@@ -1993,9 +2199,14 @@ mod retry_tests {
         assert_eq!(not_retried, 3);
     }
 
-    #[test]
-    fn test_disable_retries() {
-        let hive = ChannelBuilder::empty()
+    #[rstest]
+    fn test_disable_retries<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .with_worker(RetryCaller::of(echo_time))
             .with_thread_per_core()
             .with_no_retries()

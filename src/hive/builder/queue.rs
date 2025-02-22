@@ -2,7 +2,7 @@ use super::FullBuilder;
 use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut, Worker};
 use crate::hive::{Builder, TaskQueues};
 
-pub trait TaskQueuesBuilder: Builder + Default + Sized {
+pub trait TaskQueuesBuilder: Builder + Clone + Default + Sized {
     type TaskQueues<W: Worker>: TaskQueues<W>;
 
     fn empty() -> Self;

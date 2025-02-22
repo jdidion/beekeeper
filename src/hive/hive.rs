@@ -108,8 +108,12 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Sends one `input` to the `Hive` for processing and returns its ID. The [`Outcome`] of
     /// the task will be sent to `tx` upon completion.
-    pub fn apply_send<S: Borrow<OutcomeSender<W>>>(&self, input: W::Input, tx: S) -> TaskId {
-        self.shared().send_one_global(input, Some(tx.borrow()))
+    pub fn apply_send<X>(&self, input: W::Input, outcome_tx: X) -> TaskId
+    where
+        X: Borrow<OutcomeSender<W>>,
+    {
+        self.shared()
+            .send_one_global(input, Some(outcome_tx.borrow()))
     }
 
     /// Sends one `input` to the `Hive` for processing and returns its ID immediately. The
@@ -123,10 +127,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// This method is more efficient than [`map`](Self::map) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm<I>(&self, batch: I) -> impl Iterator<Item = Outcome<W>>
+    pub fn swarm<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
     where
-        I: IntoIterator<Item = W::Input>,
-        I::IntoIter: ExactSizeIterator,
+        B: IntoIterator<Item = W::Input>,
+        B::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = super::outcome_channel();
         let task_ids = self.shared().send_batch_global(batch, Some(&tx));
@@ -141,10 +145,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// instead receive the `Outcome`s in the order they were submitted. This method is more
     /// efficient than [`map_unordered`](Self::map_unordered) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm_unordered<I>(&self, batch: I) -> impl Iterator<Item = Outcome<W>>
+    pub fn swarm_unordered<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
     where
-        I: IntoIterator<Item = W::Input>,
-        I::IntoIter: ExactSizeIterator,
+        B: IntoIterator<Item = W::Input>,
+        B::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = super::outcome_channel();
         let task_ids = self.shared().send_batch_global(batch, Some(&tx));
@@ -156,11 +160,11 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// This method is more efficient than [`map_send`](Self::map_send) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm_send<I, S>(&self, batch: I, outcome_tx: S) -> Vec<TaskId>
+    pub fn swarm_send<B, S>(&self, batch: B, outcome_tx: S) -> Vec<TaskId>
     where
         S: Borrow<OutcomeSender<W>>,
-        I: IntoIterator<Item = W::Input>,
-        I::IntoIter: ExactSizeIterator,
+        B: IntoIterator<Item = W::Input>,
+        B::IntoIter: ExactSizeIterator,
     {
         self.shared()
             .send_batch_global(batch, Some(outcome_tx.borrow()))
@@ -170,10 +174,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// The [`Outcome`]s of the task are retained and available for later retrieval.
     ///
     /// This method is more efficient than `map_store` when the input is an [`ExactSizeIterator`].
-    pub fn swarm_store<I>(&self, batch: I) -> Vec<TaskId>
+    pub fn swarm_store<B>(&self, batch: B) -> Vec<TaskId>
     where
-        I: IntoIterator<Item = W::Input>,
-        I::IntoIter: ExactSizeIterator,
+        B: IntoIterator<Item = W::Input>,
+        B::IntoIter: ExactSizeIterator,
     {
         self.shared().send_batch_global(batch, None)
     }
@@ -182,12 +186,12 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// iterator over the [`Outcome`]s in the same order as the inputs.
     ///
     /// [`swarm`](Self::swarm) should be preferred when `inputs` is an [`ExactSizeIterator`].
-    pub fn map(
-        &self,
-        inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = Outcome<W>> {
+    pub fn map<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    where
+        B: IntoIterator<Item = W::Input>,
+    {
         let (tx, rx) = super::outcome_channel();
-        let task_ids: Vec<_> = inputs
+        let task_ids: Vec<_> = batch
             .into_iter()
             .map(|task| self.apply_send(task, &tx))
             .collect();
@@ -200,13 +204,13 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_unordered`](Self::swarm_unordered) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_unordered(
-        &self,
-        inputs: impl IntoIterator<Item = W::Input>,
-    ) -> impl Iterator<Item = Outcome<W>> {
+    pub fn map_unordered<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    where
+        B: IntoIterator<Item = W::Input>,
+    {
         let (tx, rx) = super::outcome_channel();
         // `map` is required (rather than `inspect`) because we need owned items
-        let task_ids: Vec<_> = inputs
+        let task_ids: Vec<_> = batch
             .into_iter()
             .map(|task| self.apply_send(task, &tx))
             .collect();
@@ -219,14 +223,14 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_send`](Self::swarm_send) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_send<S: Borrow<OutcomeSender<W>>>(
-        &self,
-        inputs: impl IntoIterator<Item = W::Input>,
-        tx: S,
-    ) -> Vec<TaskId> {
-        inputs
+    pub fn map_send<B, X>(&self, batch: B, outcome_tx: X) -> Vec<TaskId>
+    where
+        B: IntoIterator<Item = W::Input>,
+        X: Borrow<OutcomeSender<W>>,
+    {
+        batch
             .into_iter()
-            .map(|input| self.apply_send(input, tx.borrow()))
+            .map(|input| self.apply_send(input, outcome_tx.borrow()))
             .collect()
     }
 
@@ -235,8 +239,11 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_store`](Self::swarm_store) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_store(&self, inputs: impl IntoIterator<Item = W::Input>) -> Vec<TaskId> {
-        inputs
+    pub fn map_store<B>(&self, batch: B) -> Vec<TaskId>
+    where
+        B: IntoIterator<Item = W::Input>,
+    {
+        batch
             .into_iter()
             .map(|input| self.apply_store(input))
             .collect()
@@ -245,17 +252,13 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing.
     /// Returns an [`OutcomeBatch`] of the outputs and the final state value.
-    pub fn scan<I, St, F>(
-        &self,
-        items: impl IntoIterator<Item = I>,
-        init: St,
-        f: F,
-    ) -> (OutcomeBatch<W>, St)
+    pub fn scan<I, B, S, F>(&self, batch: B, init: S, f: F) -> (OutcomeBatch<W>, S)
     where
-        F: FnMut(&mut St, I) -> W::Input,
+        B: IntoIterator<Item = I>,
+        F: FnMut(&mut S, I) -> W::Input,
     {
         let (tx, rx) = super::outcome_channel();
-        let (task_ids, fold_value) = self.scan_send(items, &tx, init, f);
+        let (task_ids, fold_value) = self.scan_send(batch, &tx, init, f);
         drop(tx);
         let outcomes = rx.select_unordered(task_ids).into();
         (outcomes, fold_value)
@@ -265,17 +268,18 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
     /// or an error. Returns an [`OutcomeBatch`] of the outputs, a [`Vec`] of errors, and the final
     /// state value.
-    pub fn try_scan<I, E, St, F>(
+    pub fn try_scan<I, B, S, E, F>(
         &self,
-        items: impl IntoIterator<Item = I>,
-        init: St,
+        batch: B,
+        init: S,
         mut f: F,
-    ) -> (OutcomeBatch<W>, Vec<E>, St)
+    ) -> (OutcomeBatch<W>, Vec<E>, S)
     where
-        F: FnMut(&mut St, I) -> Result<W::Input, E>,
+        B: IntoIterator<Item = I>,
+        F: FnMut(&mut S, I) -> Result<W::Input, E>,
     {
         let (tx, rx) = super::outcome_channel();
-        let (task_ids, errors, fold_value) = items.into_iter().fold(
+        let (task_ids, errors, fold_value) = batch.into_iter().fold(
             (Vec::new(), Vec::new(), init),
             |(mut task_ids, mut errors, mut acc), inp| {
                 match f(&mut acc, inp) {
@@ -294,22 +298,23 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// The outputs are sent to `tx` in the order they become available. Returns a [`Vec`] of the
     /// task IDs and the final state value.
-    pub fn scan_send<I, S, St, F>(
+    pub fn scan_send<I, B, X, S, F>(
         &self,
-        items: impl IntoIterator<Item = I>,
-        tx: S,
-        init: St,
+        batch: B,
+        outcome_tx: X,
+        init: S,
         mut f: F,
-    ) -> (Vec<TaskId>, St)
+    ) -> (Vec<TaskId>, S)
     where
-        S: Borrow<OutcomeSender<W>>,
-        F: FnMut(&mut St, I) -> W::Input,
+        B: IntoIterator<Item = I>,
+        X: Borrow<OutcomeSender<W>>,
+        F: FnMut(&mut S, I) -> W::Input,
     {
-        items
+        batch
             .into_iter()
             .fold((Vec::new(), init), |(mut task_ids, mut acc), item| {
                 let input = f(&mut acc, item);
-                task_ids.push(self.apply_send(input, tx.borrow()));
+                task_ids.push(self.apply_send(input, outcome_tx.borrow()));
                 (task_ids, acc)
             })
     }
@@ -319,21 +324,24 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. The outputs are sent to `tx` in the order they become available. This
     /// function returns the final state value and a [`Vec`] of results, where each result is
     /// either a task ID or an error.
-    pub fn try_scan_send<I, E, S, St, F>(
+    pub fn try_scan_send<I, B, X, S, E, F>(
         &self,
-        items: impl IntoIterator<Item = I>,
-        tx: S,
-        init: St,
+        batch: B,
+        outcome_tx: X,
+        init: S,
         mut f: F,
-    ) -> (Vec<Result<TaskId, E>>, St)
+    ) -> (Vec<Result<TaskId, E>>, S)
     where
-        S: Borrow<OutcomeSender<W>>,
-        F: FnMut(&mut St, I) -> Result<W::Input, E>,
+        B: IntoIterator<Item = I>,
+        X: Borrow<OutcomeSender<W>>,
+        F: FnMut(&mut S, I) -> Result<W::Input, E>,
     {
-        items
+        batch
             .into_iter()
             .fold((Vec::new(), init), |(mut results, mut acc), inp| {
-                results.push(f(&mut acc, inp).map(|input| self.apply_send(input, tx.borrow())));
+                results.push(
+                    f(&mut acc, inp).map(|input| self.apply_send(input, outcome_tx.borrow())),
+                );
                 (results, acc)
             })
     }
@@ -342,16 +350,12 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// This function returns the final state value and a [`Vec`] of task IDs. The [`Outcome`]s of
     /// the tasks are retained and available for later retrieval.
-    pub fn scan_store<I, St, F>(
-        &self,
-        items: impl IntoIterator<Item = I>,
-        init: St,
-        mut f: F,
-    ) -> (Vec<TaskId>, St)
+    pub fn scan_store<I, B, S, F>(&self, batch: B, init: S, mut f: F) -> (Vec<TaskId>, S)
     where
-        F: FnMut(&mut St, I) -> W::Input,
+        B: IntoIterator<Item = I>,
+        F: FnMut(&mut S, I) -> W::Input,
     {
-        items
+        batch
             .into_iter()
             .fold((Vec::new(), init), |(mut task_ids, mut acc), item| {
                 let input = f(&mut acc, item);
@@ -365,16 +369,17 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. This function returns the final value of the state value and a [`Vec`] of
     /// results, where each result is either a task ID or an error. The [`Outcome`]s of the
     /// tasks are retained and available for later retrieval.
-    pub fn try_scan_store<I, E, St, F>(
+    pub fn try_scan_store<I, B, S, E, F>(
         &self,
-        items: impl IntoIterator<Item = I>,
-        init: St,
+        batch: B,
+        init: S,
         mut f: F,
-    ) -> (Vec<Result<TaskId, E>>, St)
+    ) -> (Vec<Result<TaskId, E>>, S)
     where
-        F: FnMut(&mut St, I) -> Result<W::Input, E>,
+        B: IntoIterator<Item = I>,
+        F: FnMut(&mut S, I) -> Result<W::Input, E>,
     {
-        items
+        batch
             .into_iter()
             .fold((Vec::new(), init), |(mut results, mut acc), item| {
                 results.push(f(&mut acc, item).map(|input| self.apply_store(input)));
@@ -1005,7 +1010,8 @@ mod tests {
     use super::Poisoned;
     use crate::bee::stock::{Caller, Thunk, ThunkWorker};
     use crate::hive::{
-        outcome_channel, Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder,
+        Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder, channel_builder,
+        outcome_channel,
     };
     use std::collections::HashMap;
     use std::thread;
@@ -1013,12 +1019,15 @@ mod tests {
 
     #[test]
     fn test_suspend() {
-        let hive = ChannelBuilder::empty()
+        let hive = channel_builder(false)
             .num_threads(4)
             .with_worker_default::<ThunkWorker<()>>()
             .build();
-        let outcome_iter =
-            hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
+        let (tx, rx) = outcome_channel();
+        hive.map_send(
+            (0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))),
+            tx,
+        );
         // Allow first set of tasks to be started.
         thread::sleep(Duration::from_secs(1));
         // There should be 4 active tasks and 6 queued tasks.
@@ -1031,7 +1040,7 @@ mod tests {
         // Wait for remaining tasks to complete.
         hive.join();
         assert_eq!(hive.num_tasks(), (0, 0));
-        let outputs: Vec<_> = outcome_iter.into_outputs().collect();
+        let outputs: Vec<_> = rx.into_outputs().collect();
         assert_eq!(outputs.len(), 10);
     }
 
