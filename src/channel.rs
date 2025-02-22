@@ -30,7 +30,7 @@ pub trait ReceiverExt<T> {
 
 #[cfg(not(any(feature = "crossbeam", feature = "flume", feature = "loole")))]
 pub mod prelude {
-    pub use std::sync::mpsc::{channel, Receiver, SendError, Sender};
+    pub use std::sync::mpsc::{Receiver, SendError, Sender, channel};
 
     use super::{Message, ReceiverExt, SenderExt};
     use std::sync::mpsc::TryRecvError;
@@ -57,7 +57,7 @@ pub mod prelude {
 
 #[cfg(all(feature = "crossbeam", not(any(feature = "flume", feature = "loole"))))]
 pub mod prelude {
-    pub use crossbeam_channel::{unbounded as channel, Receiver, SendError, Sender};
+    pub use crossbeam_channel::{Receiver, SendError, Sender, unbounded as channel};
 
     use super::{Message, ReceiverExt, SenderExt};
     use crossbeam_channel::TryRecvError;
@@ -84,7 +84,7 @@ pub mod prelude {
 
 #[cfg(all(feature = "flume", not(any(feature = "crossbeam", feature = "loole"))))]
 pub mod prelude {
-    pub use flume::{unbounded as channel, Receiver, SendError, Sender};
+    pub use flume::{Receiver, SendError, Sender, unbounded as channel};
 
     use super::{Message, ReceiverExt, SenderExt};
     use flume::TryRecvError;
@@ -111,7 +111,7 @@ pub mod prelude {
 
 #[cfg(all(feature = "loole", not(any(feature = "crossbeam", feature = "flume"))))]
 pub mod prelude {
-    pub use loole::{unbounded as channel, Receiver, SendError, Sender};
+    pub use loole::{Receiver, SendError, Sender, unbounded as channel};
 
     use super::{Message, ReceiverExt, SenderExt};
     use loole::TryRecvError;

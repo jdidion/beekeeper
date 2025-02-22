@@ -118,8 +118,8 @@ pub mod reset {
 
 #[cfg(test)]
 mod tests {
-    use super::reset::Reset;
     use super::Config;
+    use super::reset::Reset;
     use serial_test::serial;
 
     #[test]

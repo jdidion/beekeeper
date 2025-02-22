@@ -47,9 +47,9 @@ mod queue;
 pub use bee::BeeBuilder;
 pub use full::FullBuilder;
 pub use open::OpenBuilder;
+pub use queue::TaskQueuesBuilder;
 pub use queue::channel::ChannelBuilder;
 pub use queue::workstealing::WorkstealingBuilder;
-pub use queue::TaskQueuesBuilder;
 
 pub fn open(with_defaults: bool) -> OpenBuilder {
     if with_defaults {

@@ -1,6 +1,6 @@
 use beekeeper::bee::stock::EchoWorker;
-use beekeeper::hive::{outcome_channel, Builder, ChannelBuilder, TaskQueuesBuilder};
-use divan::{bench, black_box_drop, AllocProfiler, Bencher};
+use beekeeper::hive::{Builder, ChannelBuilder, TaskQueuesBuilder, outcome_channel};
+use divan::{AllocProfiler, Bencher, bench, black_box_drop};
 use itertools::iproduct;
 
 #[global_allocator]

@@ -139,8 +139,8 @@ mod tests {
     use crate::bee::stock::{PunkWorker, Thunk, ThunkWorker};
     use crate::hive::ChannelTaskQueues;
     use crate::hive::{
-        outcome_channel, Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, OutcomeStore,
-        TaskQueuesBuilder,
+        Builder, ChannelBuilder, Outcome, OutcomeIteratorExt, OutcomeStore, TaskQueuesBuilder,
+        outcome_channel,
     };
 
     #[test]

@@ -270,8 +270,8 @@ mod tests {
         u8,
         String,
         impl FnMut((bool, u8), &Context<(bool, u8)>) -> Result<u8, ApplyError<(bool, u8), String>>
-            + Clone
-            + 'static,
+        + Clone
+        + 'static,
     > {
         RetryCaller::of(|input: (bool, u8), _: &Context<(bool, u8)>| {
             if input.0 {

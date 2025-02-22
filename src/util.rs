@@ -92,11 +92,7 @@ mod tests {
             4,
             0..100,
             |i| {
-                if i == 50 {
-                    Err("Fiddy!")
-                } else {
-                    Ok(i + 1)
-                }
+                if i == 50 { Err("Fiddy!") } else { Ok(i + 1) }
             },
         );
         assert!(result.has_failures());

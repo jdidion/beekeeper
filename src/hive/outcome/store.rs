@@ -53,7 +53,9 @@ pub trait OutcomeStore<W: Worker>: DerefOutcomes<W> {
     fn assert_empty(&self, allow_successes: bool) {
         let (unprocessed, successes, failures) = self.count();
         if !allow_successes && successes > 0 {
-            panic!("{unprocessed} unprocessed inputs, {successes} successes, and {failures} failed tasks found");
+            panic!(
+                "{unprocessed} unprocessed inputs, {successes} successes, and {failures} failed tasks found"
+            );
         } else if unprocessed > 0 || failures > 0 {
             panic!("{unprocessed} unprocessed inputs and {failures} failed tasks found");
         }
@@ -523,8 +525,8 @@ mod tests {
 
 #[cfg(all(test, feature = "retry"))]
 mod retry_tests {
-    use super::tests::TestWorker;
     use super::OutcomeStore;
+    use super::tests::TestWorker;
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
 
