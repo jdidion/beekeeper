@@ -389,19 +389,19 @@ mod husk;
 mod inner;
 mod outcome;
 
+pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder, TaskQueuesBuilder};
 pub use self::builder::{
     channel as channel_builder, open as open_builder, workstealing as workstealing_builder,
 };
-pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder, TaskQueuesBuilder};
 pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
-pub use self::inner::{set_config::*, Builder, ChannelTaskQueues, WorkstealingTaskQueues};
+pub use self::inner::{Builder, ChannelTaskQueues, WorkstealingTaskQueues, set_config::*};
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 
 use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};
 use self::outcome::{DerefOutcomes, OutcomeQueue, OwnedOutcomes};
 use crate::bee::Worker;
-use crate::channel::{channel, Receiver, Sender};
+use crate::channel::{Receiver, Sender, channel};
 use std::io::Error as SpawnError;
 
 /// Sender type for channel used to send task outcomes.
@@ -418,8 +418,8 @@ pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
 
 pub mod prelude {
     pub use super::{
-        channel_builder, open_builder, outcome_channel, workstealing_builder, Builder, Hive, Husk,
-        Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned, TaskQueuesBuilder,
+        Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
+        TaskQueuesBuilder, channel_builder, open_builder, outcome_channel, workstealing_builder,
     };
 }
 
@@ -463,8 +463,8 @@ mod util {
 mod tests {
     use super::inner::TaskQueues;
     use super::{
-        channel_builder, workstealing_builder, Builder, ChannelTaskQueues, Hive, Outcome,
-        OutcomeIteratorExt, OutcomeStore, TaskQueuesBuilder, WorkstealingTaskQueues,
+        Builder, ChannelTaskQueues, Hive, Outcome, OutcomeIteratorExt, OutcomeStore,
+        TaskQueuesBuilder, WorkstealingTaskQueues, channel_builder, workstealing_builder,
     };
     use crate::barrier::IndexedBarrier;
     use crate::bee::stock::{Caller, OnceCaller, RefCaller, Thunk, ThunkWorker};
@@ -479,8 +479,9 @@ mod tests {
     use std::io::{self, BufRead, BufReader, Write};
     use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
     use std::sync::{
+        Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
-        mpsc, Arc, Barrier,
+        mpsc,
     };
     use std::thread;
     use std::time::Duration;
@@ -669,8 +670,10 @@ mod tests {
     {
         let hive = void_thunk_hive(TEST_TASKS, builder_factory(false));
         for _ in 0..2 * TEST_TASKS {
-            hive.apply_store(Thunk::of(|| loop {
-                thread::sleep(LONG_TASK)
+            hive.apply_store(Thunk::of(|| {
+                loop {
+                    thread::sleep(LONG_TASK)
+                }
             }));
         }
         thread::sleep(ONE_SEC);
@@ -691,14 +694,16 @@ mod tests {
             .build();
         let num_threads = num_cpus::get();
         for _ in 0..num_threads {
-            hive.apply_store(Thunk::of(|| loop {
-                thread::sleep(LONG_TASK)
+            hive.apply_store(Thunk::of(|| {
+                loop {
+                    thread::sleep(LONG_TASK)
+                }
             }));
         }
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().1, num_threads as u64);
-        let num_threads = hive.max_workers();
-        assert_eq!(num_threads, num_threads);
+        let max_workers = hive.max_workers();
+        assert_eq!(num_threads, max_workers);
     }
 
     #[rstest]
@@ -894,9 +899,9 @@ mod tests {
         let hive = void_thunk_hive(4, builder_factory(true));
         let debug = format!("{:?}", hive);
         assert_eq!(
-                debug,
-                "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
-            );
+            debug,
+            "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
+        );
 
         let hive: Hive<DefaultQueen<TWrk<usize>>, B::TaskQueues<_>> = builder_factory(false)
             .with_queen_default()
@@ -905,18 +910,18 @@ mod tests {
             .build();
         let debug = format!("{:?}", hive);
         assert_eq!(
-                debug,
-                "Hive { shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
-            );
+            debug,
+            "Hive { shared: Shared { name: \"hello\", num_threads: 4, num_tasks_queued: 0, num_tasks_active: 0 } }"
+        );
 
         let hive = thunk_hive(4, builder_factory(true));
         hive.apply_store(Thunk::of(|| thread::sleep(LONG_TASK)));
         thread::sleep(ONE_SEC);
         let debug = format!("{:?}", hive);
         assert_eq!(
-                debug,
-                "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 1 } }"
-            );
+            debug,
+            "Hive { shared: Shared { name: None, num_threads: 4, num_tasks_queued: 0, num_tasks_active: 1 } }"
+        );
     }
 
     #[rstest]
@@ -1910,7 +1915,7 @@ mod tests {
 #[cfg(all(test, feature = "affinity"))]
 mod affinity_tests {
     use crate::bee::stock::{Thunk, ThunkWorker};
-    use crate::hive::{channel_builder, workstealing_builder, Builder, TaskQueuesBuilder};
+    use crate::hive::{Builder, TaskQueuesBuilder, channel_builder, workstealing_builder};
     use rstest::*;
 
     #[rstest]
@@ -1957,11 +1962,11 @@ mod affinity_tests {
 #[cfg(all(test, feature = "batching"))]
 mod batching_tests {
     use crate::barrier::IndexedBarrier;
-    use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::bee::DefaultQueen;
+    use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::hive::{
-        channel_builder, workstealing_builder, Builder, Hive, OutcomeIteratorExt, OutcomeReceiver,
-        OutcomeSender, TaskQueues, TaskQueuesBuilder,
+        Builder, Hive, OutcomeIteratorExt, OutcomeReceiver, OutcomeSender, TaskQueues,
+        TaskQueuesBuilder, channel_builder, workstealing_builder,
     };
     use rstest::*;
     use std::collections::HashMap;
@@ -2033,9 +2038,11 @@ mod batching_tests {
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert_eq!(thread_counts.len(), num_threads);
-        assert!(thread_counts
-            .values()
-            .all(|&count| count == tasks_per_thread));
+        assert!(
+            thread_counts
+                .values()
+                .all(|&count| count == tasks_per_thread)
+        );
     }
 
     #[rstest]
@@ -2117,8 +2124,8 @@ mod retry_tests {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
     use crate::hive::{
-        channel_builder, workstealing_builder, Builder, Outcome, OutcomeIteratorExt,
-        TaskQueuesBuilder,
+        Builder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder, channel_builder,
+        workstealing_builder,
     };
     use rstest::*;
     use std::time::{Duration, SystemTime};
