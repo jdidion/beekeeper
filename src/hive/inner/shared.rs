@@ -458,7 +458,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Returns a mutable reference to the retained task outcomes.
-    pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_ {
+    pub fn outcomes(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
         self.outcomes.get_mut()
     }
 

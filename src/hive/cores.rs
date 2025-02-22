@@ -132,7 +132,7 @@ impl Cores {
     /// Returns an iterator over `(core_index, Option<Core>)`, where `Some(core)` can be used to
     /// set the core affinity of the current thread. The `core` will be `None` for cores that are
     /// not currently available.
-    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<Core>)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<Core>)> {
         let cores = CORES.lock();
         self.0.iter().cloned().map(move |index| {
             (

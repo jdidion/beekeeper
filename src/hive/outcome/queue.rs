@@ -17,7 +17,7 @@ impl<W: Worker> OutcomeQueue<W> {
     }
 
     /// Flushes the queue into the map of outcomes and returns a mutable reference to the map.
-    pub fn get_mut(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_ {
+    pub fn get_mut(&self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> {
         let mut outcomes = self.outcomes.lock();
         // add any queued outcomes to the map
         while let Some(outcome) = self.queue.pop() {

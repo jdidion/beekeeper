@@ -128,7 +128,7 @@ impl<W: Worker> GlobalQueue<W> {
     }
 
     #[cfg(feature = "batching")]
-    fn try_iter(&self) -> impl Iterator<Item = Task<W>> + '_ {
+    fn try_iter(&self) -> impl Iterator<Item = Task<W>> {
         self.global_rx.try_iter()
     }
 }

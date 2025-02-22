@@ -10,7 +10,7 @@ pub trait DerefOutcomes<W: Worker> {
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
 
     /// Returns a mutable reference to a map of task task_id to `Outcome`.
-    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>> + '_;
+    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
 }
 
 pub trait OwnedOutcomes<W: Worker>: Sized {

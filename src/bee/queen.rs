@@ -32,7 +32,7 @@ impl<Q: QueenMut> QueenCell<Q> {
         Self(RwLock::new(mut_queen))
     }
 
-    pub fn get(&self) -> impl Deref<Target = Q> + '_ {
+    pub fn get(&self) -> impl Deref<Target = Q> {
         self.0.read()
     }
 
