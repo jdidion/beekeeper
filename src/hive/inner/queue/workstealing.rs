@@ -14,6 +14,11 @@ use parking_lot::RwLock;
 use rand::prelude::*;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+/// Time to wait after trying to pop and finding all queues empty.
+const EMPTY_DELAY: Duration = Duration::from_millis(100);
 
 pub struct WorkstealingTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
@@ -40,7 +45,7 @@ impl<W: Worker> TaskQueues<W> for WorkstealingTaskQueues<W> {
 
     fn update_for_threads(&self, start_index: usize, end_index: usize, config: &Config) {
         let local_queues = self.local.read();
-        assert!(local_queues.len() > end_index);
+        assert!(local_queues.len() >= end_index);
         (start_index..end_index).for_each(|thread_index| local_queues[thread_index].update(config));
     }
 
@@ -103,7 +108,7 @@ impl<W: Worker> GlobalQueue<W> {
     }
 
     /// Tries to steal a task from a random worker using its `Stealer`.
-    fn try_steal(&self) -> Option<Task<W>> {
+    fn try_steal_from_worker(&self) -> Result<Task<W>, PopTaskError> {
         let stealers = self.stealers.read();
         let n = stealers.len();
         // randomize the stealing order, to prevent always stealing from the same thread
@@ -111,6 +116,14 @@ impl<W: Worker> GlobalQueue<W> {
             .take(n)
             .filter_map(|i| stealers[i].steal().success())
             .next()
+            .ok_or_else(|| {
+                if self.is_closed() && self.queue.is_empty() {
+                    PopTaskError::Closed
+                } else {
+                    thread::park_timeout(EMPTY_DELAY);
+                    PopTaskError::Empty
+                }
+            })
     }
 
     /// Tries to steal a task from the global queue, otherwise tries to steal a task from another
@@ -119,7 +132,7 @@ impl<W: Worker> GlobalQueue<W> {
         if let Some(task) = self.queue.steal().success() {
             Ok(task)
         } else {
-            self.try_steal().ok_or(PopTaskError::Empty)
+            self.try_steal_from_worker()
         }
     }
 
@@ -137,9 +150,10 @@ impl<W: Worker> GlobalQueue<W> {
             .steal_batch_with_limit_and_pop(local_batch, limit + 1)
             .success()
         {
-            return Ok(task);
+            Ok(task)
+        } else {
+            self.try_steal_from_worker()
         }
-        self.try_steal().ok_or(PopTaskError::Empty)
     }
 
     fn is_closed(&self) -> bool {

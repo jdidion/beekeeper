@@ -717,8 +717,8 @@ mod retry {
 
 #[cfg(test)]
 mod tests {
-    use crate::bee::stock::ThunkWorker;
     use crate::bee::DefaultQueen;
+    use crate::bee::stock::ThunkWorker;
     use crate::hive::ChannelTaskQueues;
 
     type VoidThunkWorker = ThunkWorker<()>;

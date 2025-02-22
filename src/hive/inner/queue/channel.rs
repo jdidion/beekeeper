@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // time to wait when polling the global queue
-const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Type alias for the input task channel sender
 type TaskSender<W> = crossbeam_channel::Sender<Task<W>>;

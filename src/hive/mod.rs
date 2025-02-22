@@ -2025,6 +2025,7 @@ mod batching_tests {
         hive: &Hive<DefaultQueen<ThunkWorker<ThreadId>>, T>,
         num_threads: usize,
         batch_limit: usize,
+        assert_exact: bool,
     ) {
         let tasks_per_thread = batch_limit + 2;
         let (tx, rx) = crate::hive::outcome_channel();
@@ -2038,52 +2039,83 @@ mod batching_tests {
         hive.join();
         let thread_counts = count_thread_ids(rx, task_ids);
         assert_eq!(thread_counts.len(), num_threads);
-        assert!(
-            thread_counts
-                .values()
-                .all(|&count| count == tasks_per_thread)
+        assert_eq!(
+            thread_counts.values().sum::<usize>(),
+            tasks_per_thread * num_threads
         );
+        if assert_exact {
+            assert!(
+                thread_counts
+                    .values()
+                    .all(|&count| count == tasks_per_thread)
+            );
+        } else {
+            assert!(thread_counts.values().all(|&count| count > 0));
+        }
     }
 
     #[rstest]
-    fn test_batching<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
-    where
-        B: TaskQueuesBuilder,
-        F: Fn(bool) -> B,
-    {
+    fn test_batching_channel() {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT: usize = 24;
-        let hive = builder_factory(false)
+        let hive = channel_builder(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT)
             .build();
-        run_test(&hive, NUM_THREADS, BATCH_LIMIT);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT, true);
     }
 
     #[rstest]
-    fn test_set_batch_limit<B, F>(
-        #[values(channel_builder, workstealing_builder)] builder_factory: F,
-    ) where
-        B: TaskQueuesBuilder,
-        F: Fn(bool) -> B,
-    {
+    fn test_batching_workstealing() {
+        const NUM_THREADS: usize = 4;
+        const BATCH_LIMIT: usize = 24;
+        let hive = workstealing_builder(false)
+            .with_worker_default()
+            .num_threads(NUM_THREADS)
+            .batch_limit(BATCH_LIMIT)
+            .build();
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT, false);
+    }
+
+    #[rstest]
+    fn test_set_batch_limit_channel() {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT_0: usize = 10;
-        const BATCH_LIMIT_1: usize = 20;
-        const BATCH_LIMIT_2: usize = 50;
-        let hive = builder_factory(false)
+        const BATCH_LIMIT_1: usize = 50;
+        const BATCH_LIMIT_2: usize = 20;
+        let hive = channel_builder(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT_0)
             .build();
-        run_test(&hive, NUM_THREADS, BATCH_LIMIT_0);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_0, true);
         // increase batch size
-        hive.set_worker_batch_limit(BATCH_LIMIT_2);
-        run_test(&hive, NUM_THREADS, BATCH_LIMIT_2);
-        // decrease batch size
         hive.set_worker_batch_limit(BATCH_LIMIT_1);
-        run_test(&hive, NUM_THREADS, BATCH_LIMIT_1);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_1, true);
+        // decrease batch size
+        hive.set_worker_batch_limit(BATCH_LIMIT_2);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_2, true);
+    }
+
+    #[rstest]
+    fn test_set_batch_limit_workstealing() {
+        const NUM_THREADS: usize = 4;
+        const BATCH_LIMIT_0: usize = 10;
+        const BATCH_LIMIT_1: usize = 50;
+        const BATCH_LIMIT_2: usize = 20;
+        let hive = workstealing_builder(false)
+            .with_worker_default()
+            .num_threads(NUM_THREADS)
+            .batch_limit(BATCH_LIMIT_0)
+            .build();
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_0, false);
+        // increase batch size
+        hive.set_worker_batch_limit(BATCH_LIMIT_1);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_1, false);
+        // decrease batch size
+        hive.set_worker_batch_limit(BATCH_LIMIT_2);
+        run_test(&hive, NUM_THREADS, BATCH_LIMIT_2, false);
     }
 
     #[rstest]

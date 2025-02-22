@@ -40,7 +40,7 @@ name = "perf"
 harness = false
 
 [features]
-default = ["affinity", "batching", "retry"]
+default = []
 affinity = ["dep:core_affinity"]
 batching = []
 retry = []
