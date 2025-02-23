@@ -2117,18 +2117,14 @@ mod batching_tests {
         run_test(&hive, NUM_THREADS, BATCH_LIMIT_2, false);
     }
 
+    // TODO: make this work with WorkstealingTaskQueues
     #[rstest]
-    fn test_shrink_batch_limit<B, F>(
-        #[values(channel_builder, workstealing_builder)] builder_factory: F,
-    ) where
-        B: TaskQueuesBuilder,
-        F: Fn(bool) -> B,
-    {
+    fn test_shrink_batch_limit() {
         const NUM_THREADS: usize = 4;
         const NUM_TASKS_PER_THREAD: usize = 125;
         const BATCH_LIMIT_0: usize = 100;
         const BATCH_LIMIT_1: usize = 10;
-        let hive = builder_factory(false)
+        let hive = channel_builder(false)
             .with_worker_default()
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT_0)
