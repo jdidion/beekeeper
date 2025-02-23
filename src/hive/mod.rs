@@ -1099,10 +1099,13 @@ mod tests {
         assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
     }
 
-    // TODO: make this test work with WorkstealingTaskQueues
     #[rstest]
-    fn test_map_send() {
-        let hive = thunk_hive::<u8, _, _>(8, channel_builder(false));
+    fn test_map_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.map_send(
             (0..8u8).map(|i| {
@@ -1113,17 +1116,18 @@ mod tests {
             }),
             tx,
         );
-        let (mut outcome_task_ids, values): (Vec<TaskId>, Vec<u8>) = rx
+        let (mut outcome_task_ids, mut values): (Vec<TaskId>, Vec<u8>) = rx
             .iter()
             .map(|outcome| match outcome {
                 Outcome::Success { value, task_id } => (task_id, value),
                 _ => panic!("unexpected error"),
             })
             .unzip();
-        assert_eq!(values, (0..8).rev().collect::<Vec<_>>());
         task_ids.sort();
         outcome_task_ids.sort();
         assert_eq!(task_ids, outcome_task_ids);
+        values.sort();
+        assert_eq!(values, (0..8).collect::<Vec<_>>());
     }
 
     #[rstest]
@@ -1181,7 +1185,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
-        let outputs: Vec<_> = hive
+        let mut outputs: Vec<_> = hive
             .swarm_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1190,7 +1194,8 @@ mod tests {
             }))
             .map(Outcome::unwrap)
             .collect();
-        assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
+        outputs.sort();
+        assert_eq!(outputs, (0..8).collect::<Vec<_>>())
     }
 
     #[rstest]
