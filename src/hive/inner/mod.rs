@@ -16,6 +16,9 @@ pub mod set_config {
     };
 }
 
+// Note: it would be more appropriate for the publicly exported traits (`Builder`, `TaskQueues`)
+// to be in the `beekeeper::hive` module, but they need to be in `inner` for visiblity reasons.
+
 pub use self::builder::{Builder, BuilderConfig};
 pub use self::queue::{ChannelTaskQueues, TaskQueues, WorkerQueues, WorkstealingTaskQueues};
 

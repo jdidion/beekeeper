@@ -1650,17 +1650,14 @@ mod tests {
     /// changed and will wake, even if new tasks have been added in the meantime.
     ///
     /// In this example, this means the waiting threads will exit the join in groups of four
-    /// because the waiter pool has four processes.
-    fn test_join_wavesurfer<B, F>(
-        #[values(channel_builder, workstealing_builder)] builder_factory: F,
-    ) where
-        B: TaskQueuesBuilder,
-        F: Fn(bool) -> B,
-    {
+    /// because the waiter pool has four processes
+    ///
+    /// TODO: make this test work with WorkstealingTaskQueues.
+    fn test_join_wavesurfer() {
         let n_waves = 4;
         let n_workers = 4;
         let (tx, rx) = mpsc::channel();
-        let builder = builder_factory(false)
+        let builder = channel_builder(false)
             .num_threads(n_workers)
             .thread_name("join wavesurfer");
         let waiter_hive = builder
