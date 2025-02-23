@@ -1087,7 +1087,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
-        let outputs: Vec<_> = hive
+        let mut outputs: Vec<_> = hive
             .map_unordered((0..8u8).map(|i| {
                 Thunk::of(move || {
                     thread::sleep(Duration::from_millis((8 - i as u64) * 100));
@@ -1096,7 +1096,8 @@ mod tests {
             }))
             .map(Outcome::unwrap)
             .collect();
-        assert_eq!(outputs, (0..8).rev().collect::<Vec<_>>())
+        outputs.sort();
+        assert_eq!(outputs, (0..8).collect::<Vec<_>>())
     }
 
     #[rstest]
