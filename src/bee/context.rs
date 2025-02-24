@@ -78,7 +78,7 @@ impl<'a, I> Context<'a, I> {
         Self {
             task_id: 0,
             task_ctx: None,
-            subtask_ids: None,
+            subtask_ids: RefCell::new(None),
         }
     }
 
@@ -87,7 +87,7 @@ impl<'a, I> Context<'a, I> {
         Self {
             task_id,
             task_ctx,
-            subtask_ids: None,
+            subtask_ids: RefCell::new(None),
         }
     }
 
