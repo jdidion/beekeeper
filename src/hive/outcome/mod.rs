@@ -23,7 +23,6 @@ use crate::panic::Panic;
 ///
 /// Note that `Outcome`s can only be compared or ordered with other `Outcome`s produced by the same
 /// `Hive`, because comparison/ordering is completely based on the task ID.
-#[derive(Debug)]
 pub enum Outcome<W: Worker> {
     /// The task was executed successfully.
     Success { value: W::Output, task_id: TaskId },

@@ -1,4 +1,5 @@
 //! The context for a task processed by a `Worker`.
+use std::cell::RefCell;
 use std::fmt::Debug;
 
 pub type TaskId = usize;
@@ -17,7 +18,7 @@ pub trait TaskContext<I>: Debug {
 pub struct Context<'a, I> {
     task_id: TaskId,
     task_ctx: Option<&'a dyn TaskContext<I>>,
-    subtask_ids: Option<Vec<TaskId>>,
+    subtask_ids: RefCell<Option<Vec<TaskId>>>,
     #[cfg(feature = "retry")]
     attempt: u32,
 }
@@ -50,10 +51,13 @@ impl<I> Context<'_, I> {
     /// the `Hive` if there is no sender.
     ///
     /// Returns an `Err` containing `input` if the new task was not successfully submitted.
-    pub fn submit(&mut self, input: I) -> Result<(), I> {
+    pub fn submit(&self, input: I) -> Result<(), I> {
         if let Some(worker) = self.task_ctx.as_ref() {
             let task_id = worker.submit_task(input);
-            self.subtask_ids.get_or_insert_default().push(task_id);
+            self.subtask_ids
+                .borrow_mut()
+                .get_or_insert_default()
+                .push(task_id);
             Ok(())
         } else {
             Err(input)
@@ -63,7 +67,7 @@ impl<I> Context<'_, I> {
     /// Consumes this `Context` and returns the IDs of the subtasks spawned during the execution
     /// of the task, if any.
     pub(crate) fn into_subtask_ids(self) -> Option<Vec<TaskId>> {
-        self.subtask_ids
+        self.subtask_ids.into_inner()
     }
 }
 
@@ -103,7 +107,7 @@ impl<'a, I> Context<'a, I> {
             task_id: 0,
             attempt: 0,
             task_ctx: None,
-            subtask_ids: None,
+            subtask_ids: RefCell::new(None),
         }
     }
 
@@ -113,7 +117,7 @@ impl<'a, I> Context<'a, I> {
             task_id,
             attempt,
             task_ctx,
-            subtask_ids: None,
+            subtask_ids: RefCell::new(None),
         }
     }
 

@@ -1,6 +1,7 @@
 use super::Outcome;
 use crate::bee::{ApplyError, TaskId, Worker, WorkerResult};
 use std::cmp::Ordering;
+use std::fmt::Debug;
 
 impl<W: Worker> Outcome<W> {
     /// Converts a worker `result` into an `Outcome` with the given task_id and optional subtask ids.
@@ -130,13 +131,16 @@ impl<W: Worker> Outcome<W> {
 
     /// Consumes this `Outcome` and returns the value if it is a `Success`, otherwise panics.
     pub fn unwrap(self) -> W::Output {
-        self.success().expect("not a Success outcome")
+        match self {
+            Self::Success { value, .. } | Self::SuccessWithSubtasks { value, .. } => value,
+            outcome => panic!("Not a success outcome: {:?}", outcome),
+        }
     }
 
     /// Consumes this `Outcome` and returns the output value if it is a `Success`, otherwise `None`.
     pub fn success(self) -> Option<W::Output> {
         match self {
-            Self::Success { value, .. } => Some(value),
+            Self::Success { value, .. } | Self::SuccessWithSubtasks { value, .. } => Some(value),
             _ => None,
         }
     }
@@ -174,6 +178,75 @@ impl<W: Worker> Outcome<W> {
             | Self::Missing { .. } => None,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { error, .. } => Some(error),
+        }
+    }
+}
+
+impl<W: Worker> Debug for Outcome<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success { task_id, .. } => {
+                f.debug_struct("Success").field("task_id", task_id).finish()
+            }
+            Self::SuccessWithSubtasks {
+                task_id,
+                subtask_ids,
+                ..
+            } => f
+                .debug_struct("SuccessWithSubtasks")
+                .field("task_id", task_id)
+                .field("subtask_ids", subtask_ids)
+                .finish(),
+            Self::Failure { error, task_id, .. } => f
+                .debug_struct("Failure")
+                .field("error", error)
+                .field("task_id", task_id)
+                .finish(),
+            Self::FailureWithSubtasks {
+                error,
+                task_id,
+                subtask_ids,
+                ..
+            } => f
+                .debug_struct("FailureWithSubtasks")
+                .field("error", error)
+                .field("task_id", task_id)
+                .field("subtask_ids", subtask_ids)
+                .finish(),
+            Self::Unprocessed { task_id, .. } => f
+                .debug_struct("Unprocessed")
+                .field("task_id", task_id)
+                .finish(),
+            Self::UnprocessedWithSubtasks {
+                task_id,
+                subtask_ids,
+                ..
+            } => f
+                .debug_struct("UnprocessedWithSubtasks")
+                .field("task_id", task_id)
+                .field("subtask_ids", subtask_ids)
+                .finish(),
+            Self::Missing { task_id } => {
+                f.debug_struct("Missing").field("task_id", task_id).finish()
+            }
+            Self::Panic { task_id, .. } => {
+                f.debug_struct("Panic").field("task_id", task_id).finish()
+            }
+            Self::PanicWithSubtasks {
+                task_id,
+                subtask_ids,
+                ..
+            } => f
+                .debug_struct("PanicWithSubtasks")
+                .field("task_id", task_id)
+                .field("subtask_ids", subtask_ids)
+                .finish(),
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { error, task_id, .. } => f
+                .debug_struct("MaxRetriesAttempted")
+                .field("error", error)
+                .field("task_id", task_id)
+                .finish(),
         }
     }
 }

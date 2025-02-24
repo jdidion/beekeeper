@@ -1493,6 +1493,46 @@ mod tests {
             .collect::<Vec<_>>();
     }
 
+    const NUM_FIRST_TASKS: usize = 4;
+
+    #[derive(Debug, Default)]
+    struct SendWorker;
+
+    impl Worker for SendWorker {
+        type Input = usize;
+        type Output = usize;
+        type Error = ();
+
+        fn apply(&mut self, input: Self::Input, ctx: &Context<Self::Input>) -> WorkerResult<Self> {
+            if input < NUM_FIRST_TASKS {
+                ctx.submit(input + NUM_FIRST_TASKS)
+                    .map_err(|input| ApplyError::Retryable { input, error: () })?;
+            }
+            Ok(input)
+        }
+    }
+
+    #[rstest]
+    fn test_send_from_task<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
+            .num_threads(2)
+            .with_worker_default::<SendWorker>()
+            .build();
+        let (tx, rx) = super::outcome_channel();
+        let task_ids = hive.map_send(0..NUM_FIRST_TASKS, tx);
+        hive.join();
+        // each task submits another task
+        assert_eq!(task_ids.len(), NUM_FIRST_TASKS);
+        let outputs: Vec<_> = rx.select_ordered_outputs(task_ids).collect();
+        assert_eq!(outputs.len(), NUM_FIRST_TASKS * 2);
+        assert_eq!(outputs, (0..NUM_FIRST_TASKS * 2).collect::<Vec<_>>());
+    }
+
     #[rstest]
     fn test_husk<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
     where
@@ -1620,6 +1660,24 @@ mod tests {
             t1.join()
                 .expect("thread 1 will return after calculating multiplications",)
         );
+    }
+
+    #[rstest]
+    fn test_clone_into_husk_fails<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive1: Hive<DefaultQueen<TWrk<()>>, B::TaskQueues<_>> = builder_factory(false)
+            .with_worker_default()
+            .num_threads(2)
+            .build();
+        let hive2 = hive1.clone();
+        // should return None the first time since there is more than one reference
+        assert!(hive1.try_into_husk(false).is_none());
+        // hive1 has been dropped, so we're down to 1 reference and it should succeed
+        assert!(hive2.try_into_husk(false).is_some());
     }
 
     #[rstest]
