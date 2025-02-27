@@ -112,8 +112,6 @@
 //! workers, the queen, and/or the client thread(s).
 mod context;
 mod error;
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub mod mock;
 mod queen;
 pub mod stock;
 mod worker;

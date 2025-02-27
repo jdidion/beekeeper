@@ -28,7 +28,7 @@ The general theme of this release is performance improvement by eliminating thre
   * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention.
   * Switched to storing `Outcome`s in the hive using a data structure that does not require locking when inserting, which should reduce thread contention when using `*_store` operations.
   * Switched to using `crossbeam_channel` for the task input channel in `ChannelTaskQueues`. These are multi-produer, multi-consumer channels (mpmc; as opposed to `std::mpsc`, which is single-consumer), which means it is no longer necessary for worker threads to aquire a Mutex lock on the channel receiver when getting tasks.
-  * Added the `beekeeper::bee::mock` module, which has a mock implementation of `beekeeper::bee::context::LocalContext`, and a `apply` function for `apply`ing a worker in a mock context. This is useful for testing your `Worker`.
+  * Added the `beekeeper::hive::mock` module, which has a `MockTaskRunner` for `apply`ing a worker in a mock context. This is useful for testing your `Worker`.
 
 ## 0.2.1
 

@@ -388,6 +388,8 @@ pub mod cores;
 mod hive;
 mod husk;
 mod inner;
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod mock;
 mod outcome;
 mod sentinel;
 mod util;
