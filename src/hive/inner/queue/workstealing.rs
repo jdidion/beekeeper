@@ -2,10 +2,10 @@
 //! Tasks are sent from the `Hive` via a global `Injector` queue. Each worker thread has a local
 //! `Worker` queue where tasks can be pushed. If the local queue is empty, the worker thread first
 //! tries to steal a task from the global queue and falls back to stealing from another worker
-//! thread. If the `batching` feature is enabled, a worker thread will try to fill its local queue
+//! thread. If the `local-batch` feature is enabled, a worker thread will try to fill its local queue
 //! up to the limit when stealing from the global queue.
 use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues};
-#[cfg(feature = "batching")]
+#[cfg(feature = "local-batch")]
 use crate::atomic::Atomic;
 use crate::bee::Worker;
 use crossbeam_deque::{Injector, Stealer};
@@ -139,21 +139,46 @@ impl<W: Worker> GlobalQueue<W> {
     /// Tries to steal up to `limit + 1` tasks from the global queue. If at least one task was
     /// stolen, it is popped and returned. Otherwise tries to steal a task from another worker
     /// thread.
-    #[cfg(feature = "batching")]
+    #[cfg(feature = "local-batch")]
     fn try_refill_and_pop(
         &self,
         local_batch: &crossbeam_deque::Worker<Task<W>>,
-        limit: usize,
+        batch_limit: usize,
+        weight_limit: u64,
     ) -> Result<Task<W>, PopTaskError> {
-        if let Some(task) = self
-            .queue
-            .steal_batch_with_limit_and_pop(local_batch, limit + 1)
-            .success()
-        {
-            Ok(task)
-        } else {
-            self.try_steal_from_worker()
+        // if we only have a size limit but not a weight limit, use the batch-stealing function
+        // provided by `Injector`
+        if batch_limit > 0 && weight_limit == 0 {
+            if let Some(first) = self
+                .queue
+                .steal_batch_with_limit_and_pop(local_batch, batch_limit + 1)
+                .success()
+            {
+                return Ok(first);
+            }
         }
+        // try to steal at least one from the global queue
+        if let Some(first) = self.queue.steal().success() {
+            if batch_limit > 0 && weight_limit > 0 {
+                // if batching is enabled and we have a weight limit, try to steal a batch of tasks
+                // from the global queue one at a time
+                let mut batch_size = 0;
+                let mut total_weight = first.meta.weight() as u64;
+                while let Some(task) = self.queue.steal().success() {
+                    total_weight += task.meta.weight() as u64;
+                    local_batch.push(task);
+                    if total_weight >= weight_limit {
+                        break;
+                    }
+                    batch_size += 1;
+                    if batch_size >= batch_limit {
+                        break;
+                    }
+                }
+            }
+            return Ok(first);
+        }
+        self.try_steal_from_worker()
     }
 
     fn is_closed(&self) -> bool {
@@ -226,8 +251,12 @@ struct LocalQueueShared<W: Worker> {
     _thread_index: usize,
     /// queue of abandon tasks
     local_abandoned: SegQueue<Task<W>>,
-    #[cfg(feature = "batching")]
+    /// limit on the number of tasks that can be queued
+    #[cfg(feature = "local-batch")]
     batch_limit: crate::atomic::AtomicUsize,
+    /// limit on the total weight of active + queued tasks
+    #[cfg(feature = "local-batch")]
+    weight_limit: crate::atomic::AtomicU64,
     /// thread-local queues used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
     local_retry: super::RetryQueue<W>,
@@ -238,16 +267,20 @@ impl<W: Worker> LocalQueueShared<W> {
         Self {
             _thread_index: thread_index,
             local_abandoned: Default::default(),
-            #[cfg(feature = "batching")]
+            #[cfg(feature = "local-batch")]
             batch_limit: crate::atomic::AtomicUsize::new(_config.batch_limit.get_or_default()),
             #[cfg(feature = "retry")]
             local_retry: super::RetryQueue::new(_config.retry_factor.get_or_default()),
+            #[cfg(feature = "local-batch")]
+            weight_limit: crate::atomic::AtomicU64::new(_config.weight_limit.get_or_default()),
         }
     }
 
     fn update(&self, _config: &Config) {
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         self.batch_limit.set(_config.batch_limit.get_or_default());
+        #[cfg(feature = "local-batch")]
+        self.weight_limit.set(_config.weight_limit.get_or_default());
         #[cfg(feature = "retry")]
         self.local_retry
             .set_delay_factor(_config.retry_factor.get_or_default());
@@ -274,13 +307,14 @@ impl<W: Worker> LocalQueueShared<W> {
         if let Some(task) = local_batch.pop() {
             return Ok(task);
         }
-        // fall back to requesting a task from the global queue - if batching is enabled, this will
-        // also try to refill the local queue
-        #[cfg(feature = "batching")]
+        // fall back to requesting a task from the global queue - if local batching is enabled,
+        // this will also try to refill the local queue
+        #[cfg(feature = "local-batch")]
         {
-            let limit = self.batch_limit.get();
-            if limit > 0 {
-                return global.try_refill_and_pop(local_batch, limit);
+            let batch_limit = self.batch_limit.get();
+            if batch_limit > 0 {
+                let weight_limit = self.weight_limit.get();
+                return global.try_refill_and_pop(local_batch, batch_limit, weight_limit);
             }
         }
         global.try_pop_unchecked()

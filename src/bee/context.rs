@@ -1,12 +1,14 @@
 //! The context for a task processed by a `Worker`.
+
 use std::cell::RefCell;
 use std::fmt::Debug;
 
+/// Type of unique ID for a task within the `Hive`.
 pub type TaskId = usize;
 
 /// Trait that provides a `Context` with limited access to a worker thread's state during
 /// task execution.
-pub trait TaskContext<I>: Debug {
+pub trait LocalContext<I>: Debug {
     /// Returns `true` if tasks in progress should be cancelled.
     fn should_cancel_tasks(&self) -> bool;
 
@@ -14,19 +16,41 @@ pub trait TaskContext<I>: Debug {
     fn submit_task(&self, input: I) -> TaskId;
 }
 
+/// The context visible to a task when processing an input.
 #[derive(Debug)]
 pub struct Context<'a, I> {
-    task_id: TaskId,
-    task_ctx: Option<&'a dyn TaskContext<I>>,
+    meta: TaskMeta,
+    local: Option<&'a dyn LocalContext<I>>,
     subtask_ids: RefCell<Option<Vec<TaskId>>>,
-    #[cfg(feature = "retry")]
-    attempt: u32,
 }
 
-impl<I> Context<'_, I> {
+impl<'a, I> Context<'a, I> {
+    /// Returns a new empty context. This is primarily useful for testing.
+    pub fn empty() -> Self {
+        Self {
+            meta: TaskMeta::empty(),
+            local: None,
+            subtask_ids: RefCell::new(None),
+        }
+    }
+
+    /// Creates a new `Context` with the given task_id and shared cancellation status.
+    pub fn new(meta: TaskMeta, local: Option<&'a dyn LocalContext<I>>) -> Self {
+        Self {
+            meta,
+            local,
+            subtask_ids: RefCell::new(None),
+        }
+    }
+
     /// The unique ID of this task within the `Hive`.
     pub fn task_id(&self) -> TaskId {
-        self.task_id
+        self.meta.id
+    }
+
+    /// Returns the number of previous failed attempts to execute the current task.
+    pub fn attempt(&self) -> u32 {
+        self.meta.attempt
     }
 
     /// Returns `true` if the current task should be cancelled.
@@ -34,7 +58,7 @@ impl<I> Context<'_, I> {
     /// A long-running `Worker` should check this periodically and, if it returns `true`, exit
     /// early with an `ApplyError::Cancelled` result.
     pub fn is_cancelled(&self) -> bool {
-        self.task_ctx
+        self.local
             .as_ref()
             .map(|worker| worker.should_cancel_tasks())
             .unwrap_or(false)
@@ -52,8 +76,8 @@ impl<I> Context<'_, I> {
     ///
     /// Returns an `Err` containing `input` if the new task was not successfully submitted.
     pub fn submit(&self, input: I) -> Result<(), I> {
-        if let Some(worker) = self.task_ctx.as_ref() {
-            let task_id = worker.submit_task(input);
+        if let Some(local) = self.local.as_ref() {
+            let task_id = local.submit_task(input);
             self.subtask_ids
                 .borrow_mut()
                 .get_or_insert_default()
@@ -66,87 +90,80 @@ impl<I> Context<'_, I> {
 
     /// Consumes this `Context` and returns the IDs of the subtasks spawned during the execution
     /// of the task, if any.
-    pub(crate) fn into_subtask_ids(self) -> Option<Vec<TaskId>> {
-        self.subtask_ids.into_inner()
+    pub(crate) fn into_parts(self) -> (TaskMeta, Option<Vec<TaskId>>) {
+        (self.meta, self.subtask_ids.into_inner())
     }
 }
 
-#[cfg(not(feature = "retry"))]
-impl<'a, I> Context<'a, I> {
-    /// Returns a new empty context. This is primarily useful for testing.
+/// The metadata of a task.
+#[derive(Default, Clone, Debug)]
+pub struct TaskMeta {
+    id: TaskId,
+    #[cfg(feature = "local-batch")]
+    weight: u32,
+    #[cfg(feature = "retry")]
+    attempt: u32,
+}
+
+impl TaskMeta {
     pub fn empty() -> Self {
-        Self {
-            task_id: 0,
-            task_ctx: None,
-            subtask_ids: RefCell::new(None),
+        Self::new(0)
+    }
+
+    pub fn new(id: TaskId) -> Self {
+        TaskMeta {
+            id,
+            ..Default::default()
         }
     }
 
-    /// Creates a new `Context` with the given task_id and shared cancellation status.
-    pub fn new(task_id: TaskId, task_ctx: Option<&'a dyn TaskContext<I>>) -> Self {
-        Self {
-            task_id,
-            task_ctx,
-            subtask_ids: RefCell::new(None),
+    #[cfg(feature = "local-batch")]
+    pub fn with_weight(task_id: TaskId, weight: u32) -> Self {
+        TaskMeta {
+            id: task_id,
+            weight,
+            ..Default::default()
         }
+    }
+
+    pub fn id(&self) -> TaskId {
+        self.id
     }
 
     /// The number of previous failed attempts to execute the current task.
     ///
-    /// Always returns `0`.
+    /// Always returns `0` if the `retry` feature is not enabled.
     pub fn attempt(&self) -> u32 {
-        0
-    }
-}
-
-#[cfg(feature = "retry")]
-impl<'a, I> Context<'a, I> {
-    /// Returns a new empty context. This is primarily useful for testing.
-    pub fn empty() -> Self {
-        Self {
-            task_id: 0,
-            attempt: 0,
-            task_ctx: None,
-            subtask_ids: RefCell::new(None),
-        }
+        #[cfg(feature = "retry")]
+        return self.attempt;
+        #[cfg(not(feature = "retry"))]
+        return 0;
     }
 
-    /// Creates a new `Context` with the given task_id and shared cancellation status.
-    pub fn new(task_id: TaskId, attempt: u32, task_ctx: Option<&'a dyn TaskContext<I>>) -> Self {
-        Self {
-            task_id,
-            attempt,
-            task_ctx,
-            subtask_ids: RefCell::new(None),
-        }
+    /// Increments the number of previous failed attempts to execute the current task.
+    #[cfg(feature = "retry")]
+    pub(crate) fn inc_attempt(&mut self) {
+        self.attempt += 1;
     }
 
-    /// The number of previous attempts to execute the current task.
+    /// Returns the task weight.
     ///
-    /// Returns `0` for the first attempt and increments by `1` for each retry attempt (if any).
-    pub fn attempt(&self) -> u32 {
-        self.attempt
+    /// Always returns `0` if the `local-batch` feature is not enabled.
+    pub fn weight(&self) -> u32 {
+        #[cfg(feature = "local-batch")]
+        return self.weight;
+        #[cfg(not(feature = "local-batch"))]
+        return 0;
     }
 }
 
-#[cfg(test)]
-pub mod mock {
-    use super::{TaskContext, TaskId};
-    use std::cell::RefCell;
-
-    #[derive(Debug, Default)]
-    pub struct MockTaskContext(RefCell<TaskId>);
-
-    impl<I> TaskContext<I> for MockTaskContext {
-        fn should_cancel_tasks(&self) -> bool {
-            false
-        }
-
-        fn submit_task(&self, _: I) -> super::TaskId {
-            let mut task_id = self.0.borrow_mut();
-            let cur_id = *task_id;
-            *task_id += 1;
-            cur_id
+#[cfg(all(test, feature = "retry"))]
+impl TaskMeta {
+    pub fn with_attempt(task_id: TaskId, attempt: u32) -> Self {
+        Self {
+            id: task_id,
+            attempt,
+            ..Default::default()
         }
     }
 }

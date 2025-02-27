@@ -130,15 +130,15 @@
 //! the `retry` feature is not enabled. In such cases, `Retryable` errors are automatically
 //! converted to `Fatal` errors by the worker thread.
 //!
-//! ## Batching tasks (requires `feature = "batching"`)
+//! ## Batching tasks (requires `feature = "local-batch"`)
 //!
 //! The performance of a `Hive` can degrade as the number of worker threads grows and/or the
 //! average duration of a task shrinks, due to increased contention between worker threads when
 //! receiving tasks from the shared input channel. To improve performance, workers can take more
 //! than one task each time they access the input channel, and store the extra tasks in a local
-//! queue. This behavior is activated by enabling the `batching` feature.
+//! queue. This behavior is activated by enabling the `local-batch` feature.
 //!
-//! With the `batching` feature enabled, `Builder` gains the
+//! With the `local-batch` feature enabled, `Builder` gains the
 //! [`batch_limit`](crate::hive::Builder::batch_limit) method for configuring size of worker threads'
 //! local queues, and `Hive` gains the [`set_worker_batch_limit`](crate::hive::Hive::set_batch_limit)
 //! method for changing the batch size of an existing `Hive`.
@@ -154,7 +154,7 @@
 //! * `num_threads`
 //!     * [`set_num_threads_default`]: sets the default to a specific value
 //!     * [`set_num_threads_default_all`]: sets the default to all available CPU cores
-//! * [`batch_limit`](crate::hive::set_BATCH_LIMIT_default) (requires `feature = "batching"`)
+//! * [`batch_limit`](crate::hive::set_BATCH_LIMIT_default) (requires `feature = "local-batch"`)
 //! * [`max_retries`](crate::hive::set_max_retries_default] (requires `feature = "retry"`)
 //! * [`retry_factor`](crate::hive::set_retry_factor_default] (requires `feature = "retry"`)
 //!
@@ -381,6 +381,7 @@
 //! ([`Husk::as_builder`](crate::hive::husk::Husk::as_builder)) or a new `Hive`
 //! ([`Husk::into_hive`](crate::hive::husk::Husk::into_hive)).
 mod builder;
+mod context;
 #[cfg(feature = "affinity")]
 pub mod cores;
 #[allow(clippy::module_inception)]
@@ -388,6 +389,9 @@ mod hive;
 mod husk;
 mod inner;
 mod outcome;
+mod sentinel;
+mod util;
+mod weighted;
 
 pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder, TaskQueuesBuilder};
 pub use self::builder::{
@@ -395,11 +399,16 @@ pub use self::builder::{
 };
 pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
-pub use self::inner::{Builder, ChannelTaskQueues, WorkstealingTaskQueues, set_config::*};
+pub use self::inner::{
+    Builder, ChannelTaskQueues, TaskInput, WorkstealingTaskQueues, set_config::*,
+};
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
+pub use self::weighted::Weighted;
 
+use self::context::HiveLocalContext;
 use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};
 use self::outcome::{DerefOutcomes, OutcomeQueue, OwnedOutcomes};
+use self::sentinel::Sentinel;
 use crate::bee::Worker;
 use crate::channel::{Receiver, Sender, channel};
 use std::io::Error as SpawnError;
@@ -421,42 +430,6 @@ pub mod prelude {
         Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
         TaskQueuesBuilder, channel_builder, open_builder, outcome_channel, workstealing_builder,
     };
-}
-
-mod util {
-    use crossbeam_utils::Backoff;
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
-    const MAX_WAIT: Duration = Duration::from_secs(10);
-
-    /// Utility function to loop (with exponential backoff) waiting for other references to `arc` to
-    /// drop so it can be unwrapped into its inner value.
-    ///
-    /// If `arc` cannot be unwrapped with a certain amount of time (with an exponentially
-    /// increasing gap between each iteration), `arc` is returned as an error.
-    pub fn unwrap_arc<T>(mut arc: Arc<T>) -> Result<T, Arc<T>> {
-        // wait for worker threads to drop, then take ownership of the shared data and convert it
-        // into a Husk
-        let mut backoff = None::<Backoff>;
-        let mut start = None::<Instant>;
-        loop {
-            arc = match std::sync::Arc::try_unwrap(arc) {
-                Ok(inner) => {
-                    return Ok(inner);
-                }
-                Err(arc) if start.is_none() => {
-                    let _ = start.insert(Instant::now());
-                    arc
-                }
-                Err(arc) if Instant::now() - start.unwrap() > MAX_WAIT => return Err(arc),
-                Err(arc) => {
-                    backoff.get_or_insert_with(Backoff::new).spin();
-                    arc
-                }
-            };
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1206,7 +1179,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         assert_eq!(hive.worker_batch_limit(), 0);
         let (tx, rx) = super::outcome_channel();
         let mut task_ids = hive.swarm_send(
@@ -1266,10 +1239,10 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = builder_factory(false)
-            .with_worker(Caller::of(|i| i * i))
+            .with_worker(Caller::of(|i: usize| i * i))
             .num_threads(4)
             .build();
-        let (outputs, state) = hive.scan(0..10, 0, |acc, i| {
+        let (outputs, state) = hive.scan(0..10usize, 0, |acc, i| {
             *acc += i;
             *acc
         });
@@ -1296,7 +1269,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = builder_factory(false)
-            .with_worker(Caller::of(|i| i * i))
+            .with_worker(Caller::of(|i: i32| i * i))
             .num_threads(4)
             .build();
         let (tx, rx) = super::outcome_channel();
@@ -1336,7 +1309,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let hive = builder_factory(false)
-            .with_worker(Caller::of(|i| i * i))
+            .with_worker(Caller::of(|i: i32| i * i))
             .num_threads(4)
             .build();
         let (tx, rx) = super::outcome_channel();
@@ -1384,7 +1357,7 @@ mod tests {
             .build();
         let (tx, _) = super::outcome_channel();
         let _ = hive
-            .try_scan_send(0..10, &tx, 0, |_, _| Err("fail"))
+            .try_scan_send(0..10, &tx, 0, |_, _| Err::<i32, _>("fail"))
             .0
             .into_iter()
             .map(Result::unwrap)
@@ -1398,7 +1371,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let mut hive = builder_factory(false)
-            .with_worker(Caller::of(|i| i * i))
+            .with_worker(Caller::of(|i: i32| i * i))
             .num_threads(4)
             .build();
         let (mut task_ids, state) = hive.scan_store(0..10, 0, |acc, i| {
@@ -1439,7 +1412,7 @@ mod tests {
         F: Fn(bool) -> B,
     {
         let mut hive = builder_factory(false)
-            .with_worker(Caller::of(|i| i * i))
+            .with_worker(Caller::of(|i: i32| i * i))
             .num_threads(4)
             .build();
         let (results, state) = hive.try_scan_store(0..10, 0, |acc, i| {
@@ -1486,7 +1459,7 @@ mod tests {
             .num_threads(4)
             .build();
         let _ = hive
-            .try_scan_store(0..10, 0, |_, _| Err("fail"))
+            .try_scan_store(0..10, 0, |_, _| Err::<i32, _>("fail"))
             .0
             .into_iter()
             .map(Result::unwrap)
@@ -2017,8 +1990,8 @@ mod affinity_tests {
     }
 }
 
-#[cfg(all(test, feature = "batching"))]
-mod batching_tests {
+#[cfg(all(test, feature = "local-batch"))]
+mod local_batch_tests {
     use crate::barrier::IndexedBarrier;
     use crate::bee::DefaultQueen;
     use crate::bee::stock::{Thunk, ThunkWorker};
@@ -2113,7 +2086,7 @@ mod batching_tests {
     }
 
     #[rstest]
-    fn test_batching_channel() {
+    fn test_local_batch_channel() {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT: usize = 24;
         let hive = channel_builder(false)
@@ -2125,7 +2098,7 @@ mod batching_tests {
     }
 
     #[rstest]
-    fn test_batching_workstealing() {
+    fn test_local_batch_workstealing() {
         const NUM_THREADS: usize = 4;
         const BATCH_LIMIT: usize = 24;
         let hive = workstealing_builder(false)
@@ -2243,7 +2216,7 @@ mod retry_tests {
             .retry_factor(Duration::from_secs(1))
             .build();
 
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10usize).into_results().collect();
         assert_eq!(v.unwrap().len(), 10);
     }
 
@@ -2277,7 +2250,7 @@ mod retry_tests {
             .max_retries(3)
             .build();
 
-        let (success, retry_failed, not_retried) = hive.swarm(0..10).fold(
+        let (success, retry_failed, not_retried) = hive.swarm(0..10usize).fold(
             (0, 0, 0),
             |(success, retry_failed, not_retried), outcome| match outcome {
                 Outcome::Success { .. } => (success + 1, retry_failed, not_retried),
@@ -2304,7 +2277,7 @@ mod retry_tests {
             .with_thread_per_core()
             .with_no_retries()
             .build();
-        let v: Result<Vec<_>, _> = hive.swarm(0..10).into_results().collect();
+        let v: Result<Vec<_>, _> = hive.swarm(0..10usize).into_results().collect();
         assert!(v.is_err());
     }
 }

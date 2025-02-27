@@ -1,6 +1,6 @@
 //! Implementation of `TaskQueues` that uses `crossbeam` channels for the global queue (i.e., for
 //! sending tasks from the `Hive` to the worker threads) and a default implementation of local
-//! queues that depends on which combination of the `retry` and `batching` features are enabled.
+//! queues that depends on which combination of the `retry` and `local-batch` features are enabled.
 use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues};
 use crate::bee::Worker;
 use crossbeam_channel::RecvTimeoutError;
@@ -127,7 +127,7 @@ impl<W: Worker> GlobalQueue<W> {
         tasks.extend(self.global_rx.try_iter());
     }
 
-    #[cfg(feature = "batching")]
+    #[cfg(feature = "local-batch")]
     fn try_iter(&self) -> impl Iterator<Item = Task<W>> {
         self.global_rx.try_iter()
     }
@@ -166,9 +166,9 @@ struct LocalQueueShared<W: Worker> {
     _thread_index: usize,
     /// queue of abandon tasks
     local_abandoned: SegQueue<Task<W>>,
-    /// thread-local queue of tasks used when the `batching` feature is enabled
-    #[cfg(feature = "batching")]
-    local_batch: batching::WorkerBatchQueue<W>,
+    /// thread-local queue of tasks used when the `local-batch` feature is enabled
+    #[cfg(feature = "local-batch")]
+    local_batch: local_batch::WorkerBatchQueue<W>,
     /// thread-local queues used for tasks that are waiting to be retried after a failure
     #[cfg(feature = "retry")]
     local_retry: super::RetryQueue<W>,
@@ -179,20 +179,27 @@ impl<W: Worker> LocalQueueShared<W> {
         Self {
             _thread_index: thread_index,
             local_abandoned: Default::default(),
-            #[cfg(feature = "batching")]
-            local_batch: batching::WorkerBatchQueue::new(_config.batch_limit.get_or_default()),
+            #[cfg(feature = "local-batch")]
+            local_batch: local_batch::WorkerBatchQueue::new(
+                _config.batch_limit.get_or_default(),
+                _config.weight_limit.get_or_default(),
+            ),
             #[cfg(feature = "retry")]
             local_retry: super::RetryQueue::new(_config.retry_factor.get_or_default()),
         }
     }
 
     /// Updates the local queues based on the provided `config`:
-    /// If `batching` is enabled, resizes the batch queue if necessary.
+    /// If `local-batch` is enabled, resizes the batch queue if necessary.
     /// If `retry` is enabled, updates the retry factor.
     fn update(&self, _global: &GlobalQueue<W>, _config: &Config) {
-        #[cfg(feature = "batching")]
-        self.local_batch
-            .set_limit(_config.batch_limit.get_or_default(), _global, self);
+        #[cfg(feature = "local-batch")]
+        self.local_batch.set_limits(
+            _config.batch_limit.get_or_default(),
+            _config.weight_limit.get_or_default(),
+            _global,
+            self,
+        );
         #[cfg(feature = "retry")]
         self.local_retry
             .set_delay_factor(_config.retry_factor.get_or_default());
@@ -200,7 +207,7 @@ impl<W: Worker> LocalQueueShared<W> {
 
     #[inline]
     fn push(&self, task: Task<W>, global: &GlobalQueue<W>) {
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         let task = match self.local_batch.try_push(task) {
             Ok(_) => return,
             Err(task) => task,
@@ -231,14 +238,14 @@ impl<W: Worker> LocalQueueShared<W> {
         if let Some(task) = self.local_retry.try_pop() {
             return Ok(task);
         }
-        // if batching is enabled, try to get a task from the batch queue
-        // and try to refill it from the global queue if it's empty
-        #[cfg(feature = "batching")]
+        // if local batching is enabled, try to get a task from the batch queue and try to refill
+        // it from the global queue if it's empty
+        #[cfg(feature = "local-batch")]
         {
             self.local_batch.try_pop_or_refill(global, self)
         }
         // fall back to requesting a task from the global queue
-        #[cfg(not(feature = "batching"))]
+        #[cfg(not(feature = "local-batch"))]
         {
             global.try_pop()
         }
@@ -255,17 +262,17 @@ impl<W: Worker> LocalQueueShared<W> {
         while let Some(task) = self.local_abandoned.pop() {
             tasks.push(task);
         }
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         self.local_batch.drain_into(tasks);
         #[cfg(feature = "retry")]
         self.local_retry.drain_into(tasks);
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(feature = "local-batch")]
+mod local_batch {
     use super::{GlobalQueue, LocalQueueShared, Task};
-    use crate::atomic::{Atomic, AtomicUsize};
+    use crate::atomic::{Atomic, AtomicU64, AtomicUsize};
     use crate::bee::Worker;
     use crate::hive::inner::queue::PopTaskError;
     use crossbeam_queue::ArrayQueue;
@@ -273,40 +280,42 @@ mod batching {
 
     pub struct WorkerBatchQueue<W: Worker> {
         inner: RwLock<Option<ArrayQueue<Task<W>>>>,
-        limit: AtomicUsize,
+        batch_limit: AtomicUsize,
+        weight_limit: AtomicU64,
     }
 
     impl<W: Worker> WorkerBatchQueue<W> {
-        pub fn new(batch_limit: usize) -> Self {
-            if batch_limit == 0 {
-                Self {
-                    inner: RwLock::new(None),
-                    limit: Default::default(),
-                }
+        pub fn new(batch_limit: usize, weight_limit: u64) -> Self {
+            let inner = if batch_limit > 0 {
+                Some(ArrayQueue::new(batch_limit))
             } else {
-                Self {
-                    inner: RwLock::new(Some(ArrayQueue::new(batch_limit))),
-                    limit: AtomicUsize::new(batch_limit),
-                }
+                None
+            };
+            Self {
+                inner: RwLock::new(inner),
+                batch_limit: AtomicUsize::new(batch_limit),
+                weight_limit: AtomicU64::new(weight_limit),
             }
         }
 
-        pub fn set_limit(
+        pub fn set_limits(
             &self,
-            limit: usize,
+            batch_limit: usize,
+            weight_limit: u64,
             global: &GlobalQueue<W>,
             parent: &LocalQueueShared<W>,
         ) {
+            self.weight_limit.set(weight_limit);
             // acquire the exclusive lock first to prevent simultaneous updates
             let mut queue = self.inner.write();
-            let old_limit = self.limit.set(limit);
-            if old_limit == limit {
+            let old_limit = self.batch_limit.set(batch_limit);
+            if old_limit == batch_limit {
                 return;
             }
-            let old_queue = if limit == 0 {
+            let old_queue = if batch_limit == 0 {
                 queue.take()
             } else {
-                queue.replace(ArrayQueue::new(limit))
+                queue.replace(ArrayQueue::new(batch_limit))
             };
             if let Some(old_queue) = old_queue {
                 // try to push tasks from the old queue to the new one and fall back to pushing
@@ -345,18 +354,30 @@ mod batching {
                     }
                 }
                 // otherwise pull at least 1 and up to `batch_limit + 1` tasks from the input channel
-                // wait for the next task from the receiver
                 let first = global.try_pop()?;
                 // if we succeed in getting the first task, try to refill the local queue
-                let limit = self.limit.get();
-                // batch size 0 means batching is disabled
-                if limit > 0 {
-                    // otherwise try to take up to `batch_limit` tasks from the input channel
-                    // and add them to the local queue, but don't block if the input channel
-                    // is empty
-                    for task in global.try_iter().take(limit) {
-                        if let Err(task) = local.push(task) {
-                            parent.local_abandoned.push(task);
+                let batch_limit = self.batch_limit.get();
+                // batch size 0 means local batching is disabled
+                if batch_limit > 0 {
+                    let mut iter = global.try_iter();
+                    let mut batch_size = 0;
+                    let mut total_weight = first.meta.weight() as u64;
+                    let weight_limit = self.weight_limit.get();
+                    // try to take up to `batch_limit` tasks from the input channel and add them
+                    // to the local queue, but don't block if the input channel is empty; stop
+                    // early if the weight of the queued tasks exceeds the limit
+                    while batch_size < batch_limit
+                        && (weight_limit == 0 || total_weight < weight_limit)
+                    {
+                        if let Some(task) = iter.next() {
+                            let task_weight = task.meta.weight() as u64;
+                            if let Err(task) = local.push(task) {
+                                parent.local_abandoned.push(task);
+                                break;
+                            }
+                            batch_size += 1;
+                            total_weight += task_weight;
+                        } else {
                             break;
                         }
                     }

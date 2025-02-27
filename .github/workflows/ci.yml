@@ -20,11 +20,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: |
-          cargo clippy --all-targets -F affinity,batching,retry \
+          cargo clippy --all-targets -F affinity,local-batch,retry \
             -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
       - run: cargo fmt -- --check
-      - run: cargo doc -F affinity,batching,retry
-      - run: cargo test -F affinity,batching,retry --doc
+      - run: cargo doc -F affinity,local-batch,retry
+      - run: cargo test -F affinity,local-batch,retry --doc
 
   coverage:
     name: Code coverage
@@ -35,7 +35,7 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
-        run: cargo llvm-cov --lcov --output-path lcov.info -F affinity,batching,retry
+        run: cargo llvm-cov --lcov --output-path lcov.info -F affinity,local-batch,retry
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:

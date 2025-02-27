@@ -1,5 +1,7 @@
-#[cfg(feature = "batching")]
-pub use self::batching::set_batch_limit_default;
+#[cfg(feature = "local-batch")]
+pub use self::local_batch::set_batch_limit_default;
+#[cfg(feature = "local-batch")]
+pub use self::local_batch::set_weight_limit_default;
 #[cfg(feature = "retry")]
 pub use self::retry::{
     set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
@@ -43,8 +45,10 @@ impl Config {
             thread_stack_size: Default::default(),
             #[cfg(feature = "affinity")]
             affinity: Default::default(),
-            #[cfg(feature = "batching")]
+            #[cfg(feature = "local-batch")]
             batch_limit: Default::default(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: Default::default(),
             #[cfg(feature = "retry")]
             max_retries: Default::default(),
             #[cfg(feature = "retry")]
@@ -55,7 +59,7 @@ impl Config {
     /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         self.set_batch_const_defaults();
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
@@ -69,8 +73,10 @@ impl Config {
             thread_stack_size: self.thread_stack_size.into_sync(),
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_sync(),
-            #[cfg(feature = "batching")]
+            #[cfg(feature = "local-batch")]
             batch_limit: self.batch_limit.into_sync_default(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: self.weight_limit.into_sync_default(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_sync_default(),
             #[cfg(feature = "retry")]
@@ -87,8 +93,10 @@ impl Config {
             thread_stack_size: self.thread_stack_size.into_unsync(),
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_unsync(),
-            #[cfg(feature = "batching")]
+            #[cfg(feature = "local-batch")]
             batch_limit: self.batch_limit.into_unsync(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: self.weight_limit.into_unsync(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_unsync(),
             #[cfg(feature = "retry")]
@@ -143,8 +151,8 @@ mod tests {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(feature = "local-batch")]
+mod local_batch {
     use super::{Config, DEFAULTS};
 
     const DEFAULT_BATCH_LIMIT: usize = 10;
@@ -152,10 +160,14 @@ mod batching {
     pub fn set_batch_limit_default(batch_limit: usize) {
         DEFAULTS.lock().batch_limit.set(Some(batch_limit));
     }
+    pub fn set_weight_limit_default(weight_limit: u64) {
+        DEFAULTS.lock().weight_limit.set(Some(weight_limit));
+    }
 
     impl Config {
         pub(super) fn set_batch_const_defaults(&mut self) {
             self.batch_limit.set(Some(DEFAULT_BATCH_LIMIT));
+            self.weight_limit.set(None);
         }
     }
 }

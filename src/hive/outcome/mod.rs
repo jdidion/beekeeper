@@ -75,6 +75,13 @@ pub enum Outcome<W: Worker> {
         task_id: TaskId,
         subtask_ids: Vec<TaskId>,
     },
+    /// The task's weight was larger than the configured limit for the `Hive`.
+    #[cfg(feature = "local-batch")]
+    WeightLimitExceeded {
+        input: W::Input,
+        weight: u32,
+        task_id: TaskId,
+    },
     /// The task failed after retrying the maximum number of times.
     #[cfg(feature = "retry")]
     MaxRetriesAttempted {

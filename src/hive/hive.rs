@@ -1,15 +1,15 @@
 use super::{
-    ChannelBuilder, ChannelTaskQueues, Config, DerefOutcomes, Husk, Outcome, OutcomeBatch,
-    OutcomeIteratorExt, OutcomeSender, Shared, SpawnError, TaskQueues, TaskQueuesBuilder,
-    WorkerQueues,
+    ChannelBuilder, ChannelTaskQueues, Config, DerefOutcomes, HiveLocalContext, Husk, Outcome,
+    OutcomeBatch, OutcomeIteratorExt, OutcomeSender, Sentinel, Shared, SpawnError, TaskInput,
+    TaskQueues, TaskQueuesBuilder,
 };
-use crate::bee::{DefaultQueen, Queen, TaskContext, TaskId, Worker};
+use crate::bee::{ApplyError, Context, DefaultQueen, Queen, TaskId, Worker};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread::JoinHandle;
 
 #[derive(thiserror::Error, Debug)]
 #[error("The hive has been poisoned")]
@@ -35,7 +35,7 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> Hive<Q, T> {
 
 impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// Spawns a new worker thread with the specified index and with access to the `shared` data.
-    fn try_spawn(
+    pub fn try_spawn(
         thread_index: usize,
         shared: &Arc<Shared<Q, T>>,
     ) -> Result<JoinHandle<()>, SpawnError> {
@@ -43,10 +43,13 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         let shared = Arc::clone(shared);
         // spawn a thread that executes the worker loop
         thread_builder.spawn(move || {
-            // perform one-time initialization of the worker thread
-            Self::init_thread(thread_index, &shared);
+            #[cfg(feature = "affinity")]
+            if let Some(core) = shared.get_core_affinity(thread_index) {
+                // try to pin the worker thread to a specific CPU core.
+                core.try_pin_current();
+            }
             // create a Sentinel that will spawn a new thread on panic until it is cancelled
-            let sentinel = Sentinel::new(thread_index, Arc::clone(&shared));
+            let sentinel = Sentinel::new(thread_index, Arc::clone(&shared), Self::try_spawn);
             // get the thread-local interface to the task queues
             let worker_queues = shared.worker_queues(thread_index);
             // create a new worker to process tasks
@@ -54,8 +57,34 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
             // execute the main loop: get the next task to process, which decrements the queued
             // counter and increments the active counter
             while let Some(task) = shared.get_next_task(&worker_queues) {
-                // execute the task and dispose of the outcome
-                Self::execute(task, &mut worker, &worker_queues, &shared);
+                let (input, task_meta, outcome_tx) = task.into_parts();
+                let local_ctx = HiveLocalContext::new(&worker_queues, &shared, outcome_tx.as_ref());
+                let apply_ctx = Context::new(task_meta, Some(&local_ctx));
+                // execute the task until it succeeds or we reach maximum retries - this should
+                // be the only place where a panic can occur
+                let result = worker.apply(input, &apply_ctx);
+                let (task_meta, subtask_ids) = apply_ctx.into_parts();
+                let outcome = match result {
+                    #[cfg(feature = "retry")]
+                    Err(ApplyError::Retryable { input, error })
+                        if subtask_ids.is_none() && shared.can_retry(&task_meta) =>
+                    {
+                        match shared.try_send_retry(
+                            input,
+                            task_meta,
+                            outcome_tx.as_ref(),
+                            &worker_queues,
+                        ) {
+                            Ok(_) => return,
+                            Err(task) => {
+                                let (input, task_meta, _) = task.into_parts();
+                                Outcome::from_fatal(input, task_meta, error)
+                            }
+                        }
+                    }
+                    result => Outcome::from_worker_result(result, task_meta, subtask_ids),
+                };
+                shared.send_or_store_outcome(outcome, outcome_tx);
                 // finish the task - decrements the active counter and notifies other threads
                 shared.finish_task(false);
             }
@@ -99,7 +128,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// Sends one `input` to the `Hive` for procesing and returns the result, blocking until the
     /// result is available. Creates a channel to send the input and receive the outcome. Returns
     /// an [`Outcome`] with the task output or an error.
-    pub fn apply(&self, input: W::Input) -> Outcome<W> {
+    pub fn apply<I: Into<TaskInput<W>>>(&self, input: I) -> Outcome<W> {
         let (tx, rx) = super::outcome_channel();
         let task_id = self.shared().send_one_global(input, Some(&tx));
         drop(tx);
@@ -108,7 +137,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Sends one `input` to the `Hive` for processing and returns its ID. The [`Outcome`] of
     /// the task will be sent to `tx` upon completion.
-    pub fn apply_send<X>(&self, input: W::Input, outcome_tx: X) -> TaskId
+    pub fn apply_send<I: Into<TaskInput<W>>, X>(&self, input: I, outcome_tx: X) -> TaskId
     where
         X: Borrow<OutcomeSender<W>>,
     {
@@ -118,7 +147,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Sends one `input` to the `Hive` for processing and returns its ID immediately. The
     /// [`Outcome`] of the task will be retained and available for later retrieval.
-    pub fn apply_store(&self, input: W::Input) -> TaskId {
+    pub fn apply_store<I: Into<TaskInput<W>>>(&self, input: I) -> TaskId {
         self.shared().send_one_global(input, None)
     }
 
@@ -127,9 +156,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// This method is more efficient than [`map`](Self::map) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    pub fn swarm<I, B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<I, B, W, Q, T>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
         B::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = super::outcome_channel();
@@ -145,9 +175,13 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// instead receive the `Outcome`s in the order they were submitted. This method is more
     /// efficient than [`map_unordered`](Self::map_unordered) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm_unordered<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    pub fn swarm_unordered<I, B>(
+        &self,
+        batch: B,
+    ) -> impl Iterator<Item = Outcome<W>> + use<I, B, W, Q, T>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
         B::IntoIter: ExactSizeIterator,
     {
         let (tx, rx) = super::outcome_channel();
@@ -160,11 +194,12 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// This method is more efficient than [`map_send`](Self::map_send) when the input is an
     /// [`ExactSizeIterator`].
-    pub fn swarm_send<B, S>(&self, batch: B, outcome_tx: S) -> Vec<TaskId>
+    pub fn swarm_send<I, B, S>(&self, batch: B, outcome_tx: S) -> Vec<TaskId>
     where
-        S: Borrow<OutcomeSender<W>>,
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
         B::IntoIter: ExactSizeIterator,
+        S: Borrow<OutcomeSender<W>>,
     {
         self.shared()
             .send_batch_global(batch, Some(outcome_tx.borrow()))
@@ -174,9 +209,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// The [`Outcome`]s of the task are retained and available for later retrieval.
     ///
     /// This method is more efficient than `map_store` when the input is an [`ExactSizeIterator`].
-    pub fn swarm_store<B>(&self, batch: B) -> Vec<TaskId>
+    pub fn swarm_store<I, B>(&self, batch: B) -> Vec<TaskId>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
         B::IntoIter: ExactSizeIterator,
     {
         self.shared().send_batch_global(batch, None)
@@ -186,9 +222,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// iterator over the [`Outcome`]s in the same order as the inputs.
     ///
     /// [`swarm`](Self::swarm) should be preferred when `inputs` is an [`ExactSizeIterator`].
-    pub fn map<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    pub fn map<I, B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<I, B, W, Q, T>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
     {
         let (tx, rx) = super::outcome_channel();
         let task_ids: Vec<_> = batch
@@ -204,9 +241,13 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_unordered`](Self::swarm_unordered) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_unordered<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
+    pub fn map_unordered<I, B>(
+        &self,
+        batch: B,
+    ) -> impl Iterator<Item = Outcome<W>> + use<I, B, W, Q, T>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
     {
         let (tx, rx) = super::outcome_channel();
         // `map` is required (rather than `inspect`) because we need owned items
@@ -223,9 +264,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_send`](Self::swarm_send) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_send<B, X>(&self, batch: B, outcome_tx: X) -> Vec<TaskId>
+    pub fn map_send<I, B, X>(&self, batch: B, outcome_tx: X) -> Vec<TaskId>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
         X: Borrow<OutcomeSender<W>>,
     {
         batch
@@ -239,9 +281,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///
     /// [`swarm_store`](Self::swarm_store) should be preferred when `inputs` is an
     /// [`ExactSizeIterator`].
-    pub fn map_store<B>(&self, batch: B) -> Vec<TaskId>
+    pub fn map_store<I, B>(&self, batch: B) -> Vec<TaskId>
     where
-        B: IntoIterator<Item = W::Input>,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
     {
         batch
             .into_iter()
@@ -252,10 +295,11 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// Iterates over `items` and calls `f` with a mutable reference to a state value (initialized
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing.
     /// Returns an [`OutcomeBatch`] of the outputs and the final state value.
-    pub fn scan<I, B, S, F>(&self, batch: B, init: S, f: F) -> (OutcomeBatch<W>, S)
+    pub fn scan<I, O, B, S, F>(&self, batch: B, init: S, f: F) -> (OutcomeBatch<W>, S)
     where
         B: IntoIterator<Item = I>,
-        F: FnMut(&mut S, I) -> W::Input,
+        O: Into<TaskInput<W>>,
+        F: FnMut(&mut S, I) -> O,
     {
         let (tx, rx) = super::outcome_channel();
         let (task_ids, fold_value) = self.scan_send(batch, &tx, init, f);
@@ -268,15 +312,16 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `F` returns an input that is sent to the `Hive` for processing,
     /// or an error. Returns an [`OutcomeBatch`] of the outputs, a [`Vec`] of errors, and the final
     /// state value.
-    pub fn try_scan<I, B, S, E, F>(
+    pub fn try_scan<I, O, B, S, E, F>(
         &self,
         batch: B,
         init: S,
         mut f: F,
     ) -> (OutcomeBatch<W>, Vec<E>, S)
     where
+        O: Into<TaskInput<W>>,
         B: IntoIterator<Item = I>,
-        F: FnMut(&mut S, I) -> Result<W::Input, E>,
+        F: FnMut(&mut S, I) -> Result<O, E>,
     {
         let (tx, rx) = super::outcome_channel();
         let (task_ids, errors, fold_value) = batch.into_iter().fold(
@@ -298,7 +343,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// The outputs are sent to `tx` in the order they become available. Returns a [`Vec`] of the
     /// task IDs and the final state value.
-    pub fn scan_send<I, B, X, S, F>(
+    pub fn scan_send<I, O, B, X, S, F>(
         &self,
         batch: B,
         outcome_tx: X,
@@ -306,9 +351,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         mut f: F,
     ) -> (Vec<TaskId>, S)
     where
+        O: Into<TaskInput<W>>,
         B: IntoIterator<Item = I>,
         X: Borrow<OutcomeSender<W>>,
-        F: FnMut(&mut S, I) -> W::Input,
+        F: FnMut(&mut S, I) -> O,
     {
         batch
             .into_iter()
@@ -324,7 +370,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. The outputs are sent to `tx` in the order they become available. This
     /// function returns the final state value and a [`Vec`] of results, where each result is
     /// either a task ID or an error.
-    pub fn try_scan_send<I, B, X, S, E, F>(
+    pub fn try_scan_send<I, O, B, X, S, E, F>(
         &self,
         batch: B,
         outcome_tx: X,
@@ -332,9 +378,10 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         mut f: F,
     ) -> (Vec<Result<TaskId, E>>, S)
     where
+        O: Into<TaskInput<W>>,
         B: IntoIterator<Item = I>,
         X: Borrow<OutcomeSender<W>>,
-        F: FnMut(&mut S, I) -> Result<W::Input, E>,
+        F: FnMut(&mut S, I) -> Result<O, E>,
     {
         batch
             .into_iter()
@@ -350,10 +397,11 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// to `init`) and each item. `f` returns an input that is sent to the `Hive` for processing.
     /// This function returns the final state value and a [`Vec`] of task IDs. The [`Outcome`]s of
     /// the tasks are retained and available for later retrieval.
-    pub fn scan_store<I, B, S, F>(&self, batch: B, init: S, mut f: F) -> (Vec<TaskId>, S)
+    pub fn scan_store<I, O, B, S, F>(&self, batch: B, init: S, mut f: F) -> (Vec<TaskId>, S)
     where
+        O: Into<TaskInput<W>>,
         B: IntoIterator<Item = I>,
-        F: FnMut(&mut S, I) -> W::Input,
+        F: FnMut(&mut S, I) -> O,
     {
         batch
             .into_iter()
@@ -369,15 +417,16 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// or an error. This function returns the final value of the state value and a [`Vec`] of
     /// results, where each result is either a task ID or an error. The [`Outcome`]s of the
     /// tasks are retained and available for later retrieval.
-    pub fn try_scan_store<I, B, S, E, F>(
+    pub fn try_scan_store<I, O, B, S, E, F>(
         &self,
         batch: B,
         init: S,
         mut f: F,
     ) -> (Vec<Result<TaskId, E>>, S)
     where
+        O: Into<TaskInput<W>>,
         B: IntoIterator<Item = I>,
-        F: FnMut(&mut S, I) -> Result<W::Input, E>,
+        F: FnMut(&mut S, I) -> Result<O, E>,
     {
         batch
             .into_iter()
@@ -708,79 +757,11 @@ where
     }
 }
 
-/// Sentinel for a worker thread. Until the sentinel is cancelled, it will respawn the worker
-/// thread if it panics.
-struct Sentinel<W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    thread_index: usize,
-    shared: Arc<Shared<Q, T>>,
-    active: bool,
-}
-
-impl<W, Q, T> Sentinel<W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn new(thread_index: usize, shared: Arc<Shared<Q, T>>) -> Self {
-        Self {
-            thread_index,
-            shared,
-            active: true,
-        }
-    }
-
-    /// Cancel and destroy this sentinel.
-    fn cancel(mut self) {
-        self.active = false;
-    }
-}
-
-impl<W, Q, T> Drop for Sentinel<W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn drop(&mut self) {
-        if self.active {
-            // if the sentinel is active, that means the thread panicked during task execution, so
-            // we have to finish the task here before respawning
-            self.shared.finish_task(thread::panicking());
-            // only respawn if the sentinel is active and the hive has not been poisoned
-            if !self.shared.is_poisoned() {
-                // can't do anything with the previous result
-                let _ = self
-                    .shared
-                    .respawn_thread(self.thread_index, |thread_index| {
-                        Hive::try_spawn(thread_index, &self.shared)
-                    });
-            }
-        }
-    }
-}
-
-#[cfg(not(feature = "affinity"))]
-mod no_affinity {
-    use crate::bee::{Queen, Worker};
-    use crate::hive::{Hive, Shared, TaskQueues};
-
-    impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
-        #[inline]
-        pub(super) fn init_thread(_: usize, _: &Shared<Q, T>) {}
-    }
-}
-
 #[cfg(feature = "affinity")]
 mod affinity {
     use crate::bee::{Queen, Worker};
     use crate::hive::cores::Cores;
-    use crate::hive::{Hive, Poisoned, Shared, TaskQueues};
+    use crate::hive::{Hive, Poisoned, TaskQueues};
 
     impl<W, Q, T> Hive<Q, T>
     where
@@ -788,14 +769,6 @@ mod affinity {
         Q: Queen<Kind = W>,
         T: TaskQueues<W>,
     {
-        /// Tries to pin the worker thread to a specific CPU core.
-        #[inline]
-        pub(super) fn init_thread(thread_index: usize, shared: &Shared<Q, T>) {
-            if let Some(core) = shared.get_core_affinity(thread_index) {
-                core.try_pin_current();
-            }
-        }
-
         /// Attempts to increase the number of worker threads by `num_threads`.
         ///
         /// The provided `affinity` specifies additional CPU core indices to which the worker
@@ -824,8 +797,8 @@ mod affinity {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(feature = "local-batch")]
+mod local_batch {
     use crate::bee::{Queen, Worker};
     use crate::hive::{Hive, TaskQueues};
 
@@ -851,46 +824,10 @@ mod batching {
     }
 }
 
-#[cfg(not(feature = "retry"))]
-mod no_retry {
-    use super::HiveTaskContext;
-    use crate::bee::{Context, Queen, Worker};
-    use crate::hive::{Hive, Outcome, Shared, Task, TaskQueues};
-    use std::sync::Arc;
-
-    impl<W, Q, T> Hive<Q, T>
-    where
-        W: Worker,
-        Q: Queen<Kind = W>,
-        T: TaskQueues<W>,
-    {
-        pub(super) fn execute(
-            task: Task<W>,
-            worker: &mut W,
-            worker_queues: &T::WorkerQueues,
-            shared: &Arc<Shared<Q, T>>,
-        ) {
-            let (task_id, input, outcome_tx) = task.into_parts();
-            let task_ctx = HiveTaskContext {
-                worker_queues,
-                shared,
-                outcome_tx: outcome_tx.as_ref(),
-            };
-            let ctx = Context::new(task_id, Some(&task_ctx));
-            let result = worker.apply(input, &ctx);
-            let subtask_ids = ctx.into_subtask_ids();
-            let outcome = Outcome::from_worker_result(result, task_id, subtask_ids);
-            shared.send_or_store_outcome(outcome, outcome_tx);
-        }
-    }
-}
-
 #[cfg(feature = "retry")]
 mod retry {
-    use super::HiveTaskContext;
-    use crate::bee::{ApplyError, Context, Queen, Worker};
-    use crate::hive::{Hive, Outcome, Shared, Task, TaskQueues};
-    use std::sync::Arc;
+    use crate::bee::{Queen, Worker};
+    use crate::hive::{Hive, TaskQueues};
     use std::time::Duration;
 
     impl<W, Q, T> Hive<Q, T>
@@ -918,90 +855,6 @@ mod retry {
         pub fn set_worker_retry_factor(&self, duration: Duration) -> Duration {
             self.shared().set_worker_retry_factor(duration)
         }
-
-        pub(super) fn execute(
-            task: Task<W>,
-            worker: &mut W,
-            worker_queues: &T::WorkerQueues,
-            shared: &Arc<Shared<Q, T>>,
-        ) {
-            let (task_id, input, attempt, outcome_tx) = task.into_parts();
-            let task_ctx = HiveTaskContext {
-                worker_queues,
-                shared,
-                outcome_tx: outcome_tx.as_ref(),
-            };
-            let ctx = Context::new(task_id, attempt, Some(&task_ctx));
-            // execute the task until it succeeds or we reach maximum retries - this should
-            // be the only place where a panic can occur
-            let result = worker.apply(input, &ctx);
-            let subtask_ids = ctx.into_subtask_ids();
-            #[cfg(feature = "retry")]
-            let result = match result {
-                Err(ApplyError::Retryable { input, error })
-                    if subtask_ids.is_none() && shared.can_retry(attempt) =>
-                {
-                    match shared.try_send_retry(
-                        task_id,
-                        input,
-                        outcome_tx.as_ref(),
-                        attempt + 1,
-                        worker_queues,
-                    ) {
-                        Ok(_) => return,
-                        Err(task) => Result::<W::Output, ApplyError<W::Input, W::Error>>::Err(
-                            ApplyError::Fatal {
-                                input: Some(task.into_parts().1),
-                                error,
-                            },
-                        ),
-                    }
-                }
-                result => result,
-            };
-            let outcome = Outcome::from_worker_result(result, task_id, subtask_ids);
-            shared.send_or_store_outcome(outcome, outcome_tx);
-        }
-    }
-}
-
-struct HiveTaskContext<'a, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    worker_queues: &'a T::WorkerQueues,
-    shared: &'a Arc<Shared<Q, T>>,
-    outcome_tx: Option<&'a OutcomeSender<W>>,
-}
-
-impl<W, Q, T> TaskContext<W::Input> for HiveTaskContext<'_, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn should_cancel_tasks(&self) -> bool {
-        self.shared.is_suspended()
-    }
-
-    fn submit_task(&self, input: W::Input) -> TaskId {
-        let task = self.shared.prepare_task(input, self.outcome_tx);
-        let task_id = task.id();
-        self.worker_queues.push(task);
-        task_id
-    }
-}
-
-impl<W, Q, T> fmt::Debug for HiveTaskContext<'_, W, Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HiveTaskContext").finish()
     }
 }
 

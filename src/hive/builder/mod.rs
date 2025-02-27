@@ -90,8 +90,8 @@ use crate::hive::inner::{BuilderConfig, Token};
 //     }
 // }
 
-// #[cfg(all(test, feature = "batching"))]
-// mod batching_tests {
+// #[cfg(all(test, feature = "local-batch"))]
+// mod local_batch_tests {
 //     use super::OpenBuilder;
 // }
 

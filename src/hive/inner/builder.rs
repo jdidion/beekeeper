@@ -198,12 +198,12 @@ pub trait Builder: BuilderConfig + Sized {
 
     /// Sets the worker thread batch size.
     ///
-    /// This may have no effect if the `batching` feature is disabled, or if the `TaskQueues`
+    /// This may have no effect if the `local-batch` feature is disabled, or if the `TaskQueues`
     /// implementation used for this hive does not support local batching.
     ///
-    /// If `batch_limit` is `0`, batching is effectively disabled, but note that the performance
-    /// may be worse than with the `batching` feature disabled.
-    #[cfg(feature = "batching")]
+    /// If `batch_limit` is `0`, local batching is effectively disabled, but note that the
+    /// performance may be worse than with the `local-batch` feature disabled.
+    #[cfg(feature = "local-batch")]
     fn batch_limit(mut self, batch_limit: usize) -> Self {
         if batch_limit == 0 {
             self.config_ref(Token).batch_limit.set(None);
@@ -214,12 +214,42 @@ pub trait Builder: BuilderConfig + Sized {
     }
 
     /// Sets the worker thread batch size to the global default value.
-    #[cfg(feature = "batching")]
+    #[cfg(feature = "local-batch")]
     fn with_default_batch_limit(mut self) -> Self {
         let _ = self
             .config_ref(Token)
             .batch_limit
             .set(super::config::DEFAULTS.lock().batch_limit.get());
+        self
+    }
+
+    /// Sets the maximum weight of the tasks a worker thread can have at any given time.
+    ///
+    /// If `weight_limit` is `0`, weighting is effectively disabled, but note that the performance
+    /// may be worse than with the `weighting` feature disabled.
+    ///
+    /// If a task has a weight greater than the limit, it is immediately converted to
+    /// `Outcome::WeightLimitExceeded` and sent or stored.
+    ///
+    /// If the `local-batch` feature is enabled, this limit determines the maximum total "weight" of
+    /// active and pending tasks in the worker's local queue.
+    #[cfg(feature = "local-batch")]
+    fn weight_limit(mut self, weight_limit: u64) -> Self {
+        if weight_limit == 0 {
+            self.config_ref(Token).weight_limit.set(None);
+        } else {
+            self.config_ref(Token).weight_limit.set(Some(weight_limit));
+        }
+        self
+    }
+
+    /// Sets the worker thread batch size to the global default value.
+    #[cfg(feature = "local-batch")]
+    fn with_default_weight_limit(mut self) -> Self {
+        let _ = self
+            .config_ref(Token)
+            .weight_limit
+            .set(super::config::DEFAULTS.lock().weight_limit.get());
         self
     }
 

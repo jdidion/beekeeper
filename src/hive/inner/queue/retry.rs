@@ -47,7 +47,7 @@ impl<W: Worker> RetryQueue<W> {
                 Some(queue) => {
                     // compute the delay
                     let delay = 2u64
-                        .checked_pow(task.attempt - 1)
+                        .checked_pow(task.meta.attempt() - 1)
                         .and_then(|multiplier| {
                             self.delay_factor
                                 .get()
@@ -143,6 +143,7 @@ impl<W: Worker> Eq for DelayedTask<W> {}
 mod tests {
     use super::{RetryQueue, Task, Worker};
     use crate::bee::stock::EchoWorker;
+    use crate::bee::{TaskId, TaskMeta};
     use std::{thread, time::Duration};
 
     type TestWorker = EchoWorker<usize>;
@@ -154,13 +155,24 @@ mod tests {
         }
     }
 
+    impl<W: Worker> Task<W> {
+        /// Creates a new `Task` with the given `task_id`.
+        fn with_attempt(task_id: TaskId, input: W::Input, attempt: u32) -> Self {
+            Self {
+                input,
+                meta: TaskMeta::with_attempt(task_id, attempt),
+                outcome_tx: None,
+            }
+        }
+    }
+
     #[test]
     fn test_works() {
         let queue = RetryQueue::<TestWorker>::new(DELAY);
 
-        let task1 = Task::with_attempt(1, 1, None, 1);
-        let task2 = Task::with_attempt(2, 2, None, 2);
-        let task3 = Task::with_attempt(3, 3, None, 3);
+        let task1 = Task::with_attempt(1, 1, 1);
+        let task2 = Task::with_attempt(2, 2, 2);
+        let task3 = Task::with_attempt(3, 3, 3);
 
         queue.try_push(task1.clone()).unwrap();
         queue.try_push(task2.clone()).unwrap();
@@ -188,9 +200,9 @@ mod tests {
     fn test_into_vec() {
         let queue = RetryQueue::<TestWorker>::new(DELAY);
 
-        let task1 = Task::with_attempt(1, 1, None, 1);
-        let task2 = Task::with_attempt(2, 2, None, 2);
-        let task3 = Task::with_attempt(3, 3, None, 3);
+        let task1 = Task::with_attempt(1, 1, 1);
+        let task2 = Task::with_attempt(2, 2, 2);
+        let task3 = Task::with_attempt(3, 3, 3);
 
         queue.try_push(task1.clone()).unwrap();
         queue.try_push(task2.clone()).unwrap();

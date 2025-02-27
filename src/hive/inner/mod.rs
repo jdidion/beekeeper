@@ -7,9 +7,9 @@ mod shared;
 mod task;
 
 pub mod set_config {
-    #[cfg(feature = "batching")]
-    pub use super::config::set_batch_limit_default;
     pub use super::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
+    #[cfg(feature = "local-batch")]
+    pub use super::config::{set_batch_limit_default, set_weight_limit_default};
     #[cfg(feature = "retry")]
     pub use super::config::{
         set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
@@ -21,12 +21,13 @@ pub mod set_config {
 
 pub use self::builder::{Builder, BuilderConfig};
 pub use self::queue::{ChannelTaskQueues, TaskQueues, WorkerQueues, WorkstealingTaskQueues};
+pub use self::task::TaskInput;
 
 use self::counter::DualCounter;
 use self::gate::{Gate, PhasedGate};
 use self::queue::PopTaskError;
 use crate::atomic::{AtomicAny, AtomicBool, AtomicOption, AtomicUsize};
-use crate::bee::{Queen, TaskId, Worker};
+use crate::bee::{Queen, TaskMeta, Worker};
 use crate::hive::{OutcomeQueue, OutcomeSender, SpawnError};
 use parking_lot::Mutex;
 use std::thread::JoinHandle;
@@ -44,11 +45,9 @@ pub struct Token;
 /// Internal representation of a task to be processed by a `Hive`.
 #[derive(Debug)]
 pub struct Task<W: Worker> {
-    id: TaskId,
     input: W::Input,
+    meta: TaskMeta,
     outcome_tx: Option<OutcomeSender<W>>,
-    #[cfg(feature = "retry")]
-    attempt: u32,
 }
 
 /// Data shared by all worker threads in a `Hive`.
@@ -99,8 +98,11 @@ pub struct Config {
     #[cfg(feature = "affinity")]
     affinity: Any<crate::hive::cores::Cores>,
     /// Maximum number of tasks for a worker thread to take when receiving from the input channel
-    #[cfg(feature = "batching")]
+    #[cfg(feature = "local-batch")]
     batch_limit: Usize,
+    /// Maximum "weight" of tasks a worker thread may have active and pending
+    #[cfg(feature = "local-batch")]
+    weight_limit: U64,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
     max_retries: U32,

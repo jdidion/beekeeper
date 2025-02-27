@@ -122,3 +122,6 @@ impl<W: Worker + Send + Sync + Clone> Queen for CloneQueen<W> {
         self.0.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {}

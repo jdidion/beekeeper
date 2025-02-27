@@ -1,4 +1,4 @@
-use super::{Config, PopTaskError, Shared, Task, TaskQueues, Token, WorkerQueues};
+use super::{Config, PopTaskError, Shared, Task, TaskInput, TaskQueues, Token, WorkerQueues};
 use crate::atomic::{Atomic, AtomicInt, AtomicUsize};
 use crate::bee::{Queen, TaskId, Worker};
 use crate::channel::SenderExt;
@@ -158,60 +158,55 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
 
     /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
     /// `outcome_tx` and the next ID.
-    pub fn prepare_task(&self, input: W::Input, outcome_tx: Option<&OutcomeSender<W>>) -> Task<W> {
+    pub fn prepare_task<I>(&self, input: I, outcome_tx: Option<&OutcomeSender<W>>) -> Task<W>
+    where
+        I: Into<TaskInput<W>>,
+    {
         self.num_tasks
             .increment_left(1)
             .expect("overflowed queued task counter");
         let task_id = self.next_task_id.add(1);
-        Task::new(task_id, input, outcome_tx.cloned())
-    }
-
-    /// Adds `task` to the global queue if possible, otherwise abandons it - converts it to an
-    /// `Unprocessed` outcome and sends it to the outcome channel or stores it in the hive.
-    pub fn push_global(&self, task: Task<W>) {
-        // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
-        // the task into an `Unprocessed` outcome and try to send it to the outcome channel; if
-        // that fails, store the outcome in the hive
-        if let Some(abandoned_task) = if self.is_poisoned() {
-            Some(task)
-        } else {
-            self.task_queues.try_push_global(task).err()
-        } {
-            self.abandon_task(abandoned_task);
-        }
+        Task::new(task_id, input.into(), outcome_tx.cloned())
     }
 
     /// Creates a new `Task` for the given input and outcome channel, and adds it to the global
     /// queue.
-    pub fn send_one_global(
-        &self,
-        input: W::Input,
-        outcome_tx: Option<&OutcomeSender<W>>,
-    ) -> TaskId {
+    pub fn send_one_global<I>(&self, input: I, outcome_tx: Option<&OutcomeSender<W>>) -> TaskId
+    where
+        I: Into<TaskInput<W>>,
+    {
         if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
         let task = self.prepare_task(input, outcome_tx);
+        // when the `local-batch` feature is enabled, immediately abandon any task whose weight is
+        // greater than the configured limit
+        #[cfg(feature = "local-batch")]
+        let task = match self.abandon_if_too_heavy(task) {
+            Ok(task) => task,
+            Err(task_id) => return task_id,
+        };
         let task_id = task.id();
         self.push_global(task);
         task_id
     }
 
     /// Creates a new `Task` for each input in the given batch and sends them to the global queue.
-    pub fn send_batch_global<I>(
+    pub fn send_batch_global<I, B>(
         &self,
-        inputs: I,
+        batch: B,
         outcome_tx: Option<&OutcomeSender<W>>,
     ) -> Vec<TaskId>
     where
-        I: IntoIterator<Item = W::Input>,
-        I::IntoIter: ExactSizeIterator,
+        I: Into<TaskInput<W>>,
+        B: IntoIterator<Item = I>,
+        B::IntoIter: ExactSizeIterator,
     {
         #[cfg(debug_assertions)]
         if self.num_threads() == 0 {
             dbg!("WARNING: no worker threads are active for hive");
         }
-        let iter = inputs.into_iter();
+        let iter = batch.into_iter();
         let (min_size, _) = iter.size_hint();
         self.num_tasks
             .increment_left(min_size as u64)
@@ -228,7 +223,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
             )
             .map_while(move |pair| match pair {
                 (Some(input), Some(task_id)) => {
-                    Some(Task::new(task_id, input, outcome_tx.cloned()))
+                    Some(Task::new(task_id, input.into(), outcome_tx.cloned()))
                 }
                 (Some(input), None) => Some(self.prepare_task(input, outcome_tx)),
                 (None, Some(_)) => panic!("batch contained fewer than {min_size} items"),
@@ -251,6 +246,21 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
             // if the hive is poisoned, convert all tasks into `Unprocessed` outcomes and try to
             // send them to their outcome channels or store them in the hive
             self.abandon_batch(tasks)
+        }
+    }
+
+    /// Adds `task` to the global queue if possible, otherwise abandons it - converts it to an
+    /// `Unprocessed` outcome and sends it to the outcome channel or stores it in the hive.
+    pub fn push_global(&self, task: Task<W>) {
+        // try to send the task to the hive; if the hive is poisoned or if sending fails, convert
+        // the task into an `Unprocessed` outcome and try to send it to the outcome channel; if
+        // that fails, store the outcome in the hive
+        if let Some(abandoned_task) = if self.is_poisoned() {
+            Some(task)
+        } else {
+            self.task_queues.try_push_global(task).err()
+        } {
+            self.abandon_task(abandoned_task);
         }
     }
 
@@ -577,8 +587,8 @@ mod affinity {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(feature = "local-batch")]
+mod local_batch {
     use super::Shared;
     use crate::bee::{Queen, Worker};
     use crate::hive::TaskQueues;
@@ -626,7 +636,7 @@ mod batching {
 
 #[cfg(feature = "retry")]
 mod retry {
-    use crate::bee::{Queen, TaskId, Worker};
+    use crate::bee::{Queen, TaskMeta, Worker};
     use crate::hive::inner::{Shared, Task, TaskQueues};
     use crate::hive::{OutcomeSender, WorkerQueues};
     use std::time::{Duration, Instant};
@@ -687,12 +697,12 @@ mod retry {
         }
 
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
-        /// given `ctx` is less than the maximum number of retries.
-        pub fn can_retry(&self, attempt: u32) -> bool {
+        /// given `task_meta` is less than the maximum number of retries.
+        pub fn can_retry(&self, task_meta: &TaskMeta) -> bool {
             self.config
                 .max_retries
                 .get()
-                .map(|max_retries| attempt < max_retries)
+                .map(|max_retries| task_meta.attempt() < max_retries)
                 .unwrap_or(false)
         }
 
@@ -700,17 +710,44 @@ mod retry {
         /// queue for the specified `thread_index`.
         pub fn try_send_retry(
             &self,
-            task_id: TaskId,
             input: W::Input,
+            meta: TaskMeta,
             outcome_tx: Option<&OutcomeSender<W>>,
-            attempt: u32,
             worker_queues: &T::WorkerQueues,
         ) -> Result<Instant, Task<W>> {
             self.num_tasks
                 .increment_left(1)
                 .expect("overflowed queued task counter");
-            let task = Task::with_attempt(task_id, input, outcome_tx.cloned(), attempt);
+            let task = Task::with_meta_inc_attempt(input, meta, outcome_tx.cloned());
             worker_queues.try_push_retry(task)
+        }
+    }
+}
+
+#[cfg(feature = "local-batch")]
+mod weighting {
+    use crate::bee::{Queen, TaskId, Worker};
+    use crate::hive::inner::{Shared, Task, TaskQueues};
+
+    impl<W, Q, T> Shared<Q, T>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        T: TaskQueues<W>,
+    {
+        pub fn abandon_if_too_heavy(&self, task: Task<W>) -> Result<Task<W>, TaskId> {
+            let weight_limit = self.config.weight_limit.get().unwrap_or(0);
+            if weight_limit > 0 && task.meta().weight() as u64 > weight_limit {
+                let task_id = task.id();
+                let (outcome, outcome_tx) = task.into_overweight();
+                self.send_or_store_outcome(outcome, outcome_tx);
+                // decrement the queued counter since it was incremented but the task was never queued
+                let _ = self.num_tasks.decrement_left(1);
+                self.no_work_notify_all();
+                Err(task_id)
+            } else {
+                Ok(task)
+            }
         }
     }
 }

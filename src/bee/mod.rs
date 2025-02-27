@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Traits for defining workers in the worker pool.
 //!
 //! A [`Hive`](crate::hive::Hive) is populated by bees:
@@ -111,13 +112,13 @@
 //! workers, the queen, and/or the client thread(s).
 mod context;
 mod error;
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod mock;
 mod queen;
 pub mod stock;
 mod worker;
 
-#[cfg(test)]
-pub use self::context::mock::MockTaskContext;
-pub use self::context::{Context, TaskContext, TaskId};
+pub use self::context::{Context, LocalContext, TaskId, TaskMeta};
 pub use self::error::{ApplyError, ApplyRefError};
 pub use self::queen::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut};
 pub use self::worker::{RefWorker, RefWorkerResult, Worker, WorkerError, WorkerResult};

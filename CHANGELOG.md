@@ -20,12 +20,15 @@ The general theme of this release is performance improvement by eliminating thre
   * Added the `TaskQueues` trait, which enables `Hive` to be specialized for different implementations of global (i.e., sending tasks from the `Hive` to worker threads) and local (i.e., worker thread-specific) queues.
     * `ChannelTaskQueues` implements the existing behavior, using a channel for sending tasks.
     * `WorkstealingTaskQueues` has been added to implement the workstealing pattern, based on `crossbeam::dequeue`.
-  * Added the `batching` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
+  * Added the `local-batch` feature, which enables worker threads to queue up batches of tasks locally, which can alleviate contention between threads in the pool, especially when there are many short-lived tasks.
+    * When this feature is enabled, tasks can be optionally weighted (by wrapping each input in `crate::hive::Weighted`) to help evenly distribute tasks with variable processing times.
+    * Enabling this feature should be transparent (i.e., not break existing code), and the `Hive`'s task submission methods support both weighted and unweighted inputs (due to the blanket implementation of `From<T> for Weighted<T>`); however, there are some cases where it is now necessary to specify the input type where before it could be elided.
   * Added the `Context::submit` method, which enables tasks to submit new tasks to the `Hive`.
 * Other
   * Switched to using thread-local retry queues for the implementation of the `retry` feature, to reduce thread-contention.
   * Switched to storing `Outcome`s in the hive using a data structure that does not require locking when inserting, which should reduce thread contention when using `*_store` operations.
   * Switched to using `crossbeam_channel` for the task input channel in `ChannelTaskQueues`. These are multi-produer, multi-consumer channels (mpmc; as opposed to `std::mpsc`, which is single-consumer), which means it is no longer necessary for worker threads to aquire a Mutex lock on the channel receiver when getting tasks.
+  * Added the `beekeeper::bee::mock` module, which has a mock implementation of `beekeeper::bee::context::LocalContext`, and a `apply` function for `apply`ing a worker in a mock context. This is useful for testing your `Worker`.
 
 ## 0.2.1
 

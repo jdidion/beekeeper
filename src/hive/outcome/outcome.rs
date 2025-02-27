@@ -1,15 +1,28 @@
 use super::Outcome;
-use crate::bee::{ApplyError, TaskId, Worker, WorkerResult};
+use crate::bee::{ApplyError, TaskId, TaskMeta, Worker, WorkerResult};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
 impl<W: Worker> Outcome<W> {
+    pub(in crate::hive) fn from_fatal(
+        input: W::Input,
+        task_meta: TaskMeta,
+        error: W::Error,
+    ) -> Self {
+        Self::Failure {
+            input: Some(input),
+            error,
+            task_id: task_meta.id(),
+        }
+    }
+
     /// Converts a worker `result` into an `Outcome` with the given task_id and optional subtask ids.
     pub(in crate::hive) fn from_worker_result(
         result: WorkerResult<W>,
-        task_id: TaskId,
+        task_meta: TaskMeta,
         subtask_ids: Option<Vec<TaskId>>,
     ) -> Self {
+        let task_id = task_meta.id();
         match (result, subtask_ids) {
             (Ok(value), Some(subtask_ids)) => Self::SuccessWithSubtasks {
                 value,
@@ -112,6 +125,8 @@ impl<W: Worker> Outcome<W> {
             | Self::Missing { task_id }
             | Self::Panic { task_id, .. }
             | Self::PanicWithSubtasks { task_id, .. } => task_id,
+            #[cfg(feature = "local-batch")]
+            Self::WeightLimitExceeded { task_id, .. } => task_id,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { task_id, .. } => task_id,
         }
@@ -156,6 +171,8 @@ impl<W: Worker> Outcome<W> {
                 Some(input)
             }
             Self::Success { .. } | Self::SuccessWithSubtasks { .. } | Self::Missing { .. } => None,
+            #[cfg(feature = "local-batch")]
+            Self::WeightLimitExceeded { input, .. } => Some(input),
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { input, .. } => Some(input),
         }
@@ -176,6 +193,8 @@ impl<W: Worker> Outcome<W> {
             | Self::Unprocessed { .. }
             | Self::UnprocessedWithSubtasks { .. }
             | Self::Missing { .. } => None,
+            #[cfg(feature = "local-batch")]
+            Self::WeightLimitExceeded { .. } => None,
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { error, .. } => Some(error),
         }
@@ -240,6 +259,11 @@ impl<W: Worker> Debug for Outcome<W> {
                 .debug_struct("PanicWithSubtasks")
                 .field("task_id", task_id)
                 .field("subtask_ids", subtask_ids)
+                .finish(),
+            #[cfg(feature = "local-batch")]
+            Self::WeightLimitExceeded { task_id, .. } => f
+                .debug_struct("WeightLimitExceeded")
+                .field("task_id", task_id)
                 .finish(),
             #[cfg(feature = "retry")]
             Self::MaxRetriesAttempted { error, task_id, .. } => f
