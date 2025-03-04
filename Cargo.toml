@@ -49,11 +49,6 @@ crossbeam = []
 flume = ["dep:flume"]
 loole = ["dep:loole"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(coverage,coverage_nightly)',
-] }
-
 [package.metadata.cargo-all-features]
 allowlist = ["affinity", "local-batch", "retry"]
 

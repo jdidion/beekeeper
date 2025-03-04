@@ -12,6 +12,7 @@ pub struct FullBuilder<Q: Queen, T: TaskQueues<Q::Kind>> {
 }
 
 impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
+    /// Creates a new `FullBuilder` with the given queen and no options configured.
     pub fn empty<I: Into<Q>>(queen: Q) -> Self {
         Self {
             config: Config::empty(),
@@ -20,6 +21,8 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
         }
     }
 
+    /// Creates a new `FullBuilder` with the given `queen` and options configured with global
+    /// defaults.
     pub fn preset<I: Into<Q>>(queen: I) -> Self {
         Self {
             config: Config::default(),
@@ -28,6 +31,7 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
         }
     }
 
+    /// Creates a new `FullBuilder` from an existing `config` and a `queen`.
     pub(super) fn from(config: Config, queen: Q) -> Self {
         Self {
             config,
@@ -36,6 +40,7 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
         }
     }
 
+    /// Consumes this `Builder` and returns a new [`Hive`].
     pub fn build(self) -> Hive<Q, T> {
         Hive::new(self.config, self.queen)
     }

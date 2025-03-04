@@ -157,9 +157,12 @@ mod local_batch {
 
     const DEFAULT_BATCH_LIMIT: usize = 10;
 
+    /// Sets the batch limit a `config` is configured with when using `Builder::default()`.
     pub fn set_batch_limit_default(batch_limit: usize) {
         DEFAULTS.lock().batch_limit.set(Some(batch_limit));
     }
+
+    /// Sets the weight limit a `config` is configured with when using `Builder::default()`.
     pub fn set_weight_limit_default(weight_limit: u64) {
         DEFAULTS.lock().weight_limit.set(Some(weight_limit));
     }
@@ -177,20 +180,20 @@ mod retry {
     use super::{Config, DEFAULTS};
     use std::time::Duration;
 
-    const DEFAULT_MAX_RETRIES: u32 = 3;
+    const DEFAULT_MAX_RETRIES: u8 = 3;
     const DEFAULT_RETRY_FACTOR_SECS: u64 = 1;
 
-    /// Sets the max number of retries a `config` is configured with when using `Config::with_defaults()`.
-    pub fn set_max_retries_default(num_retries: u32) {
+    /// Sets the max number of retries a `config` is configured with when using `Builder::default()`.
+    pub fn set_max_retries_default(num_retries: u8) {
         DEFAULTS.lock().max_retries.set(Some(num_retries));
     }
 
-    /// Sets the retry factor a `config` is configured with when using `Config::with_defaults()`.
+    /// Sets the retry factor a `config` is configured with when using `Builder::default()`.
     pub fn set_retry_factor_default(retry_factor: Duration) {
         DEFAULTS.lock().set_retry_factor_from(retry_factor);
     }
 
-    /// Specifies that retries should be disabled by default when using `Config::with_defaults()`.
+    /// Specifies that retries should be disabled by default when using `Builder::default()`.
     pub fn set_retries_default_disabled() {
         set_max_retries_default(0);
     }

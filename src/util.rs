@@ -1,8 +1,8 @@
 //! Utility functions for simple use cases.
 //!
 //! In all cases, the number of threads is specified as a parameter, and the function takes care of
-//! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
-//! down the `Hive` properly.
+//! creating the [`Hive`](crate::hive::Hive) (with channel-based task queues), submitting tasks,
+//! collecting results, and shutting down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
 use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeBatch, TaskQueuesBuilder};
 use std::fmt::Debug;
@@ -143,7 +143,7 @@ mod retry {
     /// ```
     pub fn try_map_retryable<I, O, E, Inputs, F>(
         num_threads: usize,
-        max_retries: u32,
+        max_retries: u8,
         inputs: Inputs,
         f: F,
     ) -> OutcomeBatch<RetryCaller<I, O, E, F>>

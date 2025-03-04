@@ -1,3 +1,4 @@
+//! Weighted value used for task submission with the `local-batch` feature.
 use std::ops::Deref;
 
 /// Wraps a value of type `T` and an associated weight.
@@ -7,10 +8,13 @@ pub struct Weighted<T> {
 }
 
 impl<T> Weighted<T> {
+    /// Creates a new `Weighted` instance with the given value and weight.
     pub fn new(value: T, weight: u32) -> Self {
         Self { value, weight }
     }
 
+    /// Creates a new `Weighted` instance with the given value and weight obtained from calling the
+    /// given function on `value`.
     pub fn from_fn<F>(value: T, f: F) -> Self
     where
         F: FnOnce(&T) -> u32,
@@ -19,23 +23,24 @@ impl<T> Weighted<T> {
         Self::new(value, weight)
     }
 
+    /// Creates a new `Weighted` instance with the given value and weight obtained by converting
+    /// the value into a `u32`.
+    pub fn from_identity(value: T) -> Self
+    where
+        T: Into<u32> + Clone,
+    {
+        let weight = value.clone().into();
+        Self::new(value, weight)
+    }
+
+    /// Returns the weight associated with this `Weighted` value.
     pub fn weight(&self) -> u32 {
         self.weight
     }
 
-    pub fn into_inner(self) -> T {
-        self.value
-    }
-
+    /// Returns the value and weight as a tuple.
     pub fn into_parts(self) -> (T, u32) {
         (self.value, self.weight)
-    }
-}
-
-impl<T: Into<u32> + Clone> Weighted<T> {
-    pub fn from_identity(value: T) -> Self {
-        let weight = value.clone().into();
-        Self::new(value, weight)
     }
 }
 
@@ -59,114 +64,87 @@ impl<T> From<(T, u32)> for Weighted<T> {
     }
 }
 
-// /// Trait implemented by a type that can be converted into an iterator over `Weighted` items.
-// pub trait IntoWeightedIterator {
-//     type Item;
-//     type IntoIter: Iterator<Item = Weighted<Self::Item>>;
+/// Extends `IntoIterator` to add methods to convert any iterator into an iterator over `Weighted`
+/// items.
+pub trait WeightedIteratorExt: IntoIterator + Sized {
+    fn into_weighted<T>(self) -> impl Iterator<Item = Weighted<T>>
+    where
+        Self: IntoIterator<Item = (T, u32)>,
+    {
+        self.into_iter()
+            .map(|(value, weight)| Weighted::new(value, weight))
+    }
 
-//     fn into_weighted_iter(self) -> Self::IntoIter;
-// }
+    fn into_default_weighted(self) -> impl Iterator<Item = Weighted<Self::Item>> {
+        self.into_iter().map(Into::into)
+    }
 
-// // Calls to Hive task submission functions should work with iterators of `W::Input` regardless of
-// // whether the `local-batch` feature is enabled. This blanket implementation of
-// // `IntoWeightedIterator` just gives every task a weight of 0.
-// impl<T, I: IntoIterator<Item = T>> IntoWeightedIterator for I {
-//     type Item = T;
-//     type IntoIter = std::iter::Map<I::IntoIter, fn(T) -> Weighted<T>>;
+    fn into_const_weighted(self, weight: u32) -> impl Iterator<Item = Weighted<Self::Item>> {
+        self.into_iter()
+            .map(move |item| Weighted::new(item, weight))
+    }
 
-//     fn into_weighted_iter(self) -> Self::IntoIter {
-//         self.into_iter().map(Into::into)
-//     }
-// }
+    fn into_identity_weighted(self) -> impl Iterator<Item = Weighted<Self::Item>>
+    where
+        Self::Item: Into<u32> + Clone,
+    {
+        self.into_iter()
+            .map(move |item| Weighted::from_identity(item))
+    }
 
-// struct WeightedIter<T>(Box<dyn Iterator<Item = Weighted<T>>>);
+    fn into_weighted_zip<W>(self, weights: W) -> impl Iterator<Item = Weighted<Self::Item>>
+    where
+        W: IntoIterator<Item = u32>,
+        W::IntoIter: 'static,
+    {
+        self.into_iter()
+            .zip(weights.into_iter().chain(std::iter::repeat(0)))
+            .map(Into::into)
+    }
+}
 
-// impl<T: 'static> WeightedIter<T> {
-//     fn from_tuples<I>(tuples: I) -> Self
-//     where
-//         I: IntoIterator<Item = (T, u32)>,
-//         I::IntoIter: 'static,
-//     {
-//         Self(Box::new(tuples.into_iter().map(Into::into)))
-//     }
+impl<T: IntoIterator> WeightedIteratorExt for T {}
 
-//     fn from_iter<I, W>(items: I, weights: W) -> Self
-//     where
-//         I: IntoIterator<Item = T>,
-//         I::IntoIter: 'static,
-//         W: IntoIterator<Item = u32>,
-//         W::IntoIter: 'static,
-//     {
-//         Self(Box::new(
-//             items
-//                 .into_iter()
-//                 .zip(weights.into_iter().chain(std::iter::repeat(0)))
-//                 .map(Into::into),
-//         ))
-//     }
+/// Extends `IntoIterator` to add methods to convert any iterator into an iterator over `Weighted`
+/// items.
+pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
+    fn into_weighted<T>(self) -> impl ExactSizeIterator<Item = Weighted<T>>
+    where
+        Self: IntoIterator<Item = (T, u32)>,
+        Self::IntoIter: ExactSizeIterator + 'static,
+    {
+        self.into_iter()
+            .map(|(value, weight)| Weighted::new(value, weight))
+    }
 
-//     fn from_const<I>(items: I, weight: u32) -> Self
-//     where
-//         I: IntoIterator<Item = T>,
-//         I::IntoIter: 'static,
-//     {
-//         Self::from_iter(items, std::iter::repeat(weight))
-//     }
+    fn into_default_weighted(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    where
+        Self::IntoIter: ExactSizeIterator + 'static,
+    {
+        self.into_iter().map(Into::into)
+    }
 
-//     fn from_fn<B, F>(items: B, f: F) -> Self
-//     where
-//         B: IntoIterator<Item = T>,
-//         B::IntoIter: 'static,
-//         F: Fn(&T) -> u32 + 'static,
-//     {
-//         Self(Box::new(items.into_iter().map(move |value| {
-//             let weight = f(&value);
-//             Weighted::new(value, weight)
-//         })))
-//     }
-// }
+    fn into_const_weighted(self, weight: u32) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    where
+        Self::IntoIter: ExactSizeIterator + 'static,
+    {
+        self.into_iter()
+            .map(move |item| Weighted::new(item, weight))
+    }
 
-// impl<T: Into<u32> + Clone + 'static> WeightedIter<T> {
-//     fn from_identity<I>(items: I) -> Self
-//     where
-//         I: IntoIterator<Item = T>,
-//         I::IntoIter: 'static,
-//     {
-//         Self::from_fn(items, |item| item.clone().into())
-//     }
-// }
+    fn into_identity_weighted(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    where
+        Self::Item: Into<u32> + Clone,
+        Self::IntoIter: ExactSizeIterator + 'static,
+    {
+        self.into_iter()
+            .map(move |item| Weighted::from_identity(item))
+    }
+}
 
-// impl<T> IntoWeightedIterator for WeightedIter<T> {
-//     type Item = T;
-//     type IntoIter = Box<dyn Iterator<Item = Weighted<Self::Item>>>;
-
-//     fn into_weighted_iter(self) -> Self::IntoIter {
-//         self.0
-//     }
-// }
-
-// #[cfg(feature = "local-batch")]
-// pub fn map2<B>(&self, batch: B) -> impl Iterator<Item = Outcome<W>> + use<B, W, Q, T>
-// where
-//     B: IntoWeightedIterator<Item = W::Input>,
-// {
-//     let (tx, rx) = outcome_channel();
-//     let task_ids: Vec<_> = batch
-//         .into_weighted_iter()
-//         .map(|(task, weight)| self.apply_send(task, &tx))
-//         .collect();
-//     drop(tx);
-//     rx.select_ordered(task_ids)
-// }
-// #[cfg(test)]
-// mod foo {
-//     use super::*;
-//     use crate::bee::stock::EchoWorker;
-
-//     fn test_foo() {
-//         let hive = DefaultHive::<EchoWorker<usize>>::default();
-//         let result = hive
-//             .map2(Weighted::from_iter(0..10, 0..10))
-//             .collect::<Vec<_>>();
-//     }
-// }
+impl<T> WeightedExactSizeIteratorExt for T
+where
+    T: IntoIterator,
+    T::IntoIter: ExactSizeIterator,
+{
+}

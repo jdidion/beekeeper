@@ -325,7 +325,6 @@
 //! }
 //! # }
 //! ```
-
 mod atomic;
 #[cfg(test)]
 mod barrier;

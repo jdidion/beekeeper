@@ -1,24 +1,24 @@
-use super::{Task, TaskInput};
-use crate::bee::{Context, LocalContext, TaskId, TaskMeta, Worker, WorkerResult};
+//! Utilities for testing `Worker`s.
+use super::{Outcome, Task, TaskInput};
+use crate::bee::{Context, LocalContext, TaskId, Worker};
 use std::cell::RefCell;
 
+/// A struct used for testing `Worker`s in a mock environment without needing to create a `Hive`.
 #[derive(Debug)]
 pub struct MockTaskRunner(RefCell<TaskId>);
 
 impl MockTaskRunner {
+    /// Creates a new `MockTaskRunner` with a starting task ID of 0.
     pub fn new() -> Self {
         Self(RefCell::new(0))
     }
 
     /// Applies the given `worker` to the given `input`.
     ///
-    /// Returns a tuple of the apply result, the task metadata, and the IDs of any
-    /// subtasks that were submitted.
-    pub fn apply<W: Worker>(
-        &self,
-        input: TaskInput<W>,
-        worker: &mut W,
-    ) -> (WorkerResult<W>, TaskMeta, Option<Vec<TaskId>>) {
+    /// The task ID is automatically incremented and used to create the `Context`.
+    ///
+    /// Returns the `Outcome` from executing the task.
+    pub fn apply<W: Worker>(&self, worker: &mut W, input: TaskInput<W>) -> Outcome<W> {
         let task_id = self.next_task_id();
         let local = MockLocalContext(&self);
         let task: Task<W> = Task::new(task_id, input, None);
@@ -26,7 +26,7 @@ impl MockTaskRunner {
         let ctx = Context::new(task_meta, Some(&local));
         let result = worker.apply(input, &ctx);
         let (task_meta, subtask_ids) = ctx.into_parts();
-        (result, task_meta, subtask_ids)
+        Outcome::from_worker_result(result, task_meta, subtask_ids)
     }
 
     fn next_task_id(&self) -> TaskId {

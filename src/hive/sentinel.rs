@@ -2,7 +2,7 @@ use super::{Shared, TaskQueues};
 use crate::bee::{Queen, Worker};
 use std::io::Error as SpawnError;
 use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 
 /// Sentinel for a worker thread. Until the sentinel is cancelled, it will respawn the worker
 /// thread if it panics.
@@ -13,9 +13,13 @@ where
     T: TaskQueues<W>,
     F: Fn(usize, &Arc<Shared<Q, T>>) -> Result<JoinHandle<()>, SpawnError> + 'static,
 {
+    /// The index of the worker thread
     thread_index: usize,
+    /// The shared data to pass to the new worker thread when respawning
     shared: Arc<Shared<Q, T>>,
+    /// Whether sentinel is active
     active: bool,
+    /// The function that will be called to respawn the worker thread
     respawn_fn: F,
 }
 
@@ -52,10 +56,10 @@ where
         if self.active {
             // if the sentinel is active, that means the thread panicked during task execution, so
             // we have to finish the task here before respawning
-            self.shared.finish_task(std::thread::panicking());
+            self.shared.finish_task(thread::panicking());
             // only respawn if the sentinel is active and the hive has not been poisoned
             if !self.shared.is_poisoned() {
-                // can't do anything with the previous result
+                // can't do anything with the previous JoinHandle
                 let _ = self
                     .shared
                     .respawn_thread(self.thread_index, |thread_index| {

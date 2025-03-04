@@ -1,3 +1,4 @@
+//! Internal utilities for the `hive` module.
 use crossbeam_utils::Backoff;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,8 +8,8 @@ const MAX_WAIT: Duration = Duration::from_secs(10);
 /// Utility function to loop (with exponential backoff) waiting for other references to `arc` to
 /// drop so it can be unwrapped into its inner value.
 ///
-/// If `arc` cannot be unwrapped with a certain amount of time (with an exponentially
-/// increasing gap between each iteration), `arc` is returned as an error.
+/// If `arc` cannot be unwrapped within a certain amount of time (with an exponentially increasing
+/// gap between each iteration), `arc` is returned as an error.
 pub fn unwrap_arc<T>(mut arc: Arc<T>) -> Result<T, Arc<T>> {
     // wait for worker threads to drop, then take ownership of the shared data and convert it
     // into a Husk

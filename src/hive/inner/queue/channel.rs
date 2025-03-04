@@ -17,6 +17,10 @@ type TaskSender<W> = crossbeam_channel::Sender<Task<W>>;
 /// Type alias for the input task channel receiver
 type TaskReceiver<W> = crossbeam_channel::Receiver<Task<W>>;
 
+/// `TaskQueues` implementation using `crossbeam` channels for the global queue.
+///
+/// Worker threads may have access to local retry and/or batch queues, depending on which features
+/// are enabled.
 pub struct ChannelTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
     local: RwLock<Vec<Arc<LocalQueueShared<W>>>>,
@@ -162,6 +166,7 @@ impl<W: Worker> WorkerQueues<W> for ChannelWorkerQueues<W> {
     }
 }
 
+/// Worker thread-specific data shared with the main thread.
 struct LocalQueueShared<W: Worker> {
     _thread_index: usize,
     /// queue of abandon tasks
@@ -190,8 +195,8 @@ impl<W: Worker> LocalQueueShared<W> {
     }
 
     /// Updates the local queues based on the provided `config`:
-    /// If `local-batch` is enabled, resizes the batch queue if necessary.
-    /// If `retry` is enabled, updates the retry factor.
+    /// * If `local-batch` is enabled, resizes the batch queue if necessary.
+    /// * If `retry` is enabled, updates the retry factor.
     fn update(&self, _global: &GlobalQueue<W>, _config: &Config) {
         #[cfg(feature = "local-batch")]
         self.local_batch.set_limits(
@@ -278,6 +283,17 @@ mod local_batch {
     use crossbeam_queue::ArrayQueue;
     use parking_lot::RwLock;
 
+    /// Worker thread-local queue for tasks used to reduce the frequency of polling the global
+    /// queue (which may have a lot of contention from other worker threads).
+    ///
+    /// When the queue is empty, then it attempts to refill itself from the global queue. This is
+    /// done considering both the size and weight limits - i.e., the local queue is filled until
+    /// either it is full or the total weight of queued tasks exceeds the weight limit.
+    ///
+    /// This queue is implemented internally using a crossbeam `ArrayQueue`, which has a fixed size.
+    /// The queue can be resized dynamically by creating a new queue and copying the tasks over. If
+    /// the new queue is smaller than the old one, then any excess tasks are pushed back to the
+    /// global queue.
     pub struct WorkerBatchQueue<W: Worker> {
         inner: RwLock<Option<ArrayQueue<Task<W>>>>,
         batch_limit: AtomicUsize,

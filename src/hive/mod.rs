@@ -388,24 +388,27 @@ pub mod cores;
 mod hive;
 mod husk;
 mod inner;
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod mock;
 mod outcome;
 mod sentinel;
 mod util;
+#[cfg(feature = "local-batch")]
 mod weighted;
 
 pub use self::builder::{BeeBuilder, ChannelBuilder, FullBuilder, OpenBuilder, TaskQueuesBuilder};
 pub use self::builder::{
     channel as channel_builder, open as open_builder, workstealing as workstealing_builder,
 };
+#[cfg(feature = "affinity")]
+pub use self::cores::{Core, Cores};
 pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
 pub use self::inner::{
     Builder, ChannelTaskQueues, TaskInput, WorkstealingTaskQueues, set_config::*,
 };
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
-pub use self::weighted::Weighted;
+#[cfg(feature = "local-batch")]
+pub use self::weighted::{Weighted, WeightedExactSizeIteratorExt, WeightedIteratorExt};
 
 use self::context::HiveLocalContext;
 use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};
@@ -428,6 +431,8 @@ pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
 }
 
 pub mod prelude {
+    #[cfg(feature = "local-batch")]
+    pub use super::Weighted;
     pub use super::{
         Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
         TaskQueuesBuilder, channel_builder, open_builder, outcome_channel, workstealing_builder,
@@ -1998,8 +2003,8 @@ mod local_batch_tests {
     use crate::bee::DefaultQueen;
     use crate::bee::stock::{Thunk, ThunkWorker};
     use crate::hive::{
-        Builder, Hive, OutcomeIteratorExt, OutcomeReceiver, OutcomeSender, TaskQueues,
-        TaskQueuesBuilder, channel_builder, workstealing_builder,
+        Builder, Hive, Outcome, OutcomeIteratorExt, OutcomeReceiver, OutcomeSender, TaskQueues,
+        TaskQueuesBuilder, WeightedExactSizeIteratorExt, channel_builder, workstealing_builder,
     };
     use rstest::*;
     use std::collections::HashMap;
@@ -2177,6 +2182,32 @@ mod local_batch_tests {
         let thread_counts = count_thread_ids(rx, task_ids);
         assert!(thread_counts.values().all(|count| *count > BATCH_LIMIT_0));
         assert_eq!(thread_counts.values().sum::<usize>(), total_tasks);
+    }
+
+    #[rstest]
+    fn test_swarm_default_weighted<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        const NUM_THREADS: usize = 4;
+        const BATCH_LIMIT: usize = 24;
+        let hive = builder_factory(false)
+            .with_worker_default::<ThunkWorker<u8>>()
+            .num_threads(NUM_THREADS)
+            .batch_limit(BATCH_LIMIT)
+            .build();
+        let inputs = (0..10u8)
+            .map(|i| {
+                Thunk::of(move || {
+                    thread::sleep(Duration::from_millis((10 - i as u64) * 100));
+                    i
+                })
+            })
+            .into_default_weighted();
+        let outputs: Vec<_> = hive.swarm(inputs).map(Outcome::unwrap).collect();
+        assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
 }
 

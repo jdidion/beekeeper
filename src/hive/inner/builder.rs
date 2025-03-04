@@ -295,7 +295,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// # }
     /// ```
     #[cfg(feature = "retry")]
-    fn max_retries(mut self, limit: u32) -> Self {
+    fn max_retries(mut self, limit: u8) -> Self {
         let _ = if limit == 0 {
             self.config_ref(Token).max_retries.set(None)
         } else {

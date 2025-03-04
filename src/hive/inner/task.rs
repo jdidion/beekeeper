@@ -2,6 +2,8 @@ use super::Task;
 use crate::bee::{TaskId, TaskMeta, Worker};
 use crate::hive::{Outcome, OutcomeSender};
 
+/// The type of input to a task for a given `Worker` type. This changes depending on the features
+/// that are enabled.
 pub use task_impl::TaskInput;
 
 impl<W: Worker> Task<W> {
@@ -18,6 +20,22 @@ impl<W: Worker> Task<W> {
         }
     }
 
+    /// Creates a new `Task` with the given metadata, and increments the attempt number.
+    #[cfg(feature = "retry")]
+    pub fn with_meta_inc_attempt(
+        input: W::Input,
+        mut meta: TaskMeta,
+        outcome_tx: Option<OutcomeSender<W>>,
+    ) -> Self {
+        meta.inc_attempt();
+        Self {
+            input,
+            meta,
+            outcome_tx,
+        }
+    }
+
+    /// Returns the ID of the task.
     #[inline]
     pub fn id(&self) -> TaskId {
         self.meta.id()
@@ -34,7 +52,7 @@ impl<W: Worker> Task<W> {
         (self.input, self.meta, self.outcome_tx)
     }
 
-    /// Consumes this `Task` and returns a `Outcome::Unprocessed` outcome with the input and ID,
+    /// Consumes this `Task` and returns an `Outcome::Unprocessed` outcome with the input and ID,
     /// and the outcome sender.
     pub fn into_unprocessed(self) -> (Outcome<W>, Option<OutcomeSender<W>>) {
         let outcome = Outcome::Unprocessed {
@@ -92,8 +110,8 @@ mod task_impl {
             }
         }
 
-        /// Consumes this `Task` and returns a `Outcome::WeightLimitExceeded` outcome with the input,
-        /// weight, and ID, and the outcome sender.
+        /// Consumes this `Task` and returns a `Outcome::WeightLimitExceeded` outcome with the
+        /// input, weight, and ID, and the outcome sender.
         pub fn into_overweight(self) -> (Outcome<W>, Option<OutcomeSender<W>>) {
             let outcome = Outcome::WeightLimitExceeded {
                 input: self.input,
@@ -101,29 +119,6 @@ mod task_impl {
                 task_id: self.meta.id(),
             };
             (outcome, self.outcome_tx)
-        }
-    }
-}
-
-#[cfg(feature = "retry")]
-mod retry {
-    use super::Task;
-    use crate::bee::{TaskMeta, Worker};
-    use crate::hive::OutcomeSender;
-
-    impl<W: Worker> Task<W> {
-        /// Creates a new `Task`.
-        pub fn with_meta_inc_attempt(
-            input: W::Input,
-            mut meta: TaskMeta,
-            outcome_tx: Option<OutcomeSender<W>>,
-        ) -> Self {
-            meta.inc_attempt();
-            Self {
-                input,
-                meta,
-                outcome_tx,
-            }
         }
     }
 }

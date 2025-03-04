@@ -1,7 +1,6 @@
 mod batch;
 mod iter;
-#[allow(clippy::module_inception)]
-mod outcome;
+mod r#impl;
 mod queue;
 mod store;
 

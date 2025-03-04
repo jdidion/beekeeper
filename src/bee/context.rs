@@ -1,5 +1,4 @@
 //! The context for a task processed by a `Worker`.
-
 use std::cell::RefCell;
 use std::fmt::Debug;
 
@@ -34,7 +33,7 @@ impl<'a, I> Context<'a, I> {
         }
     }
 
-    /// Creates a new `Context` with the given task_id and shared cancellation status.
+    /// Creates a new `Context` with the given task metadata and shared state.
     pub fn new(meta: TaskMeta, local: Option<&'a dyn LocalContext<I>>) -> Self {
         Self {
             meta,
@@ -45,12 +44,12 @@ impl<'a, I> Context<'a, I> {
 
     /// The unique ID of this task within the `Hive`.
     pub fn task_id(&self) -> TaskId {
-        self.meta.id
+        self.meta.id()
     }
 
     /// Returns the number of previous failed attempts to execute the current task.
-    pub fn attempt(&self) -> u32 {
-        self.meta.attempt
+    pub fn attempt(&self) -> u8 {
+        self.meta.attempt()
     }
 
     /// Returns `true` if the current task should be cancelled.
@@ -60,7 +59,7 @@ impl<'a, I> Context<'a, I> {
     pub fn is_cancelled(&self) -> bool {
         self.local
             .as_ref()
-            .map(|worker| worker.should_cancel_tasks())
+            .map(|local| local.should_cancel_tasks())
             .unwrap_or(false)
     }
 
@@ -102,14 +101,16 @@ pub struct TaskMeta {
     #[cfg(feature = "local-batch")]
     weight: u32,
     #[cfg(feature = "retry")]
-    attempt: u32,
+    attempt: u8,
 }
 
 impl TaskMeta {
+    /// Creates an empty `TaskMeta` with a default task ID.
     pub fn empty() -> Self {
         Self::new(0)
     }
 
+    /// Creates a new `TaskMeta` with the given task ID.
     pub fn new(id: TaskId) -> Self {
         TaskMeta {
             id,
@@ -117,6 +118,7 @@ impl TaskMeta {
         }
     }
 
+    /// Creates a new `TaskMeta` with the given task ID and weight.
     #[cfg(feature = "local-batch")]
     pub fn with_weight(task_id: TaskId, weight: u32) -> Self {
         TaskMeta {
@@ -126,14 +128,15 @@ impl TaskMeta {
         }
     }
 
+    /// Returns the unique ID of this task within the `Hive`.
     pub fn id(&self) -> TaskId {
         self.id
     }
 
-    /// The number of previous failed attempts to execute the current task.
+    /// Returns the number of previous failed attempts to execute the current task.
     ///
     /// Always returns `0` if the `retry` feature is not enabled.
-    pub fn attempt(&self) -> u32 {
+    pub fn attempt(&self) -> u8 {
         #[cfg(feature = "retry")]
         return self.attempt;
         #[cfg(not(feature = "retry"))]
@@ -159,7 +162,7 @@ impl TaskMeta {
 
 #[cfg(all(test, feature = "retry"))]
 impl TaskMeta {
-    pub fn with_attempt(task_id: TaskId, attempt: u32) -> Self {
+    pub fn with_attempt(task_id: TaskId, attempt: u8) -> Self {
         Self {
             id: task_id,
             attempt,

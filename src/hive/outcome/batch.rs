@@ -47,6 +47,7 @@ impl<W: Worker> DerefOutcomes<W> for OutcomeBatch<W> {
     }
 }
 
+/// Functions only used in testing.
 #[cfg(test)]
 impl<W: Worker> OutcomeBatch<W> {
     pub(crate) fn empty() -> Self {

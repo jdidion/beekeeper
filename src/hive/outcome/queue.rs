@@ -5,13 +5,16 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
+/// Data structure that supports queuing `Outcomes` from multiple threads (without locking) and
+/// fetching from a single thread (which requires draining the queue into a map that is behind a
+/// mutex).
 pub struct OutcomeQueue<W: Worker> {
     queue: SegQueue<Outcome<W>>,
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,
 }
 
 impl<W: Worker> OutcomeQueue<W> {
-    /// Adds an outcome to the queue.
+    /// Adds an `outcome` to the queue.
     pub fn push(&self, outcome: Outcome<W>) {
         self.queue.push(outcome);
     }
@@ -37,6 +40,7 @@ impl<W: Worker> OutcomeQueue<W> {
         outcomes
     }
 
+    /// Consumes this `OutcomeQueue`, drains the queue, and returns the outcomes as a map.
     pub fn into_inner(self) -> HashMap<TaskId, Outcome<W>> {
         let mut outcomes = self.outcomes.into_inner();
         // add any queued outcomes to the map

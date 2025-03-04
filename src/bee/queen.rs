@@ -28,14 +28,17 @@ pub trait QueenMut: Send + Sync + 'static {
 pub struct QueenCell<Q: QueenMut>(RwLock<Q>);
 
 impl<Q: QueenMut> QueenCell<Q> {
+    /// Creates a new `QueenCell` with the given `mut_queen`.
     pub fn new(mut_queen: Q) -> Self {
         Self(RwLock::new(mut_queen))
     }
 
+    /// Returns a reference to the wrapped `Queen`.
     pub fn get(&self) -> impl Deref<Target = Q> {
         self.0.read()
     }
 
+    /// Consumes this `QueenCell` and returns the inner `Queen`.
     pub fn into_inner(self) -> Q {
         self.0.into_inner()
     }
@@ -44,6 +47,7 @@ impl<Q: QueenMut> QueenCell<Q> {
 impl<Q: QueenMut> Queen for QueenCell<Q> {
     type Kind = Q::Kind;
 
+    /// Calls the wrapped `QueenMut::create` method using interior mutability.
     fn create(&self) -> Self::Kind {
         self.0.write().create()
     }

@@ -49,7 +49,8 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Spawns the initial set of `self.config.num_threads` worker threads using the provided
-    /// spawning function. Returns the number of worker threads that were successfully started.
+    /// spawning function. The results are stored in `self.spawn_results[0..num_threads]`. Returns
+    /// the number of worker threads that were successfully started.
     pub fn init_threads<F>(&self, f: F) -> usize
     where
         F: Fn(usize) -> Result<JoinHandle<()>, SpawnError>,
@@ -63,7 +64,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Increases the maximum number of threads allowed in the `Hive` by `num_threads`, and
-    /// attempts to spawn threads with indices in `range = cur_index..cur_index + num_threads`
+    /// attempts to spawn threads with indices in the range `cur_index..cur_index + num_threads`
     /// using the provided spawning function. The results are stored in `self.spawn_results[range]`.
     /// Returns the number of new worker threads that were successfully started.
     pub fn grow_threads<F>(&self, num_threads: usize, f: F) -> usize
@@ -156,19 +157,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         self.queen.create()
     }
 
-    /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
-    /// `outcome_tx` and the next ID.
-    pub fn prepare_task<I>(&self, input: I, outcome_tx: Option<&OutcomeSender<W>>) -> Task<W>
-    where
-        I: Into<TaskInput<W>>,
-    {
-        self.num_tasks
-            .increment_left(1)
-            .expect("overflowed queued task counter");
-        let task_id = self.next_task_id.add(1);
-        Task::new(task_id, input.into(), outcome_tx.cloned())
-    }
-
     /// Creates a new `Task` for the given input and outcome channel, and adds it to the global
     /// queue.
     pub fn send_one_global<I>(&self, input: I, outcome_tx: Option<&OutcomeSender<W>>) -> TaskId
@@ -249,6 +237,19 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         }
     }
 
+    /// Increments the number of queued tasks. Returns a new `Task` with the provided input and
+    /// `outcome_tx` and the next ID.
+    pub fn prepare_task<I>(&self, input: I, outcome_tx: Option<&OutcomeSender<W>>) -> Task<W>
+    where
+        I: Into<TaskInput<W>>,
+    {
+        self.num_tasks
+            .increment_left(1)
+            .expect("overflowed queued task counter");
+        let task_id = self.next_task_id.add(1);
+        Task::new(task_id, input.into(), outcome_tx.cloned())
+    }
+
     /// Adds `task` to the global queue if possible, otherwise abandons it - converts it to an
     /// `Unprocessed` outcome and sends it to the outcome channel or stores it in the hive.
     pub fn push_global(&self, task: Task<W>) {
@@ -301,18 +302,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         })
     }
 
-    /// Sends an outcome to `outcome_tx`, or stores it in the `Hive` shared data if there is no
-    /// sender, or if the send fails.
-    pub fn send_or_store_outcome(&self, outcome: Outcome<W>, outcome_tx: Option<OutcomeSender<W>>) {
-        if let Some(outcome) = if let Some(tx) = outcome_tx {
-            tx.try_send_msg(outcome)
-        } else {
-            Some(outcome)
-        } {
-            self.add_outcome(outcome)
-        }
-    }
-
     pub fn abandon_task(&self, task: Task<W>) {
         let (outcome, outcome_tx) = task.into_unprocessed();
         self.send_or_store_outcome(outcome, outcome_tx);
@@ -352,16 +341,40 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         task_ids
     }
 
+    #[cfg(feature = "local-batch")]
+    pub fn abandon_if_too_heavy(&self, task: Task<W>) -> Result<Task<W>, TaskId> {
+        let weight_limit = self.config.weight_limit.get().unwrap_or(0);
+        if weight_limit > 0 && task.meta().weight() as u64 > weight_limit {
+            let task_id = task.id();
+            let (outcome, outcome_tx) = task.into_overweight();
+            self.send_or_store_outcome(outcome, outcome_tx);
+            // decrement the queued counter since it was incremented but the task was never queued
+            let _ = self.num_tasks.decrement_left(1);
+            self.no_work_notify_all();
+            Err(task_id)
+        } else {
+            Ok(task)
+        }
+    }
+
+    /// Sends an outcome to `outcome_tx`, or stores it in the `Hive` shared data if there is no
+    /// sender, or if the send fails.
+    pub fn send_or_store_outcome(&self, outcome: Outcome<W>, outcome_tx: Option<OutcomeSender<W>>) {
+        if let Some(outcome) = if let Some(tx) = outcome_tx {
+            tx.try_send_msg(outcome)
+        } else {
+            Some(outcome)
+        } {
+            self.add_outcome(outcome)
+        }
+    }
+
     /// Called by a worker thread after completing a task. Notifies any thread that has `join`ed
     /// the `Hive` if there is no more work to be done.
     #[inline]
     pub fn finish_task(&self, panicking: bool) {
-        self.finish_tasks(1, panicking);
-    }
-
-    pub fn finish_tasks(&self, n: u64, panicking: bool) {
         self.num_tasks
-            .decrement_right(n)
+            .decrement_right(1)
             .expect("active task counter was smaller than expected");
         if panicking {
             self.num_panics.add(1);
@@ -557,6 +570,74 @@ where
     }
 }
 
+#[cfg(any(feature = "local-batch", feature = "retry"))]
+mod update_config {
+    use super::Shared;
+    use crate::atomic::{Atomic, AtomicOption};
+    use crate::bee::{Queen, Worker};
+    use crate::hive::TaskQueues;
+    use std::fmt::Debug;
+
+    impl<W, Q, T> Shared<Q, T>
+    where
+        W: Worker,
+        Q: Queen<Kind = W>,
+        T: TaskQueues<W>,
+    {
+        fn maybe_update<P, A>(&self, new_value: P, option: &AtomicOption<P, A>) -> P
+        where
+            P: Eq + Copy + Clone + Debug + Default,
+            A: Atomic<P>,
+        {
+            let prev_value = option.try_set(new_value).unwrap_or_default();
+            if prev_value == new_value {
+                return prev_value;
+            }
+            let num_threads = self.num_threads();
+            if num_threads == 0 {
+                return prev_value;
+            }
+            self.task_queues
+                .update_for_threads(0, num_threads, &self.config);
+            prev_value
+        }
+
+        /// Changes the local queue batch size. This requires allocating a new queue for each
+        /// worker thread.
+        ///
+        /// Note: this method will block the current thread waiting for all local queues to become
+        /// writable; if `batch_limit` is less than the current batch size, this method will also
+        /// block while any thread's queue length is > `batch_limit` before moving the elements.
+        #[cfg(feature = "local-batch")]
+        pub fn set_worker_batch_limit(&self, batch_limit: usize) -> usize {
+            self.maybe_update(batch_limit, &self.config.batch_limit)
+        }
+
+        /// Changes the local queue batch weight limit.
+        #[cfg(feature = "local-batch")]
+        pub fn set_worker_weight_limit(&self, weight_limit: u64) -> u64 {
+            self.maybe_update(weight_limit, &self.config.weight_limit)
+        }
+
+        /// Sets the worker retry limit and returns the previous value.
+        #[cfg(feature = "retry")]
+        pub fn set_worker_retry_limit(&self, max_retries: u8) -> u8 {
+            self.maybe_update(max_retries, &self.config.max_retries)
+        }
+
+        /// Sets the worker retry factor and returns the previous value.
+        #[cfg(feature = "retry")]
+        pub fn set_worker_retry_factor(
+            &self,
+            duration: std::time::Duration,
+        ) -> std::time::Duration {
+            std::time::Duration::from_nanos(
+                self.maybe_update(duration.as_nanos() as u64, &self.config.retry_factor),
+            )
+        }
+    }
+}
+
 #[cfg(feature = "affinity")]
 mod affinity {
     use super::{Shared, TaskQueues};
@@ -589,9 +670,8 @@ mod affinity {
 
 #[cfg(feature = "local-batch")]
 mod local_batch {
-    use super::Shared;
     use crate::bee::{Queen, Worker};
-    use crate::hive::TaskQueues;
+    use crate::hive::inner::{Shared, TaskQueues};
 
     impl<W, Q, T> Shared<Q, T>
     where
@@ -604,32 +684,9 @@ mod local_batch {
             self.config.batch_limit.get().unwrap_or_default()
         }
 
-        /// Changes the local queue batch size. This requires allocating a new queue for each
-        /// worker thread.
-        ///
-        /// Note: this method will block the current thread waiting for all local queues to become
-        /// writable; if `batch_limit` is less than the current batch size, this method will also
-        /// block while any thread's queue length is > `batch_limit` before moving the elements.
-        ///
-        /// TODO: this needs to be moved to an extension that is specific to channel hive
-        pub fn set_worker_batch_limit(&self, batch_limit: usize) -> usize {
-            // update the batch size first so any new threads spawned won't need to have their
-            // queues resized
-            let prev_batch_limit = self
-                .config
-                .batch_limit
-                .try_set(batch_limit)
-                .unwrap_or_default();
-            if prev_batch_limit == batch_limit {
-                return prev_batch_limit;
-            }
-            let num_threads = self.num_threads();
-            if num_threads == 0 {
-                return prev_batch_limit;
-            }
-            self.task_queues
-                .update_for_threads(0, num_threads, &self.config);
-            prev_batch_limit
+        /// Returns the local queue batch weight limit. A value of `0` means there is no weight
+        pub fn worker_weight_limit(&self) -> u64 {
+            self.config.weight_limit.get().unwrap_or_default()
         }
     }
 }
@@ -639,7 +696,7 @@ mod retry {
     use crate::bee::{Queen, TaskMeta, Worker};
     use crate::hive::inner::{Shared, Task, TaskQueues};
     use crate::hive::{OutcomeSender, WorkerQueues};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     impl<W, Q, T> Shared<Q, T>
     where
@@ -648,52 +705,13 @@ mod retry {
         T: TaskQueues<W>,
     {
         /// Returns the current worker retry limit.
-        pub fn worker_retry_limit(&self) -> u32 {
+        pub fn worker_retry_limit(&self) -> u8 {
             self.config.max_retries.get().unwrap_or_default()
         }
 
-        /// Sets the worker retry limit and returns the previous value.
-        pub fn set_worker_retry_limit(&self, max_retries: u32) -> u32 {
-            let prev_retry_limit = self
-                .config
-                .max_retries
-                .try_set(max_retries)
-                .unwrap_or_default();
-            if prev_retry_limit == max_retries {
-                return prev_retry_limit;
-            }
-            let num_threads = self.num_threads();
-            if num_threads == 0 {
-                return prev_retry_limit;
-            }
-            self.task_queues
-                .update_for_threads(0, num_threads, &self.config);
-            prev_retry_limit
-        }
-
         /// Returns the current worker retry factor.
-        pub fn worker_retry_factor(&self) -> Duration {
-            Duration::from_millis(self.config.retry_factor.get().unwrap_or_default())
-        }
-
-        /// Sets the worker retry factor and returns the previous value.
-        pub fn set_worker_retry_factor(&self, duration: Duration) -> Duration {
-            let prev_retry_factor = Duration::from_nanos(
-                self.config
-                    .retry_factor
-                    .try_set(duration.as_nanos() as u64)
-                    .unwrap_or_default(),
-            );
-            if prev_retry_factor == duration {
-                return prev_retry_factor;
-            }
-            let num_threads = self.num_threads();
-            if num_threads == 0 {
-                return prev_retry_factor;
-            }
-            self.task_queues
-                .update_for_threads(0, num_threads, &self.config);
-            prev_retry_factor
+        pub fn worker_retry_factor(&self) -> std::time::Duration {
+            std::time::Duration::from_millis(self.config.retry_factor.get().unwrap_or_default())
         }
 
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
@@ -720,34 +738,6 @@ mod retry {
                 .expect("overflowed queued task counter");
             let task = Task::with_meta_inc_attempt(input, meta, outcome_tx.cloned());
             worker_queues.try_push_retry(task)
-        }
-    }
-}
-
-#[cfg(feature = "local-batch")]
-mod weighting {
-    use crate::bee::{Queen, TaskId, Worker};
-    use crate::hive::inner::{Shared, Task, TaskQueues};
-
-    impl<W, Q, T> Shared<Q, T>
-    where
-        W: Worker,
-        Q: Queen<Kind = W>,
-        T: TaskQueues<W>,
-    {
-        pub fn abandon_if_too_heavy(&self, task: Task<W>) -> Result<Task<W>, TaskId> {
-            let weight_limit = self.config.weight_limit.get().unwrap_or(0);
-            if weight_limit > 0 && task.meta().weight() as u64 > weight_limit {
-                let task_id = task.id();
-                let (outcome, outcome_tx) = task.into_overweight();
-                self.send_or_store_outcome(outcome, outcome_tx);
-                // decrement the queued counter since it was incremented but the task was never queued
-                let _ = self.num_tasks.decrement_left(1);
-                self.no_work_notify_all();
-                Err(task_id)
-            } else {
-                Ok(task)
-            }
         }
     }
 }

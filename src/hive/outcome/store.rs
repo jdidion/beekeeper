@@ -5,6 +5,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+/// Trait implemented by structs that provide temporary access (both read-only and mutable) to a
+/// reference to a map of outcomes.
 pub trait DerefOutcomes<W: Worker> {
     /// Returns a read-only reference to a map of task task_id to `Outcome`.
     fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
@@ -13,6 +15,7 @@ pub trait DerefOutcomes<W: Worker> {
     fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
 }
 
+/// Trait implemented by structs that provide (thread-unsafe) access to an owned outcome map.
 pub trait OwnedOutcomes<W: Worker>: Sized {
     /// Returns an owned map of task task_id to `Outcome`.
     fn outcomes(self) -> HashMap<TaskId, Outcome<W>>;

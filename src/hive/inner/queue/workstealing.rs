@@ -20,6 +20,7 @@ use std::time::Duration;
 /// Time to wait after trying to pop and finding all queues empty.
 const EMPTY_DELAY: Duration = Duration::from_millis(100);
 
+/// `TaskQueues` implementation using workstealing.
 pub struct WorkstealingTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
     local: RwLock<Vec<Arc<LocalQueueShared<W>>>>,
@@ -247,6 +248,7 @@ impl<W: Worker> Deref for WorkstealingWorkerQueues<W> {
     }
 }
 
+/// Worker thread-specific data shared with the main thread.
 struct LocalQueueShared<W: Worker> {
     _thread_index: usize,
     /// queue of abandon tasks

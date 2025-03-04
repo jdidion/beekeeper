@@ -4,7 +4,6 @@
 //! TODO: The `Atomic` and `AtomicNumeric` traits and implementations could be replaced with the
 //! equivalents from the `atomic`, `atomig`, or `radium` crates, but none of those seem to be
 //! well-maintained at this point.
-
 pub use num::PrimInt;
 use paste::paste;
 use std::fmt::Debug;

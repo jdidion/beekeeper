@@ -2,9 +2,12 @@ use super::FullBuilder;
 use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut, Worker};
 use crate::hive::{Builder, TaskQueues};
 
+/// Trait implemented by builders specialized to a `TaskQueues` type.
 pub trait TaskQueuesBuilder: Builder + Clone + Default + Sized {
+    /// The type of the `TaskQueues` to use when building the `Hive`.
     type TaskQueues<W: Worker>: TaskQueues<W>;
 
+    /// Creates a new empty `Builder`.
     fn empty() -> Self;
 
     /// Consumes this `Builder` and returns a new [`FullBuilder`] using the given [`Queen`] to
@@ -56,6 +59,7 @@ pub mod channel {
     use crate::hive::builder::{BuilderConfig, Token};
     use crate::hive::{ChannelTaskQueues, Config};
 
+    /// `TaskQueuesBuilder` implementation for channel-based task queues.
     #[derive(Clone, Default)]
     pub struct ChannelBuilder(Config);
 
@@ -95,6 +99,7 @@ pub mod workstealing {
     use crate::hive::builder::{BuilderConfig, Token};
     use crate::hive::{Config, WorkstealingTaskQueues};
 
+    /// `TaskQueuesBuilder` implementation for workstealing-based task queues.
     #[derive(Clone, Default)]
     pub struct WorkstealingBuilder(Config);
 

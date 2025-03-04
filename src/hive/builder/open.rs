@@ -248,6 +248,8 @@ impl OpenBuilder {
         ChannelBuilder::from(self.0)
     }
 
+    /// Consumes this `Builder` and returns a new [`WorkstealingBuilder`] using the current
+    /// configuration.
     pub fn with_workstealing_queues(self) -> WorkstealingBuilder {
         WorkstealingBuilder::from(self.0)
     }

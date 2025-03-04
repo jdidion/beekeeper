@@ -1,3 +1,4 @@
+//! Internal data structures needed to implement `Hive`.
 mod builder;
 mod config;
 mod counter;
@@ -6,6 +7,7 @@ mod queue;
 mod shared;
 mod task;
 
+/// Prelude-like module that collects all the functions for setting global configuration defaults.
 pub mod set_config {
     pub use super::config::{reset_defaults, set_num_threads_default, set_num_threads_default_all};
     #[cfg(feature = "local-batch")]
@@ -35,7 +37,7 @@ use std::thread::JoinHandle;
 type Any<T> = AtomicOption<T, AtomicAny<T>>;
 type Usize = AtomicOption<usize, AtomicUsize>;
 #[cfg(feature = "retry")]
-type U32 = AtomicOption<u32, crate::atomic::AtomicU32>;
+type U8 = AtomicOption<u8, crate::atomic::AtomicU8>;
 #[cfg(feature = "retry")]
 type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
@@ -50,7 +52,8 @@ pub struct Task<W: Worker> {
     outcome_tx: Option<OutcomeSender<W>>,
 }
 
-/// Data shared by all worker threads in a `Hive`.
+/// Data shared by all worker threads in a `Hive`. This is the private API used by the `Hive` and
+/// worker threads to enqueue, dequeue, and process tasks.
 pub struct Shared<Q: Queen, T: TaskQueues<Q::Kind>> {
     /// core configuration parameters
     config: Config,
@@ -105,7 +108,7 @@ pub struct Config {
     weight_limit: U64,
     /// Maximum number of retries for a task
     #[cfg(feature = "retry")]
-    max_retries: U32,
+    max_retries: U8,
     /// Multiplier for the retry backoff strategy
     #[cfg(feature = "retry")]
     retry_factor: U64,

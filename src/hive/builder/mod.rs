@@ -51,6 +51,10 @@ pub use queue::TaskQueuesBuilder;
 pub use queue::channel::ChannelBuilder;
 pub use queue::workstealing::WorkstealingBuilder;
 
+use crate::hive::inner::{BuilderConfig, Token};
+
+/// Creates a new `OpenBuilder`. If `with_defaults` is `true`, the builder will be pre-configured
+/// with the global defaults.
 pub fn open(with_defaults: bool) -> OpenBuilder {
     if with_defaults {
         OpenBuilder::default()
@@ -59,6 +63,8 @@ pub fn open(with_defaults: bool) -> OpenBuilder {
     }
 }
 
+/// Creates a new `ChannelBuilder`. If `with_defaults` is `true`, the builder will be
+/// pre-configured with the global defaults.
 pub fn channel(with_defaults: bool) -> ChannelBuilder {
     if with_defaults {
         ChannelBuilder::default()
@@ -66,7 +72,8 @@ pub fn channel(with_defaults: bool) -> ChannelBuilder {
         ChannelBuilder::empty()
     }
 }
-
+/// Creates a new `WorkstealingBuilder`. If `with_defaults` is `true`, the builder will be
+/// pre-configured with the global defaults.
 pub fn workstealing(with_defaults: bool) -> WorkstealingBuilder {
     if with_defaults {
         WorkstealingBuilder::default()
@@ -74,8 +81,6 @@ pub fn workstealing(with_defaults: bool) -> WorkstealingBuilder {
         WorkstealingBuilder::empty()
     }
 }
-
-use crate::hive::inner::{BuilderConfig, Token};
 
 // #[cfg(all(test, feature = "affinity"))]
 // mod affinity_tests {

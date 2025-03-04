@@ -24,8 +24,8 @@ pub enum CounterError {
 /// The two values may be different sizes, but their total size in bits must equal the size of the
 /// data type (for now fixed to `64`) used to store the value.
 ///
-/// Three operations are supported:
-/// * increment the left counter (`L`)
+/// The following operations are supported:
+/// * increment/decrement the left counter (`L`)
 /// * decrement the right counter (`R`)
 /// * transfer an amount `N` from `L` to `R` (i.e., a simultaneous decrement of `L` and
 ///   increment of `R` by the same amount)

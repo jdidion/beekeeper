@@ -1,3 +1,4 @@
+//! Implementation of `crate::bee::LocalContext` for a `Hive`.
 use crate::bee::{LocalContext, Queen, TaskId, Worker};
 use crate::hive::{OutcomeSender, Shared, TaskQueues, WorkerQueues};
 use std::fmt;
@@ -20,6 +21,7 @@ where
     Q: Queen<Kind = W>,
     T: TaskQueues<W>,
 {
+    /// Creates a new `HiveLocalContext` instance.
     pub fn new(
         worker_queues: &'a T::WorkerQueues,
         shared: &'a Arc<Shared<Q, T>>,

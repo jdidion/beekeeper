@@ -1,4 +1,5 @@
 //! Utilities for pinning worker threads to CPU cores in a `Hive`.
+use core_affinity::{self, CoreId};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::ops::{BitOr, BitOrAssign, Sub, SubAssign};
@@ -51,14 +52,14 @@ pub fn refresh() -> usize {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Core {
     /// the OS-specific core ID
-    id: core_affinity::CoreId,
+    id: CoreId,
     /// whether this core is currently available for pinning threads
     available: bool,
 }
 
 impl Core {
     /// Creates a new `Core` with `available` set to `true`.
-    fn new(core_id: core_affinity::CoreId) -> Self {
+    fn new(core_id: CoreId) -> Self {
         Self {
             id: core_id,
             available: true,
@@ -89,7 +90,8 @@ impl Cores {
         Self(Vec::new())
     }
 
-    /// Returns a `Cores` set populated with the first `n` CPU indices.
+    /// Returns a `Cores` set populated with the first `n` CPU indices (up to the number of
+    /// available cores).
     pub fn first(n: usize) -> Self {
         Self(Vec::from_iter(0..n.min(num_cpus::get())))
     }

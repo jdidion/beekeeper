@@ -44,6 +44,8 @@ impl<Q: Queen> BeeBuilder<Q> {
         FullBuilder::from(self.config, self.queen)
     }
 
+    /// Creates a new `FullBuilder` with the current configuration and queen and workstealing
+    /// task queues.
     pub fn with_workstealing_queues(self) -> FullBuilder<Q, WorkstealingTaskQueues<Q::Kind>> {
         FullBuilder::from(self.config, self.queen)
     }
@@ -90,6 +92,8 @@ impl<Q: QueenMut + Default> BeeBuilder<QueenCell<Q>> {
 }
 
 impl<W: Worker + Send + Sync + Clone> BeeBuilder<CloneQueen<W>> {
+    /// Creates a new `BeeBuilder` with a `CloneQueen` created with the given `worker` and no
+    /// options configured.
     pub fn empty_with_worker(worker: W) -> Self {
         Self {
             config: Config::empty(),
@@ -97,7 +101,9 @@ impl<W: Worker + Send + Sync + Clone> BeeBuilder<CloneQueen<W>> {
         }
     }
 
-    pub fn default_with_worker(worker: W) -> Self {
+    /// Creates a new `BeeBuilder` with a `CloneQueen` created with the given `worker` and
+    /// and options configured with global defaults.
+    pub fn preset_with_worker(worker: W) -> Self {
         Self {
             config: Config::default(),
             queen: CloneQueen::new(worker),
@@ -106,6 +112,8 @@ impl<W: Worker + Send + Sync + Clone> BeeBuilder<CloneQueen<W>> {
 }
 
 impl<W: Worker + Send + Sync + Default> BeeBuilder<DefaultQueen<W>> {
+    /// Creates a new `BeeBuilder` with a `DefaultQueen` created with the given `Worker` type and
+    /// no options configured.
     pub fn empty_with_worker_default() -> Self {
         Self {
             config: Config::empty(),
@@ -113,6 +121,8 @@ impl<W: Worker + Send + Sync + Default> BeeBuilder<DefaultQueen<W>> {
         }
     }
 
+    /// Creates a new `BeeBuilder` with a `DefaultQueen` created with the given `Worker` type and
+    /// and options configured with global defaults.
     pub fn preset_with_worker_default() -> Self {
         Self {
             config: Config::default(),

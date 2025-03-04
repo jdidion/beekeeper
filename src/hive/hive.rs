@@ -3,7 +3,7 @@ use super::{
     OutcomeBatch, OutcomeIteratorExt, OutcomeSender, Sentinel, Shared, SpawnError, TaskInput,
     TaskQueues, TaskQueuesBuilder,
 };
-use crate::bee::{ApplyError, Context, DefaultQueen, Queen, TaskId, Worker};
+use crate::bee::{Context, DefaultQueen, Queen, TaskId, Worker};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
@@ -66,7 +66,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
                 let (task_meta, subtask_ids) = apply_ctx.into_parts();
                 let outcome = match result {
                     #[cfg(feature = "retry")]
-                    Err(ApplyError::Retryable { input, error })
+                    Err(crate::bee::ApplyError::Retryable { input, error })
                         if subtask_ids.is_none() && shared.can_retry(&task_meta) =>
                     {
                         match shared.try_send_retry(
@@ -821,6 +821,19 @@ mod local_batch {
         pub fn set_worker_batch_limit(&self, batch_limit: usize) {
             self.shared().set_worker_batch_limit(batch_limit);
         }
+
+        /// Returns the weight limit for worker threads.
+        pub fn worker_weight_limit(&self) -> u64 {
+            self.shared().worker_weight_limit()
+        }
+
+        /// Sets the weight limit for worker threads.
+        ///
+        /// Depending on this hive's `TaskQueues` implementation, this method may have no effect
+        /// (if it does not support local batching).
+        pub fn set_worker_weight_limit(&self, weight_limit: u64) {
+            self.shared().set_worker_weight_limit(weight_limit);
+        }
     }
 }
 
@@ -837,12 +850,12 @@ mod retry {
         T: TaskQueues<W>,
     {
         /// Returns the current retry limit for this hive.
-        pub fn worker_retry_limit(&self) -> u32 {
+        pub fn worker_retry_limit(&self) -> u8 {
             self.shared().worker_retry_limit()
         }
 
         /// Updates the retry limit for this hive and returns the previous value.
-        pub fn set_worker_retry_limit(&self, limit: u32) -> u32 {
+        pub fn set_worker_retry_limit(&self, limit: u8) -> u8 {
             self.shared().set_worker_retry_limit(limit)
         }
 

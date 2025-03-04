@@ -4,18 +4,6 @@ use std::cmp::Ordering;
 use std::fmt::Debug;
 
 impl<W: Worker> Outcome<W> {
-    pub(in crate::hive) fn from_fatal(
-        input: W::Input,
-        task_meta: TaskMeta,
-        error: W::Error,
-    ) -> Self {
-        Self::Failure {
-            input: Some(input),
-            error,
-            task_id: task_meta.id(),
-        }
-    }
-
     /// Converts a worker `result` into an `Outcome` with the given task_id and optional subtask ids.
     pub(in crate::hive) fn from_worker_result(
         result: WorkerResult<W>,
@@ -90,6 +78,20 @@ impl<W: Worker> Outcome<W> {
                 payload,
                 task_id,
             },
+        }
+    }
+
+    /// Creates a new `Outcome::Fatal` from the given input, task metadata, and error.
+    #[cfg(feature = "retry")]
+    pub(in crate::hive) fn from_fatal(
+        input: W::Input,
+        task_meta: TaskMeta,
+        error: W::Error,
+    ) -> Self {
+        Self::Failure {
+            input: Some(input),
+            error,
+            task_id: task_meta.id(),
         }
     }
 

@@ -1,4 +1,3 @@
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Traits for defining workers in the worker pool.
 //!
 //! A [`Hive`](crate::hive::Hive) is populated by bees:

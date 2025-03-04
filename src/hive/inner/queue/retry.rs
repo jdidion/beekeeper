@@ -47,7 +47,7 @@ impl<W: Worker> RetryQueue<W> {
                 Some(queue) => {
                     // compute the delay
                     let delay = 2u64
-                        .checked_pow(task.meta.attempt() - 1)
+                        .checked_pow(task.meta.attempt() as u32 - 1)
                         .and_then(|multiplier| {
                             self.delay_factor
                                 .get()
@@ -157,7 +157,7 @@ mod tests {
 
     impl<W: Worker> Task<W> {
         /// Creates a new `Task` with the given `task_id`.
-        fn with_attempt(task_id: TaskId, input: W::Input, attempt: u32) -> Self {
+        fn with_attempt(task_id: TaskId, input: W::Input, attempt: u8) -> Self {
             Self {
                 input,
                 meta: TaskMeta::with_attempt(task_id, attempt),
