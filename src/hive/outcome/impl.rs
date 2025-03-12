@@ -269,7 +269,7 @@ mod tests {
             error: (),
             task_id: 1,
         };
-        assert!(matches!(outcome.success(), None))
+        assert!(outcome.success().is_none());
     }
 
     #[test]
