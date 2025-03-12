@@ -37,7 +37,7 @@ use crate::hive::Config;
 ///     .with_channel_queues()
 ///     .build();
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct OpenBuilder(Config);
 
 impl OpenBuilder {
@@ -117,19 +117,19 @@ impl OpenBuilder {
     /// # }
     /// ```
     pub fn with_queen<Q: Queen, I: Into<Q>>(self, queen: I) -> BeeBuilder<Q> {
-        BeeBuilder::from(self.0, queen.into())
+        BeeBuilder::from_config_and_queen(self.0, queen.into())
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] using a [`Queen`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
     pub fn with_queen_default<Q: Queen + Default>(self) -> BeeBuilder<Q> {
-        BeeBuilder::from(self.0, Q::default())
+        BeeBuilder::from_config_and_queen(self.0, Q::default())
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] using a [`QueenMut`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
     pub fn with_queen_mut_default<Q: QueenMut + Default>(self) -> BeeBuilder<QueenCell<Q>> {
-        BeeBuilder::from(self.0, QueenCell::new(Q::default()))
+        BeeBuilder::from_config_and_queen(self.0, QueenCell::new(Q::default()))
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] with [`Worker`]s created by
@@ -187,7 +187,7 @@ impl OpenBuilder {
     where
         W: Worker + Send + Sync + Clone,
     {
-        BeeBuilder::from(self.0, CloneQueen::new(worker))
+        BeeBuilder::from_config_and_queen(self.0, CloneQueen::new(worker))
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] with [`Worker`]s created using
@@ -239,7 +239,7 @@ impl OpenBuilder {
     where
         W: Worker + Send + Sync + Default,
     {
-        BeeBuilder::from(self.0, DefaultQueen::default())
+        BeeBuilder::from_config_and_queen(self.0, DefaultQueen::default())
     }
 
     /// Consumes this `Builder` and returns a new [`ChannelBuilder`] using the current

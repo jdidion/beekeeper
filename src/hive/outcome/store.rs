@@ -339,6 +339,7 @@ pub trait OutcomeStore<W: Worker>: DerefOutcomes<W> {
 impl<W: Worker, D: DerefOutcomes<W>> OutcomeStore<W> for D {}
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::OutcomeStore;
     use crate::bee::{Context, Worker, WorkerResult};

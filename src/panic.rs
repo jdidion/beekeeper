@@ -1,19 +1,21 @@
 //! Data type that wraps a `panic` payload.
 use super::boxed::BoxedFnOnce;
+use derive_more::Debug;
 use std::any::Any;
-use std::fmt::Debug;
+use std::fmt;
 use std::panic::AssertUnwindSafe;
 
 pub type PanicPayload = Box<dyn Any + Send + 'static>;
 
 /// Wraps a payload from a caught `panic` with an optional `detail`.
 #[derive(Debug)]
-pub struct Panic<T: Send + Debug + Eq> {
+pub struct Panic<T: Send + fmt::Debug + Eq> {
+    #[debug("<panic! arg>")]
     payload: PanicPayload,
     detail: Option<T>,
 }
 
-impl<T: Send + Debug + Eq> Panic<T> {
+impl<T: Send + fmt::Debug + Eq> Panic<T> {
     /// Attempts to call the provided function `f` and catches any panic. Returns either the return
     /// value of the function or a `Panic` created from the panic payload and the provided `detail`.
     pub fn try_call<O, F: FnOnce() -> O>(detail: Option<T>, f: F) -> Result<O, Self> {
@@ -44,15 +46,16 @@ impl<T: Send + Debug + Eq> Panic<T> {
     }
 }
 
-impl<T: Send + Debug + Eq> PartialEq for Panic<T> {
+impl<T: Send + fmt::Debug + Eq> PartialEq for Panic<T> {
     fn eq(&self, other: &Self) -> bool {
         (*self.payload).type_id() == (*other.payload).type_id() && self.detail == other.detail
     }
 }
 
-impl<T: Send + Debug + Eq> Eq for Panic<T> {}
+impl<T: Send + fmt::Debug + Eq> Eq for Panic<T> {}
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::Panic;
     use std::fmt::Debug;

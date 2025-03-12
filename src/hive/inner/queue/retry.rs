@@ -140,6 +140,7 @@ impl<W: Worker> PartialEq for DelayedTask<W> {
 impl<W: Worker> Eq for DelayedTask<W> {}
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{RetryQueue, Task, Worker};
     use crate::bee::stock::EchoWorker;

@@ -60,7 +60,7 @@ pub mod channel {
     use crate::hive::{ChannelTaskQueues, Config};
 
     /// `TaskQueuesBuilder` implementation for channel-based task queues.
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, Debug)]
     pub struct ChannelBuilder(Config);
 
     impl BuilderConfig for ChannelBuilder {
@@ -83,7 +83,7 @@ pub mod channel {
             Q: Queen,
             I: Into<Q>,
         {
-            FullBuilder::from(self.0, queen.into())
+            FullBuilder::from_config_and_queen(self.0, queen.into())
         }
     }
 
@@ -100,7 +100,7 @@ pub mod workstealing {
     use crate::hive::{Config, WorkstealingTaskQueues};
 
     /// `TaskQueuesBuilder` implementation for workstealing-based task queues.
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, Debug)]
     pub struct WorkstealingBuilder(Config);
 
     impl BuilderConfig for WorkstealingBuilder {
@@ -123,7 +123,7 @@ pub mod workstealing {
             Q: Queen,
             I: Into<Q>,
         {
-            FullBuilder::from(self.0, queen.into())
+            FullBuilder::from_config_and_queen(self.0, queen.into())
         }
     }
 

@@ -1,7 +1,7 @@
 use super::Outcome;
 use crate::bee::{ApplyError, TaskId, TaskMeta, Worker, WorkerResult};
 use std::cmp::Ordering;
-use std::fmt::Debug;
+use std::mem;
 
 impl<W: Worker> Outcome<W> {
     /// Converts a worker `result` into an `Outcome` with the given task_id and optional subtask ids.
@@ -180,6 +180,16 @@ impl<W: Worker> Outcome<W> {
         }
     }
 
+    /// Retursn a reference to the wrapped error, if any.
+    pub fn error(&self) -> Option<&W::Error> {
+        match self {
+            Self::Failure { error, .. } | Self::FailureWithSubtasks { error, .. } => Some(error),
+            #[cfg(feature = "retry")]
+            Self::MaxRetriesAttempted { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
     /// Consumes this `Outcome` and depending on the variant:
     /// * Returns the wrapped error if this is a `Failure` or `MaxRetriesAttempted`,
     /// * Resumes unwinding if this is a `Panic` outcome,
@@ -203,111 +213,9 @@ impl<W: Worker> Outcome<W> {
     }
 }
 
-impl<W: Worker> Debug for Outcome<W> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Success { task_id, .. } => {
-                f.debug_struct("Success").field("task_id", task_id).finish()
-            }
-            Self::SuccessWithSubtasks {
-                task_id,
-                subtask_ids,
-                ..
-            } => f
-                .debug_struct("SuccessWithSubtasks")
-                .field("task_id", task_id)
-                .field("subtask_ids", subtask_ids)
-                .finish(),
-            Self::Failure { error, task_id, .. } => f
-                .debug_struct("Failure")
-                .field("error", error)
-                .field("task_id", task_id)
-                .finish(),
-            Self::FailureWithSubtasks {
-                error,
-                task_id,
-                subtask_ids,
-                ..
-            } => f
-                .debug_struct("FailureWithSubtasks")
-                .field("error", error)
-                .field("task_id", task_id)
-                .field("subtask_ids", subtask_ids)
-                .finish(),
-            Self::Unprocessed { task_id, .. } => f
-                .debug_struct("Unprocessed")
-                .field("task_id", task_id)
-                .finish(),
-            Self::UnprocessedWithSubtasks {
-                task_id,
-                subtask_ids,
-                ..
-            } => f
-                .debug_struct("UnprocessedWithSubtasks")
-                .field("task_id", task_id)
-                .field("subtask_ids", subtask_ids)
-                .finish(),
-            Self::Missing { task_id } => {
-                f.debug_struct("Missing").field("task_id", task_id).finish()
-            }
-            Self::Panic { task_id, .. } => {
-                f.debug_struct("Panic").field("task_id", task_id).finish()
-            }
-            Self::PanicWithSubtasks {
-                task_id,
-                subtask_ids,
-                ..
-            } => f
-                .debug_struct("PanicWithSubtasks")
-                .field("task_id", task_id)
-                .field("subtask_ids", subtask_ids)
-                .finish(),
-            #[cfg(feature = "local-batch")]
-            Self::WeightLimitExceeded { task_id, .. } => f
-                .debug_struct("WeightLimitExceeded")
-                .field("task_id", task_id)
-                .finish(),
-            #[cfg(feature = "retry")]
-            Self::MaxRetriesAttempted { error, task_id, .. } => f
-                .debug_struct("MaxRetriesAttempted")
-                .field("error", error)
-                .field("task_id", task_id)
-                .finish(),
-        }
-    }
-}
-
 impl<W: Worker> PartialEq for Outcome<W> {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Success { task_id: a, .. }, Self::Success { task_id: b, .. })
-            | (
-                Self::SuccessWithSubtasks { task_id: a, .. },
-                Self::SuccessWithSubtasks { task_id: b, .. },
-            )
-            | (Self::Failure { task_id: a, .. }, Self::Failure { task_id: b, .. })
-            | (
-                Self::FailureWithSubtasks { task_id: a, .. },
-                Self::FailureWithSubtasks { task_id: b, .. },
-            )
-            | (Self::Unprocessed { task_id: a, .. }, Self::Unprocessed { task_id: b, .. })
-            | (
-                Self::UnprocessedWithSubtasks { task_id: a, .. },
-                Self::UnprocessedWithSubtasks { task_id: b, .. },
-            )
-            | (Self::Missing { task_id: a }, Self::Missing { task_id: b })
-            | (Self::Panic { task_id: a, .. }, Self::Panic { task_id: b, .. })
-            | (
-                Self::PanicWithSubtasks { task_id: a, .. },
-                Self::PanicWithSubtasks { task_id: b, .. },
-            ) => a == b,
-            #[cfg(feature = "retry")]
-            (
-                Self::MaxRetriesAttempted { task_id: a, .. },
-                Self::MaxRetriesAttempted { task_id: b, .. },
-            ) => a == b,
-            _ => false,
-        }
+        mem::discriminant(self) == mem::discriminant(other) && self.task_id() == other.task_id()
     }
 }
 
@@ -326,13 +234,120 @@ impl<W: Worker> Ord for Outcome<W> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::Outcome;
     use crate::bee::stock::EchoWorker;
+    use crate::bee::{ApplyError, TaskMeta, WorkerResult};
     use crate::panic::Panic;
 
     type Worker = EchoWorker<usize>;
     type WorkerOutcome = Outcome<Worker>;
+
+    #[test]
+    fn test_success() {
+        let outcome = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        assert_eq!(outcome.success(), Some(42));
+    }
+
+    #[test]
+    fn test_unwrap() {
+        let outcome = WorkerOutcome::Success {
+            value: 42,
+            task_id: 1,
+        };
+        assert_eq!(outcome.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_success_on_error() {
+        let outcome = WorkerOutcome::Failure {
+            input: Some(42),
+            error: (),
+            task_id: 1,
+        };
+        assert!(matches!(outcome.success(), None))
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_panics_on_error() {
+        let outcome = WorkerOutcome::Failure {
+            input: Some(42),
+            error: (),
+            task_id: 1,
+        };
+        let _ = outcome.unwrap();
+    }
+
+    #[test]
+    fn test_retry_with_subtasks_into_failure() {
+        let input = 1;
+        let task_id = 1;
+        let error = ();
+        let result = WorkerResult::<Worker>::Err(ApplyError::Retryable { input, error });
+        let task_meta = TaskMeta::new(task_id);
+        let subtask_ids = vec![2, 3, 4];
+        let outcome =
+            WorkerOutcome::from_worker_result(result, task_meta, Some(subtask_ids.clone()));
+        let expected_outcome = WorkerOutcome::FailureWithSubtasks {
+            input: Some(input),
+            error,
+            task_id,
+            subtask_ids,
+        };
+        assert_eq!(outcome, expected_outcome);
+    }
+
+    #[test]
+    fn test_subtasks() {
+        let input = 1;
+        let task_id = 1;
+        let error = ();
+        let task_meta = TaskMeta::new(task_id);
+        let subtask_ids = vec![2, 3, 4];
+
+        let result = WorkerResult::<Worker>::Err(ApplyError::Fatal {
+            input: Some(input),
+            error,
+        });
+        let outcome =
+            WorkerOutcome::from_worker_result(result, task_meta.clone(), Some(subtask_ids.clone()));
+        let expected_outcome = WorkerOutcome::FailureWithSubtasks {
+            input: Some(1),
+            task_id: 1,
+            error: (),
+            subtask_ids: vec![2, 3, 4],
+        };
+        assert_eq!(outcome, expected_outcome);
+
+        let result = WorkerResult::<Worker>::Err(ApplyError::Cancelled { input });
+        let outcome =
+            WorkerOutcome::from_worker_result(result, task_meta.clone(), Some(subtask_ids.clone()));
+        let expected_outcome = WorkerOutcome::UnprocessedWithSubtasks {
+            input: 1,
+            task_id: 1,
+            subtask_ids: vec![2, 3, 4],
+        };
+        assert_eq!(outcome, expected_outcome);
+
+        let result = WorkerResult::<Worker>::Err(ApplyError::Panic {
+            input: Some(input),
+            payload: Panic::new("panicked", None),
+        });
+        let outcome =
+            WorkerOutcome::from_worker_result(result, task_meta.clone(), Some(subtask_ids.clone()));
+        let expected_outcome = WorkerOutcome::PanicWithSubtasks {
+            input: Some(1),
+            task_id: 1,
+            subtask_ids: vec![2, 3, 4],
+            payload: Panic::new("panicked", None),
+        };
+        assert_eq!(outcome, expected_outcome);
+    }
 
     #[test]
     fn test_try_into_input() {
@@ -453,6 +468,7 @@ mod tests {
 #[cfg(all(test, feature = "retry"))]
 mod retry_tests {
     use super::Outcome;
+    use crate::bee::TaskMeta;
     use crate::bee::stock::EchoWorker;
 
     type Worker = EchoWorker<usize>;
@@ -476,5 +492,19 @@ mod retry_tests {
             task_id: 1,
         };
         assert_eq!(outcome.try_into_error(), Some(()));
+    }
+
+    #[test]
+    fn test_from_fatal() {
+        let input = 1;
+        let task_id = 1;
+        let error = ();
+        let outcome = WorkerOutcome::from_fatal(input, TaskMeta::new(task_id), error);
+        let expected_outcome = WorkerOutcome::Failure {
+            input: Some(input),
+            task_id,
+            error,
+        };
+        assert_eq!(outcome, expected_outcome);
     }
 }

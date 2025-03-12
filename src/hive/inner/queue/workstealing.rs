@@ -10,17 +10,20 @@ use crate::atomic::Atomic;
 use crate::bee::Worker;
 use crossbeam_deque::{Injector, Stealer};
 use crossbeam_queue::SegQueue;
+use derive_more::Debug;
 use parking_lot::RwLock;
 use rand::prelude::*;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
+use std::{any, thread};
 
 /// Time to wait after trying to pop and finding all queues empty.
 const EMPTY_DELAY: Duration = Duration::from_millis(100);
 
 /// `TaskQueues` implementation using workstealing.
+#[derive(Debug)]
+#[debug("WorkstealingTaskQueues<{}>", any::type_name::<W>())]
 pub struct WorkstealingTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
     local: RwLock<Vec<Arc<LocalQueueShared<W>>>>,

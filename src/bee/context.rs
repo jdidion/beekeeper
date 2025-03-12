@@ -27,7 +27,7 @@ impl<'a, I> Context<'a, I> {
     /// Returns a new empty context. This is primarily useful for testing.
     pub fn empty() -> Self {
         Self {
-            meta: TaskMeta::empty(),
+            meta: TaskMeta::default(),
             local: None,
             subtask_ids: RefCell::new(None),
         }
@@ -95,7 +95,7 @@ impl<'a, I> Context<'a, I> {
 }
 
 /// The metadata of a task.
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TaskMeta {
     id: TaskId,
     #[cfg(feature = "local-batch")]
@@ -105,11 +105,6 @@ pub struct TaskMeta {
 }
 
 impl TaskMeta {
-    /// Creates an empty `TaskMeta` with a default task ID.
-    pub fn empty() -> Self {
-        Self::new(0)
-    }
-
     /// Creates a new `TaskMeta` with the given task ID.
     pub fn new(id: TaskId) -> Self {
         TaskMeta {
@@ -157,6 +152,12 @@ impl TaskMeta {
         return self.weight;
         #[cfg(not(feature = "local-batch"))]
         return 0;
+    }
+}
+
+impl From<TaskId> for TaskMeta {
+    fn from(value: TaskId) -> Self {
+        TaskMeta::new(value)
     }
 }
 

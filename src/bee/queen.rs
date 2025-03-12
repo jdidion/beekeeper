@@ -1,8 +1,10 @@
 //! The Queen bee trait.
 use super::Worker;
+use derive_more::Debug;
 use parking_lot::RwLock;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::{any, fmt};
 
 /// A trait for factories that create `Worker`s.
 pub trait Queen: Send + Sync + 'static {
@@ -53,6 +55,20 @@ impl<Q: QueenMut> Queen for QueenCell<Q> {
     }
 }
 
+impl<Q: QueenMut + fmt::Debug> fmt::Debug for QueenCell<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueenCell")
+            .field("queen", &*self.0.read())
+            .finish()
+    }
+}
+
+impl<Q: QueenMut + Clone> Clone for QueenCell<Q> {
+    fn clone(&self) -> Self {
+        Self(RwLock::new(self.0.read().clone()))
+    }
+}
+
 impl<Q: QueenMut + Default> Default for QueenCell<Q> {
     fn default() -> Self {
         Self::new(Q::default())
@@ -98,7 +114,14 @@ impl<Q: QueenMut> From<Q> for QueenCell<Q> {
 /// }
 /// ```
 #[derive(Default, Debug)]
+#[debug("DefaultQueen<{}>", any::type_name::<W>())]
 pub struct DefaultQueen<W>(PhantomData<W>);
+
+impl<W: Worker + Send + Sync + Default> Clone for DefaultQueen<W> {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
 
 impl<W: Worker + Send + Sync + Default> Queen for DefaultQueen<W> {
     type Kind = W;
@@ -111,11 +134,24 @@ impl<W: Worker + Send + Sync + Default> Queen for DefaultQueen<W> {
 /// A `Queen` that can create a `Worker` type that implements `Clone`, by making copies of
 /// an existing instance of that `Worker` type.
 #[derive(Debug)]
+#[debug("CloneQueen<{}>", any::type_name::<W>())]
 pub struct CloneQueen<W>(W);
 
 impl<W: Worker + Clone> CloneQueen<W> {
     pub fn new(worker: W) -> Self {
         CloneQueen(worker)
+    }
+}
+
+impl<W: Worker + Send + Sync + Clone> Clone for CloneQueen<W> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<W: Worker + Send + Sync + Default> Default for CloneQueen<W> {
+    fn default() -> Self {
+        Self(W::default())
     }
 }
 
@@ -128,4 +164,85 @@ impl<W: Worker + Send + Sync + Clone> Queen for CloneQueen<W> {
 }
 
 #[cfg(test)]
-mod tests {}
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut};
+    use crate::bee::stock::EchoWorker;
+
+    #[derive(Default, Debug, Clone)]
+    struct TestQueen(usize);
+
+    impl QueenMut for TestQueen {
+        type Kind = EchoWorker<u32>;
+
+        fn create(&mut self) -> Self::Kind {
+            self.0 += 1;
+            EchoWorker::default()
+        }
+    }
+
+    #[test]
+    fn test_queen_cell() {
+        let queen = QueenCell::new(TestQueen(0));
+        for _ in 0..10 {
+            let _worker = queen.create();
+        }
+        assert_eq!(queen.get().0, 10);
+        assert_eq!(queen.into_inner().0, 10);
+    }
+
+    #[test]
+    fn test_queen_cell_default() {
+        let queen = QueenCell::<TestQueen>::default();
+        for _ in 0..10 {
+            let _worker = queen.create();
+        }
+        assert_eq!(queen.get().0, 10);
+    }
+
+    #[test]
+    fn test_queen_cell_clone() {
+        let queen = QueenCell::<TestQueen>::default();
+        for _ in 0..10 {
+            let _worker = queen.create();
+        }
+        assert_eq!(queen.clone().get().0, 10);
+    }
+
+    #[test]
+    fn test_queen_cell_debug() {
+        let queen = QueenCell::<TestQueen>::default();
+        for _ in 0..10 {
+            let _worker = queen.create();
+        }
+        assert_eq!(format!("{:?}", queen), "QueenCell { queen: TestQueen(10) }");
+    }
+
+    #[test]
+    fn test_queen_cell_from() {
+        let queen = QueenCell::from(TestQueen::default());
+        for _ in 0..10 {
+            let _worker = queen.create();
+        }
+        assert_eq!(queen.get().0, 10);
+    }
+
+    #[test]
+    fn test_default_queen() {
+        let queen1 = DefaultQueen::<EchoWorker<u32>>::default();
+        let worker1 = queen1.create();
+        let queen2 = queen1.clone();
+        let worker2 = queen2.create();
+        assert_eq!(worker1, worker2);
+    }
+
+    #[test]
+    fn test_clone_queen() {
+        let worker = EchoWorker::<u32>::default();
+        let queen = CloneQueen::new(worker);
+        let worker1 = queen.create();
+        let queen2 = queen.clone();
+        let worker2 = queen2.create();
+        assert_eq!(worker1, worker2);
+    }
+}

@@ -736,13 +736,14 @@ mod retry {
             self.num_tasks
                 .increment_left(1)
                 .expect("overflowed queued task counter");
-            let task = Task::with_meta_inc_attempt(input, meta, outcome_tx.cloned());
+            let task = Task::next_retry_attempt(input, meta, outcome_tx.cloned());
             worker_queues.try_push_retry(task)
         }
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use crate::bee::DefaultQueen;
     use crate::bee::stock::ThunkWorker;

@@ -361,6 +361,7 @@ mod affinity {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::atomic::{AtomicAny, AtomicOption, MutError};
 
@@ -411,6 +412,7 @@ mod local_batch {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::atomic::{AtomicOption, AtomicUsize, MutError};
 
@@ -434,6 +436,7 @@ mod local_batch {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use paste::paste;

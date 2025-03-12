@@ -113,6 +113,7 @@ impl Default for Config {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod reset {
     /// Struct that resets the default values when `drop`ped.
     pub struct Reset;
@@ -125,6 +126,7 @@ pub mod reset {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::Config;
     use super::reset::Reset;
@@ -225,6 +227,7 @@ mod retry {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::Config;
         use crate::hive::inner::config::reset::Reset;

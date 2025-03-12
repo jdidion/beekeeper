@@ -82,26 +82,22 @@ pub fn workstealing(with_defaults: bool) -> WorkstealingBuilder {
     }
 }
 
-// #[cfg(all(test, feature = "affinity"))]
-// mod affinity_tests {
-//     use super::{OpenBuilder, Token};
-//     use crate::hive::cores::Cores;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::hive::Builder;
+    use rstest::*;
 
-//     #[test]
-//     fn test_with_affinity() {
-//         let mut builder = OpenBuilder::empty();
-//         builder = builder.with_default_core_affinity();
-//         assert_eq!(builder.config(Token).affinity.get(), Some(Cores::all()));
-//     }
-// }
-
-// #[cfg(all(test, feature = "local-batch"))]
-// mod local_batch_tests {
-//     use super::OpenBuilder;
-// }
-
-// #[cfg(all(test, feature = "retry"))]
-// mod retry_tests {
-//     use super::OpenBuilder;
-//     use std::time::Duration;
-// }
+    #[rstest]
+    fn test_create<B: Builder, F: Fn(bool) -> B>(
+        #[values(open, channel, workstealing)] builder_factory: F,
+        #[values(true, false)] with_defaults: bool,
+    ) {
+        let mut builder = builder_factory(with_defaults)
+            .num_threads(4)
+            .thread_name("foo")
+            .thread_stack_size(100);
+        crate::hive::inner::builder_test_utils::check_builder(&mut builder);
+    }
+}

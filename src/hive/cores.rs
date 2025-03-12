@@ -49,7 +49,7 @@ pub fn refresh() -> usize {
 }
 
 /// Represents a CPU core.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Core {
     /// the OS-specific core ID
     id: CoreId,
@@ -81,15 +81,10 @@ impl Core {
 ///
 /// The mapping between CPU indices and core IDs is platform-specific, but the same index is
 /// guaranteed to always refer to the same physical core.
-#[derive(Default, Clone, PartialEq, Eq, Debug)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Cores(Vec<usize>);
 
 impl Cores {
-    /// Returns an empty `Cores`.
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
     /// Returns a `Cores` set populated with the first `n` CPU indices (up to the number of
     /// available cores).
     pub fn first(n: usize) -> Self {
@@ -190,12 +185,13 @@ impl<I: IntoIterator<Item = usize>> From<I> for Cores {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
     #[test]
     fn test_empty() {
-        assert_eq!(Cores::empty().0.len(), 0);
+        assert_eq!(Cores::default().0.len(), 0);
     }
 
     #[test]

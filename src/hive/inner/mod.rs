@@ -113,3 +113,15 @@ pub struct Config {
     #[cfg(feature = "retry")]
     retry_factor: U64,
 }
+
+#[cfg(test)]
+pub(super) mod builder_test_utils {
+    use super::*;
+
+    pub fn check_builder<B: Builder>(builder: &mut B) {
+        let config = builder.config_ref(Token);
+        assert_eq!(config.num_threads.get(), Some(4));
+        assert_eq!(config.thread_name.get(), Some("foo".into()));
+        assert_eq!(config.thread_stack_size.get(), Some(100));
+    }
+}

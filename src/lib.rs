@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! A Rust library that provides a [thread pool](https://en.wikipedia.org/wiki/Thread_pool)
 //! implementation designed to execute the same operation in parallel on any number of inputs (this
 //! is sometimes called a "worker pool").
@@ -327,6 +328,7 @@
 //! ```
 mod atomic;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod barrier;
 pub mod bee;
 mod boxed;

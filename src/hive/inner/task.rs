@@ -7,34 +7,6 @@ use crate::hive::{Outcome, OutcomeSender};
 pub use task_impl::TaskInput;
 
 impl<W: Worker> Task<W> {
-    /// Creates a new `Task` with the given metadata.
-    pub fn with_meta(
-        input: W::Input,
-        meta: TaskMeta,
-        outcome_tx: Option<OutcomeSender<W>>,
-    ) -> Self {
-        Task {
-            input,
-            meta,
-            outcome_tx,
-        }
-    }
-
-    /// Creates a new `Task` with the given metadata, and increments the attempt number.
-    #[cfg(feature = "retry")]
-    pub fn with_meta_inc_attempt(
-        input: W::Input,
-        mut meta: TaskMeta,
-        outcome_tx: Option<OutcomeSender<W>>,
-    ) -> Self {
-        meta.inc_attempt();
-        Self {
-            input,
-            meta,
-            outcome_tx,
-        }
-    }
-
     /// Returns the ID of the task.
     #[inline]
     pub fn id(&self) -> TaskId {
@@ -60,6 +32,21 @@ impl<W: Worker> Task<W> {
             task_id: self.meta.id(),
         };
         (outcome, self.outcome_tx)
+    }
+
+    /// Creates a new `Task` with the given metadata, and increments the attempt number.
+    #[cfg(feature = "retry")]
+    pub fn next_retry_attempt(
+        input: W::Input,
+        mut meta: TaskMeta,
+        outcome_tx: Option<OutcomeSender<W>>,
+    ) -> Self {
+        meta.inc_attempt();
+        Self {
+            input,
+            meta,
+            outcome_tx,
+        }
     }
 }
 

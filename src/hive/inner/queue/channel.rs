@@ -5,7 +5,9 @@ use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues}
 use crate::bee::Worker;
 use crossbeam_channel::RecvTimeoutError;
 use crossbeam_queue::SegQueue;
+use derive_more::Debug;
 use parking_lot::RwLock;
+use std::any;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +23,8 @@ type TaskReceiver<W> = crossbeam_channel::Receiver<Task<W>>;
 ///
 /// Worker threads may have access to local retry and/or batch queues, depending on which features
 /// are enabled.
+#[derive(Debug)]
+#[debug("ChannelTaskQueues<{}>", any::type_name::<W>())]
 pub struct ChannelTaskQueues<W: Worker> {
     global: Arc<GlobalQueue<W>>,
     local: RwLock<Vec<Arc<LocalQueueShared<W>>>>,

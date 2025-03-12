@@ -138,6 +138,7 @@ impl<const L: u32> Default for DualCounter<L> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -2,12 +2,16 @@
 //!
 //! A maximum one of the channel feature may be enabled. If no channel feature is enabled, then
 //! `std::sync::mpsc` will be used.
+use derive_more::Debug;
 pub use prelude::channel;
 pub(crate) use prelude::*;
+use std::any;
 
 /// Possible results of calling `ReceiverExt::try_recv_msg()` on a `Receiver`.
+#[derive(Debug)]
 pub enum Message<T> {
     /// A message was successfully received from the channel.
+    #[debug("Received: {}", any::type_name::<T>())]
     Received(T),
     /// The channel was disconnected.
     ChannelDisconnected,

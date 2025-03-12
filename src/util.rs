@@ -30,7 +30,7 @@ where
 {
     ChannelBuilder::default()
         .num_threads(num_threads)
-        .with_worker(Caller::of(f))
+        .with_worker(Caller::from(f))
         .build()
         .map(inputs)
         .map(Outcome::unwrap)
@@ -70,13 +70,14 @@ where
 {
     ChannelBuilder::default()
         .num_threads(num_threads)
-        .with_worker(OnceCaller::of(f))
+        .with_worker(OnceCaller::from(f))
         .build()
         .map(inputs)
         .into()
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use crate::hive::{Outcome, OutcomeStore};
 
@@ -157,13 +158,14 @@ mod retry {
         ChannelBuilder::default()
             .num_threads(num_threads)
             .max_retries(max_retries)
-            .with_worker(RetryCaller::of(f))
+            .with_worker(RetryCaller::from(f))
             .build()
             .map(inputs)
             .into()
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::bee::ApplyError;
         use crate::hive::{Outcome, OutcomeStore};

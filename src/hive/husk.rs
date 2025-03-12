@@ -3,6 +3,8 @@ use super::{
     OwnedOutcomes, TaskQueues,
 };
 use crate::bee::{Queen, TaskId, Worker};
+use derive_more::Debug;
+use std::any;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -10,10 +12,13 @@ use std::ops::{Deref, DerefMut};
 ///
 /// Provides access to the `Queen` and to stored `Outcome`s. Can be used to create a new `Hive`
 /// based on the previous `Hive`'s configuration.
+#[derive(Debug)]
 pub struct Husk<Q: Queen> {
     config: Config,
+    #[debug("{}", any::type_name::<Q>())]
     queen: Q,
     num_panics: usize,
+    #[debug(skip)]
     outcomes: HashMap<TaskId, Outcome<Q::Kind>>,
 }
 
@@ -135,6 +140,7 @@ impl<W: Worker, Q: Queen<Kind = W>> OwnedOutcomes<Q::Kind> for Husk<Q> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use crate::bee::stock::{PunkWorker, Thunk, ThunkWorker};
     use crate::hive::ChannelTaskQueues;
@@ -150,7 +156,7 @@ mod tests {
             .num_threads(0)
             .with_worker_default::<ThunkWorker<u8>>()
             .build();
-        let mut task_ids = hive.map_store((0..10).map(|i| Thunk::of(move || i)));
+        let mut task_ids = hive.map_store((0..10).map(|i| Thunk::from(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive.suspend();
         let mut husk = hive.try_into_husk(false).unwrap();
@@ -176,7 +182,7 @@ mod tests {
             .num_threads(0)
             .with_worker_default::<ThunkWorker<u8>>()
             .build();
-        let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
+        let _ = hive1.map_store((0..10).map(|i| Thunk::from(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk(false).unwrap();
@@ -197,7 +203,7 @@ mod tests {
             .num_threads(0)
             .with_worker_default::<ThunkWorker<u8>>()
             .build();
-        let _ = hive1.map_store((0..10).map(|i| Thunk::of(move || i)));
+        let _ = hive1.map_store((0..10).map(|i| Thunk::from(move || i)));
         // cancel and smash the hive before the tasks can be processed
         hive1.suspend();
         let husk1 = hive1.try_into_husk(false).unwrap();
@@ -222,7 +228,7 @@ mod tests {
             .num_threads(4)
             .with_worker_default::<ThunkWorker<u8>>()
             .build();
-        hive.map_store((0..10).map(|i| Thunk::of(move || i)));
+        hive.map_store((0..10).map(|i| Thunk::from(move || i)));
         hive.join();
         let mut outputs = hive.try_into_husk(false).unwrap().into_parts().1.unwrap();
         outputs.sort();
@@ -237,7 +243,7 @@ mod tests {
             .with_worker_default::<PunkWorker<u8>>()
             .build();
         hive.map_store(
-            (0..10).map(|i| Thunk::of(move || if i == 5 { panic!("oh no!") } else { i })),
+            (0..10).map(|i| Thunk::from(move || if i == 5 { panic!("oh no!") } else { i })),
         );
         hive.join();
         let (_, result) = hive.try_into_husk(false).unwrap().into_parts();

@@ -1,9 +1,13 @@
 use super::{DerefOutcomes, Outcome, OwnedOutcomes};
 use crate::bee::{TaskId, Worker};
+use derive_more::Debug;
+use std::any;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 /// A batch of `Outcome`s.
+#[derive(Debug)]
+#[debug("OutcomeBatch<{}>", any::type_name::<W>())]
 pub struct OutcomeBatch<W: Worker>(HashMap<TaskId, Outcome<W>>);
 
 impl<W: Worker> OutcomeBatch<W> {
@@ -49,6 +53,7 @@ impl<W: Worker> DerefOutcomes<W> for OutcomeBatch<W> {
 
 /// Functions only used in testing.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl<W: Worker> OutcomeBatch<W> {
     pub(crate) fn empty() -> Self {
         OutcomeBatch::new(HashMap::new())

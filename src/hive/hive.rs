@@ -4,9 +4,9 @@ use super::{
     TaskQueues, TaskQueuesBuilder,
 };
 use crate::bee::{Context, DefaultQueen, Queen, TaskId, Worker};
+use derive_more::Debug;
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -18,6 +18,7 @@ pub struct Poisoned;
 /// A pool of worker threads that each execute the same function.
 ///
 /// See the [module documentation](crate::hive) for details.
+#[derive(Debug)]
 pub struct Hive<Q: Queen, T: TaskQueues<Q::Kind>>(Option<Arc<Shared<Q, T>>>);
 
 impl<Q: Queen, T: TaskQueues<Q::Kind>> Hive<Q, T> {
@@ -683,21 +684,6 @@ where
     }
 }
 
-impl<W, Q, T> fmt::Debug for Hive<Q, T>
-where
-    W: Worker,
-    Q: Queen<Kind = W>,
-    T: TaskQueues<W>,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(shared) = self.0.as_ref() {
-            f.debug_struct("Hive").field("shared", &shared).finish()
-        } else {
-            f.write_str("Hive {}")
-        }
-    }
-}
-
 impl<W, Q, T> PartialEq for Hive<Q, T>
 where
     W: Worker,
@@ -872,6 +858,7 @@ mod retry {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::Poisoned;
     use crate::bee::stock::{Caller, Thunk, ThunkWorker};
@@ -891,7 +878,7 @@ mod tests {
             .build();
         let (tx, rx) = outcome_channel();
         hive.map_send(
-            (0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))),
+            (0..10).map(|_| Thunk::from(|| thread::sleep(Duration::from_secs(3)))),
             tx,
         );
         // Allow first set of tasks to be started.
@@ -931,7 +918,7 @@ mod tests {
     fn test_apply_after_poison() {
         let hive = ChannelBuilder::empty()
             .num_threads(4)
-            .with_worker(Caller::of(|i: usize| i * 2))
+            .with_worker(Caller::from(|i: usize| i * 2))
             .build();
         // poison hive using private method
         hive.0.as_ref().unwrap().poison();
@@ -953,7 +940,7 @@ mod tests {
     fn test_swarm_after_poison() {
         let hive = ChannelBuilder::empty()
             .num_threads(4)
-            .with_worker(Caller::of(|i: usize| i * 2))
+            .with_worker(Caller::from(|i: usize| i * 2))
             .build();
         // poison hive using private method
         hive.0.as_ref().unwrap().poison();

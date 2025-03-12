@@ -198,8 +198,8 @@ pub trait Builder: BuilderConfig + Sized {
 
     /// Sets the worker thread batch size.
     ///
-    /// This may have no effect if the `local-batch` feature is disabled, or if the `TaskQueues`
-    /// implementation used for this hive does not support local batching.
+    /// This may have no effect if the `TaskQueues` implementation used for this hive does not
+    /// support local batching.
     ///
     /// If `batch_limit` is `0`, local batching is effectively disabled, but note that the
     /// performance may be worse than with the `local-batch` feature disabled.
@@ -251,6 +251,12 @@ pub trait Builder: BuilderConfig + Sized {
             .weight_limit
             .set(super::config::DEFAULTS.lock().weight_limit.get());
         self
+    }
+
+    /// Disables local batching.
+    #[cfg(feature = "local-batch")]
+    fn with_no_local_batching(self) -> Self {
+        self.batch_limit(0).weight_limit(0)
     }
 
     /// Sets the maximum number of times to retry a
@@ -353,16 +359,21 @@ pub trait Builder: BuilderConfig + Sized {
 
     /// Sets retry parameters to their default values.
     #[cfg(feature = "retry")]
-    fn with_default_retries(mut self) -> Self {
-        let defaults = super::config::DEFAULTS.lock();
+    fn with_default_max_retries(mut self) -> Self {
         let _ = self
             .config_ref(Token)
             .max_retries
-            .set(defaults.max_retries.get());
+            .set(super::config::DEFAULTS.lock().max_retries.get());
+
+        self
+    }
+
+    #[cfg(feature = "retry")]
+    fn with_default_retry_factor(mut self) -> Self {
         let _ = self
             .config_ref(Token)
             .retry_factor
-            .set(defaults.retry_factor.get());
+            .set(super::config::DEFAULTS.lock().retry_factor.get());
         self
     }
 
@@ -374,3 +385,136 @@ pub trait Builder: BuilderConfig + Sized {
 }
 
 impl<B: BuilderConfig> Builder for B {}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    pub struct TestBuilder(Config);
+
+    impl TestBuilder {
+        pub fn empty() -> Self {
+            TestBuilder(Config::empty())
+        }
+    }
+
+    impl BuilderConfig for TestBuilder {
+        fn config_ref(&mut self, _: Token) -> &mut Config {
+            &mut self.0
+        }
+    }
+
+    #[test]
+    fn test_common() {
+        let mut builder = TestBuilder::empty()
+            .num_threads(4)
+            .thread_name("foo")
+            .thread_stack_size(100);
+        crate::hive::inner::builder_test_utils::check_builder(&mut builder);
+    }
+}
+
+#[cfg(all(test, feature = "affinity"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod affinity_tests {
+    use super::tests::TestBuilder;
+    use super::*;
+    use crate::hive::cores::Cores;
+
+    #[test]
+    fn test_core_affinity() {
+        let mut builder = TestBuilder::empty();
+        builder = builder.core_affinity(Cores::first(4));
+        assert_eq!(
+            builder.config_ref(Token).affinity.get(),
+            Some((0..4).into())
+        );
+    }
+
+    #[test]
+    fn test_with_default_core_affinity() {
+        let mut builder = TestBuilder::empty();
+        builder = builder.with_default_core_affinity();
+        assert_eq!(builder.config_ref(Token).affinity.get(), Some(Cores::all()));
+    }
+}
+
+#[cfg(all(test, feature = "local-batch"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod local_batch_tests {
+    use super::tests::TestBuilder;
+    use super::*;
+    use crate::hive::inner::config::DEFAULTS;
+
+    #[test]
+    fn test_batch_config() {
+        let mut builder = TestBuilder::empty().batch_limit(10).weight_limit(100);
+        let config = builder.config_ref(Token);
+        assert_eq!(config.batch_limit.get(), Some(10));
+        assert_eq!(config.weight_limit.get(), Some(100));
+    }
+
+    #[test]
+    fn test_disable_batch_config() {
+        let mut builder = TestBuilder::empty().with_no_local_batching();
+        let config = builder.config_ref(Token);
+        assert_eq!(config.batch_limit.get(), None);
+        assert_eq!(config.weight_limit.get(), None);
+    }
+
+    #[test]
+    fn test_default_batch_config() {
+        let mut builder = TestBuilder::empty()
+            .with_default_batch_limit()
+            .with_default_weight_limit();
+        let config = builder.config_ref(Token);
+        assert_eq!(config.batch_limit.get(), DEFAULTS.lock().batch_limit.get());
+        assert_eq!(
+            config.weight_limit.get(),
+            DEFAULTS.lock().weight_limit.get()
+        );
+    }
+}
+
+#[cfg(all(test, feature = "retry"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod retry_tests {
+    use super::tests::TestBuilder;
+    use super::*;
+    use crate::hive::inner::config::DEFAULTS;
+    use std::time::Duration;
+
+    #[test]
+    fn test_retry_config() {
+        let mut builder = TestBuilder::empty()
+            .max_retries(5)
+            .retry_factor(Duration::from_secs(10));
+        let config = builder.config_ref(Token);
+        assert_eq!(config.max_retries.get(), Some(5));
+        assert_eq!(
+            config.retry_factor.get(),
+            Some(Duration::from_secs(10).as_nanos() as u64)
+        );
+    }
+
+    #[test]
+    fn test_disable_retry() {
+        let mut builder = TestBuilder::empty().with_no_retries();
+        let config = builder.config_ref(Token);
+        assert_eq!(config.max_retries.get(), None);
+        assert_eq!(config.retry_factor.get(), None);
+    }
+
+    #[test]
+    fn test_default_retry_config() {
+        let mut builder = TestBuilder::empty()
+            .with_default_max_retries()
+            .with_default_retry_factor();
+        let config = builder.config_ref(Token);
+        assert_eq!(config.max_retries.get(), DEFAULTS.lock().max_retries.get());
+        assert_eq!(
+            config.retry_factor.get(),
+            DEFAULTS.lock().retry_factor.get()
+        );
+    }
+}
