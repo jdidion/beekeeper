@@ -266,3 +266,130 @@ impl From<Config> for OpenBuilder {
         Self(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bee::stock::EchoWorker;
+    use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut};
+    use crate::hive::{FullBuilder, TaskQueues, TaskQueuesBuilder};
+    use rstest::rstest;
+
+    #[derive(Clone, Default)]
+    struct TestQueen;
+
+    impl Queen for TestQueen {
+        type Kind = EchoWorker<usize>;
+
+        fn create(&self) -> Self::Kind {
+            EchoWorker::default()
+        }
+    }
+
+    impl QueenMut for TestQueen {
+        type Kind = EchoWorker<usize>;
+
+        fn create(&mut self) -> Self::Kind {
+            EchoWorker::default()
+        }
+    }
+
+    #[rstest]
+    fn test_create<F, B, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(
+            OpenBuilder::with_channel_queues,
+            OpenBuilder::with_workstealing_queues
+        )]
+        with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        B: TaskQueuesBuilder,
+        W: Fn(OpenBuilder) -> B,
+    {
+        let open_builder = factory();
+        let queue_builder = with_fn(open_builder);
+        let _hive = queue_builder
+            .with_worker(EchoWorker::<usize>::default())
+            .build();
+    }
+
+    #[rstest]
+    fn test_queen<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(BeeBuilder<TestQueen>) -> FullBuilder<TestQueen, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_queen(TestQueen);
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+
+    #[rstest]
+    fn test_queen_default<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(BeeBuilder<TestQueen>) -> FullBuilder<TestQueen, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_queen_default::<TestQueen>();
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+
+    #[rstest]
+    fn test_queen_mut_default<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(BeeBuilder<QueenCell<TestQueen>>) -> FullBuilder<QueenCell<TestQueen>, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_queen_mut_default::<TestQueen>();
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+
+    #[rstest]
+    fn test_worker<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(
+            BeeBuilder<CloneQueen<EchoWorker<usize>>>,
+        ) -> FullBuilder<CloneQueen<EchoWorker<usize>>, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_worker(EchoWorker::default());
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+
+    #[rstest]
+    fn test_worker_default<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(
+            BeeBuilder<DefaultQueen<EchoWorker<usize>>>,
+        ) -> FullBuilder<DefaultQueen<EchoWorker<usize>>, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_worker_default::<EchoWorker<usize>>();
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+}

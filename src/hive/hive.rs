@@ -77,6 +77,9 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
                             &worker_queues,
                         ) {
                             Ok(_) => return,
+                            // currently, the only implementation of retry queue cannot be put into
+                            // a state where `try_send_retry` fails, so this cannot be tested
+                            #[cfg_attr(coverage_nightly, coverage(off))]
                             Err(task) => {
                                 let (input, task_meta, _) = task.into_parts();
                                 Outcome::from_fatal(input, task_meta, error)
@@ -93,11 +96,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
             // disconnected; cancel the Sentinel so this thread won't be re-spawned on drop
             sentinel.cancel();
         })
-    }
-
-    #[inline]
-    fn shared(&self) -> &Arc<Shared<Q, T>> {
-        self.0.as_ref().unwrap()
     }
 
     /// Attempts to increase the number of worker threads by `num_threads`. Returns the number of
@@ -550,6 +548,24 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
         self.shared().set_suspended(false);
     }
 
+    /// Re-submits any unprocessed tasks for processing, with their results to be sent to `tx`.
+    ///
+    /// Returns a [`Vec`] of task IDs that were submitted.
+    pub fn swarm_unprocessed_send<X: Borrow<OutcomeSender<W>>>(
+        &self,
+        outcome_tx: X,
+    ) -> Vec<TaskId> {
+        self.swarm_send(self.take_unprocessed_inputs(), outcome_tx)
+    }
+
+    /// Re-submits any unprocessed tasks for processing, with their results to be stored in the
+    /// hive.
+    ///
+    /// Returns a [`Vec`] of task IDs that were resumed.
+    pub fn swarm_unprocessed_store(&self) -> Vec<TaskId> {
+        self.swarm_store(self.take_unprocessed_inputs())
+    }
+
     /// Removes all `Unprocessed` outcomes from this `Hive` and returns them as an iterator over
     /// the input values.
     fn take_unprocessed_inputs(&self) -> impl ExactSizeIterator<Item = W::Input> {
@@ -560,56 +576,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
                 Outcome::Unprocessed { input, task_id: _ } => input,
                 _ => unreachable!(),
             })
-    }
-
-    /// If this `Hive` is suspended, resumes this `Hive` and re-submits any unprocessed tasks for
-    /// processing, with their results to be sent to `tx`. Returns a [`Vec`] of task IDs that
-    /// were resumed.
-    pub fn resume_send(&self, outcome_tx: &OutcomeSender<W>) -> Vec<TaskId> {
-        self.shared()
-            .set_suspended(false)
-            .then(|| self.swarm_send(self.take_unprocessed_inputs(), outcome_tx))
-            .unwrap_or_default()
-    }
-
-    /// If this `Hive` is suspended, resumes this `Hive` and re-submit any unprocessed tasks for
-    /// processing, with their results to be stored in the queue. Returns a [`Vec`] of task IDs
-    /// that were resumed.
-    pub fn resume_store(&self) -> Vec<TaskId> {
-        self.shared()
-            .set_suspended(false)
-            .then(|| self.swarm_store(self.take_unprocessed_inputs()))
-            .unwrap_or_default()
-    }
-
-    /// Returns all stored outcomes as a [`HashMap`] of task IDs to `Outcome`s.
-    pub fn take_stored(&self) -> HashMap<TaskId, Outcome<W>> {
-        self.shared().take_outcomes()
-    }
-
-    /// Consumes this `Hive` and attempts to acquire the shared data object.
-    ///
-    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
-    /// worker threads are also prevented from taking any more tasks from the queues; otherwise,
-    /// this method blocks while all queued are processed.
-    ///
-    /// If this `Hive` has been cloned, and those clones have not been dropped, this method returns
-    /// `None`.
-    fn try_close(mut self, urgent: bool) -> Option<Shared<Q, T>> {
-        if self.shared().num_referrers() > 1 {
-            return None;
-        }
-        // take the inner value and replace it with `None`
-        let shared = self.0.take().unwrap();
-        // close the global queue to prevent new tasks from being submitted
-        shared.close_task_queues(urgent);
-        // wait for all tasks to finish
-        shared.wait_on_done();
-        // unwrap the Arc and return the inner Shared value
-        Some(
-            super::util::unwrap_arc(shared)
-                .expect("timeout waiting to take ownership of shared data"),
-        )
     }
 
     /// Consumes this `Hive` and attempts to shut it down gracefully.
@@ -658,6 +624,36 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// This method first joins on the `Hive` to wait for all tasks to finish.
     pub fn try_into_husk(self, urgent: bool) -> Option<Husk<Q>> {
         self.try_close(urgent).map(|shared| shared.into_husk())
+    }
+
+    /// Consumes this `Hive` and attempts to acquire the shared data object.
+    ///
+    /// This closes the task queues so that no more tasks may be submitted. If `urgent` is `true`,
+    /// worker threads are also prevented from taking any more tasks from the queues; otherwise,
+    /// this method blocks while all queued are processed.
+    ///
+    /// If this `Hive` has been cloned, and those clones have not been dropped, this method returns
+    /// `None`.
+    fn try_close(mut self, urgent: bool) -> Option<Shared<Q, T>> {
+        if self.shared().num_referrers() > 1 {
+            return None;
+        }
+        // take the inner value and replace it with `None`
+        let shared = self.0.take().unwrap();
+        // close the global queue to prevent new tasks from being submitted
+        shared.close_task_queues(urgent);
+        // wait for all tasks to finish
+        shared.wait_on_done();
+        // unwrap the Arc and return the inner Shared value
+        Some(
+            super::util::unwrap_arc(shared)
+                .expect("timeout waiting to take ownership of shared data"),
+        )
+    }
+
+    #[inline]
+    fn shared(&self) -> &Arc<Shared<Q, T>> {
+        self.0.as_ref().unwrap()
     }
 }
 
@@ -871,7 +867,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_suspend() {
+    fn test_suspend_resume() {
         let hive = channel_builder(false)
             .num_threads(4)
             .with_worker_default::<ThunkWorker<()>>()
@@ -885,6 +881,7 @@ mod tests {
         thread::sleep(Duration::from_secs(1));
         // There should be 4 active tasks and 6 queued tasks.
         hive.suspend();
+        assert!(hive.is_suspended());
         assert_eq!(hive.num_tasks(), (6, 4));
         // Wait for active tasks to complete.
         hive.join();
@@ -907,6 +904,7 @@ mod tests {
         assert_eq!(hive.alive_workers(), 4);
         // poison hive using private method
         hive.0.as_ref().unwrap().poison();
+        assert!(hive.is_poisoned());
         // attempt to spawn a new task
         assert!(matches!(hive.grow(1), Err(Poisoned)));
         // make sure the worker count wasn't increased

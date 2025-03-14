@@ -26,14 +26,6 @@ impl<W: Worker> OutcomeQueue<W> {
         outcomes
     }
 
-    /// Flushes the queue into the map of outcomes, then takes all outcomes from the map and
-    /// returns them.
-    pub fn drain(&self) -> HashMap<TaskId, Outcome<W>> {
-        let mut outcomes: HashMap<TaskId, Outcome<W>> = self.outcomes.lock().drain().collect();
-        drain_into(&self.queue, &mut outcomes);
-        outcomes
-    }
-
     /// Consumes this `OutcomeQueue`, drains the queue, and returns the outcomes as a map.
     pub fn into_inner(self) -> HashMap<TaskId, Outcome<W>> {
         let mut outcomes = self.outcomes.into_inner();
@@ -93,7 +85,7 @@ mod tests {
         });
         assert_eq!(queue.count(), (1, 1, 1));
         queue.push(Outcome::Missing { task_id: 4 });
-        let outcomes = queue.drain();
+        let outcomes = queue.into_inner();
         assert_eq!(outcomes.len(), 4);
         assert_eq!(
             outcomes[&1],

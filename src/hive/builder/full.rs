@@ -67,3 +67,52 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> BuilderConfig for FullBuilder<Q, T> {
         &mut self.config
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::bee::Queen;
+    use crate::bee::stock::EchoWorker;
+    use crate::hive::{ChannelTaskQueues, WorkstealingTaskQueues};
+    use rstest::rstest;
+
+    #[derive(Clone, Default)]
+    struct TestQueen;
+
+    impl Queen for TestQueen {
+        type Kind = EchoWorker<usize>;
+
+        fn create(&self) -> Self::Kind {
+            EchoWorker::default()
+        }
+    }
+
+    #[rstest]
+    fn test_channel<F>(
+        #[values(
+            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::empty::<TestQueen>,
+            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::preset::<TestQueen>
+        )]
+        factory: F,
+    ) where
+        F: Fn(TestQueen) -> FullBuilder<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>,
+    {
+        let builder = factory(TestQueen);
+        let _hive = builder.build();
+    }
+
+    #[rstest]
+    fn test_workstealing<F>(
+        #[values(
+            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::empty::<TestQueen>,
+            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::preset::<TestQueen>
+        )]
+        factory: F,
+    ) where
+        F: Fn(TestQueen) -> FullBuilder<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>,
+    {
+        let builder = factory(TestQueen);
+        let _hive = builder.build();
+    }
+}

@@ -51,6 +51,11 @@ where
         self.worker_queues.push(task);
         task_id
     }
+
+    #[cfg(test)]
+    fn thread_index(&self) -> usize {
+        self.worker_queues.thread_index()
+    }
 }
 
 impl<W, Q, T> fmt::Debug for HiveLocalContext<'_, W, Q, T>

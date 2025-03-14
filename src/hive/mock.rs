@@ -70,6 +70,11 @@ where
     fn submit_task(&self, _: I) -> TaskId {
         self.0.next_task_id()
     }
+
+    #[cfg(test)]
+    fn thread_index(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

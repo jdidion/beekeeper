@@ -530,7 +530,10 @@ mod tests {
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().0, 1);
         assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
-        hive.grow(1).expect("error spawning threads");
+        assert!(matches!(hive.grow(0), Ok(0)));
+        thread::sleep(ONE_SEC);
+        assert_eq!(hive.num_tasks().0, 1);
+        assert!(matches!(hive.grow(1), Ok(1)));
         thread::sleep(ONE_SEC);
         assert_eq!(hive.num_tasks().0, 0);
         assert!(matches!(
@@ -565,6 +568,27 @@ mod tests {
         assert_eq!(hive.num_tasks().1, total_threads as u64);
         let husk = hive.try_into_husk(false).unwrap();
         assert_eq!(husk.iter_successes().count(), total_threads);
+    }
+
+    #[rstest]
+    fn test_use_all_cores<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = void_thunk_hive(0, builder_factory(false));
+        let num_cores = num_cpus::get();
+        // queue some long-running tasks
+        for _ in 0..num_cores {
+            hive.apply_store(Thunk::from(|| thread::sleep(LONG_TASK)));
+        }
+        thread::sleep(ONE_SEC);
+        assert_eq!(hive.num_tasks().0, num_cores as u64);
+        assert_eq!(hive.use_all_cores().unwrap(), num_cores);
+        assert_eq!(hive.max_workers(), num_cores);
+        thread::sleep(ONE_SEC);
+        let husk = hive.try_into_husk(false).unwrap();
+        assert_eq!(husk.iter_successes().count(), num_cores);
     }
 
     #[rstest]
@@ -620,7 +644,43 @@ mod tests {
     }
 
     #[rstest]
-    fn test_suspend_with_cancelled_tasks<B, F>(
+    fn test_suspend_resume_send_with_cancelled_tasks<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive: Hive<_, _> = builder_factory(false)
+            .num_threads(TEST_TASKS)
+            .with_worker_default::<MyRefWorker>()
+            .build();
+        let _ = hive.swarm_store(0..TEST_TASKS as u8);
+        // wait for tasks to be started
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(hive.num_tasks(), (0, TEST_TASKS as u64));
+        hive.suspend();
+        // wait for tasks to be cancelled
+        thread::sleep(Duration::from_secs(2));
+        assert_eq!(hive.num_tasks(), (0, 0));
+        assert_eq!(hive.num_unprocessed(), TEST_TASKS);
+        hive.resume();
+        let (tx, rx) = super::outcome_channel();
+        let new_task_ids = hive.swarm_unprocessed_send(tx);
+        assert_eq!(new_task_ids.len(), TEST_TASKS);
+        thread::sleep(Duration::from_millis(500));
+        // unprocessed tasks should be requeued
+        assert_eq!(hive.num_tasks(), (0, TEST_TASKS as u64));
+        hive.join();
+        let mut outputs = rx
+            .into_iter()
+            .select_ordered_outputs(new_task_ids)
+            .collect::<Vec<_>>();
+        outputs.sort();
+        assert_eq!(outputs, (0..TEST_TASKS as u8).collect::<Vec<_>>());
+    }
+
+    #[rstest]
+    fn test_suspend_resume_store_with_cancelled_tasks<B, F>(
         #[values(channel_builder, workstealing_builder)] builder_factory: F,
     ) where
         B: TaskQueuesBuilder,
@@ -634,7 +694,8 @@ mod tests {
         hive.suspend();
         // wait for tasks to be cancelled
         thread::sleep(Duration::from_secs(2));
-        hive.resume_store();
+        hive.resume();
+        hive.swarm_unprocessed_store();
         thread::sleep(Duration::from_secs(1));
         // unprocessed tasks should be requeued
         assert_eq!(hive.num_tasks().1, TEST_TASKS as u64);
@@ -1311,6 +1372,65 @@ mod tests {
     }
 
     #[rstest]
+    fn test_try_scan<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
+            .with_worker(Caller::from(|i: i32| i * i))
+            .num_threads(4)
+            .build();
+        let (outcomes, error, state) = hive.try_scan(0..10, 0, |acc, i| {
+            *acc += i;
+            Ok::<_, String>(*acc)
+        });
+        let task_ids: Vec<_> = outcomes.success_task_ids();
+        assert_eq!(task_ids.len(), 10);
+        assert_eq!(error.len(), 0);
+        assert_eq!(state, 45);
+        let mut values: Vec<_> = outcomes
+            .into_iter()
+            .select_unordered(task_ids)
+            .into_outputs()
+            .collect();
+        values.sort();
+        assert_eq!(
+            values,
+            (0..10)
+                .scan(0, |acc, i| {
+                    *acc += i;
+                    Some(*acc)
+                })
+                .map(|i| i * i)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[rstest]
+    #[should_panic]
+    fn test_try_scan_fail<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
+            .with_worker(Caller::from(|i: i32| i * i))
+            .num_threads(4)
+            .build();
+        let (outcomes, error, state) = hive.try_scan(0..10, 0, |_, _| Err::<i32, _>("fail"));
+        let task_ids: Vec<_> = outcomes.success_task_ids();
+        assert_eq!(task_ids.len(), 10);
+        assert_eq!(error.len(), 0);
+        assert_eq!(state, 45);
+        let _ = outcomes
+            .into_iter()
+            .select_unordered(task_ids)
+            .into_outputs()
+            .collect::<Vec<_>>();
+    }
+
+    #[rstest]
     fn test_try_scan_send<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
     where
         B: TaskQueuesBuilder,
@@ -1512,6 +1632,36 @@ mod tests {
         let outputs: Vec<_> = rx.select_ordered_outputs(task_ids).collect();
         assert_eq!(outputs.len(), NUM_FIRST_TASKS * 2);
         assert_eq!(outputs, (0..NUM_FIRST_TASKS * 2).collect::<Vec<_>>());
+    }
+
+    #[rstest]
+    fn test_close<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive1 = thunk_hive::<u8, _, _>(8, builder_factory(false));
+        let _ = hive1.map_store((0..8u8).map(|i| Thunk::from(move || i)));
+        hive1.join();
+        let hive2 = hive1.clone();
+        assert!(!hive1.close(false));
+        assert!(hive2.close(false));
+    }
+
+    #[rstest]
+    fn test_into_outcomes<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
+    where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = thunk_hive::<u8, _, _>(8, builder_factory(false));
+        let task_ids = hive.map_store((0..8u8).map(|i| Thunk::from(move || i)));
+        hive.join();
+        let outcomes = hive.try_into_outcomes(false).unwrap();
+        for i in task_ids.iter() {
+            assert!(outcomes.get(i).unwrap().is_success());
+            assert!(matches!(outcomes.get(i), Some(Outcome::Success { .. })));
+        }
     }
 
     #[rstest]
@@ -1954,8 +2104,11 @@ mod tests {
 #[cfg(all(test, feature = "affinity"))]
 mod affinity_tests {
     use crate::bee::stock::{Thunk, ThunkWorker};
-    use crate::hive::{Builder, TaskQueuesBuilder, channel_builder, workstealing_builder};
+    use crate::channel::{Message, ReceiverExt};
+    use crate::hive::{Builder, Outcome, TaskQueuesBuilder, channel_builder, workstealing_builder};
     use rstest::*;
+    use std::thread;
+    use std::time::Duration;
 
     #[rstest]
     fn test_affinity<B, F>(#[values(channel_builder, workstealing_builder)] builder_factory: F)
@@ -1980,13 +2133,68 @@ mod affinity_tests {
     }
 
     #[rstest]
-    fn test_use_all_cores() {
-        let hive = crate::hive::channel_builder(false)
+    fn test_use_all_cores_builder<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
             .thread_name("affinity example")
             .with_thread_per_core()
             .with_default_core_affinity()
             .with_worker_default::<ThunkWorker<()>>()
             .build();
+
+        hive.map_store((0..num_cpus::get()).map(move |i| {
+            Thunk::from(move || {
+                if let Some(affininty) = core_affinity::get_core_ids() {
+                    eprintln!("task {} on thread with affinity {:?}", i, affininty);
+                }
+            })
+        }));
+    }
+
+    #[rstest]
+    fn test_grow_with_affinity<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
+            .thread_name("affinity example")
+            .with_default_core_affinity()
+            .with_worker_default::<ThunkWorker<usize>>()
+            .build();
+        // check that with 0 threads no tasks are scheduled
+        let (tx, rx) = super::outcome_channel();
+        let _ = hive.apply_send(Thunk::from(|| 0), &tx);
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(hive.num_tasks().0, 1);
+        assert!(matches!(rx.try_recv_msg(), Message::ChannelEmpty));
+        assert!(matches!(hive.grow_with_affinity(0, vec![]), Ok(0)));
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(hive.num_tasks().0, 1);
+        assert!(matches!(hive.grow_with_affinity(1, vec![0]), Ok(1)));
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(hive.num_tasks().0, 0);
+        assert!(matches!(
+            rx.try_recv_msg(),
+            Message::Received(Outcome::Success { value: 0, .. })
+        ));
+    }
+
+    #[rstest]
+    fn test_use_all_cores_hive() {
+        let hive = crate::hive::channel_builder(false)
+            .thread_name("affinity example")
+            .with_default_core_affinity()
+            .with_worker_default::<ThunkWorker<()>>()
+            .build();
+
+        let num_cores = num_cpus::get();
+        assert_eq!(hive.use_all_cores_with_affinity().unwrap(), num_cores);
 
         hive.map_store((0..num_cpus::get()).map(move |i| {
             Thunk::from(move || {
@@ -2184,16 +2392,21 @@ mod local_batch_tests {
         assert!(thread_counts.values().all(|count| *count > BATCH_LIMIT_0));
         assert_eq!(thread_counts.values().sum::<usize>(), total_tasks);
     }
+
+    #[test]
+    fn test_change_channel_batch_limit_nonempty() {}
 }
 
 #[cfg(all(test, feature = "local-batch"))]
 mod weighted_map_tests {
-    use crate::bee::stock::{Thunk, ThunkWorker};
+    use crate::bee::stock::{RetryCaller, Thunk, ThunkWorker};
+    use crate::bee::{ApplyError, Context};
     use crate::hive::{
         Builder, Outcome, TaskQueuesBuilder, Weighted, WeightedIteratorExt, channel_builder,
         workstealing_builder,
     };
     use rstest::*;
+    use std::collections::HashMap;
     use std::thread;
     use std::time::Duration;
 
@@ -2224,6 +2437,54 @@ mod weighted_map_tests {
     }
 
     #[rstest]
+    fn test_map_weighted_with_limit<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        const NUM_THREADS: usize = 4;
+        const NUM_TASKS_PER_THREAD: usize = 3;
+        const NUM_TASKS: usize = NUM_THREADS * NUM_TASKS_PER_THREAD;
+        const BATCH_LIMIT: usize = 10;
+        const WEIGHT: u32 = 25;
+        const WEIGHT_LIMIT: u64 = WEIGHT as u64 * NUM_TASKS_PER_THREAD as u64;
+        // schedule 2 * NUM_THREADS tasks, and set the weight limit at 2 * task weight, such that,
+        // even though the batch size is > 2, each thread should only take 2 tasks
+        let hive = builder_factory(false)
+            .with_worker(RetryCaller::from(
+                |i: u8, ctx: &Context<u8>| -> Result<(u8, Option<usize>), ApplyError<u8, ()>> {
+                    thread::sleep(Duration::from_millis(100));
+                    Ok((i, ctx.thread_index()))
+                },
+            ))
+            .num_threads(NUM_THREADS)
+            .batch_limit(BATCH_LIMIT)
+            .weight_limit(WEIGHT_LIMIT)
+            .build();
+        let inputs = (0..NUM_TASKS as u8).map(|i| (i, WEIGHT)).into_weighted();
+        let (mut outputs, thread_indices) = hive
+            .map(inputs)
+            .map(Outcome::unwrap)
+            .unzip::<_, _, Vec<_>, Vec<_>>();
+        outputs.sort();
+        assert_eq!(outputs, (0..NUM_TASKS as u8).collect::<Vec<_>>());
+        let counts =
+            thread_indices
+                .into_iter()
+                .flatten()
+                .fold(HashMap::new(), |mut counts, index| {
+                    counts
+                        .entry(index)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+                    counts
+                });
+        println!("{:?}", counts);
+        assert!(counts.values().all(|&count| count == NUM_TASKS_PER_THREAD));
+    }
+
+    #[rstest]
     fn test_overweight() {
         const WEIGHT_LIMIT: u64 = 99;
         let hive = channel_builder(false)
@@ -2236,6 +2497,26 @@ mod weighted_map_tests {
             outcome,
             Outcome::WeightLimitExceeded { weight: 100, .. }
         ))
+    }
+
+    #[rstest]
+    fn test_set_weight_limit() {
+        const WEIGHT_LIMIT: u64 = 99;
+        let hive = channel_builder(false)
+            .with_worker_default::<ThunkWorker<u8>>()
+            .num_threads(1)
+            .weight_limit(WEIGHT_LIMIT)
+            .build();
+        assert_eq!(WEIGHT_LIMIT, hive.worker_weight_limit());
+        let outcome = hive.apply(Weighted::new(Thunk::from(|| 0), WEIGHT_LIMIT + 1));
+        assert!(matches!(
+            outcome,
+            Outcome::WeightLimitExceeded { weight: 100, .. }
+        ));
+        hive.set_worker_weight_limit(WEIGHT_LIMIT + 1);
+        assert_eq!(WEIGHT_LIMIT + 1, hive.worker_weight_limit());
+        let outcome = hive.apply(Weighted::new(Thunk::from(|| 0), WEIGHT_LIMIT + 1));
+        assert!(matches!(outcome, Outcome::Success { .. }));
     }
 }
 
@@ -2450,5 +2731,34 @@ mod retry_tests {
             .build();
         let v: Result<Vec<_>, _> = hive.swarm(0..10usize).into_results().collect();
         assert!(v.is_err());
+    }
+
+    #[rstest]
+    fn test_change_retry_limit<B, F>(
+        #[values(channel_builder, workstealing_builder)] builder_factory: F,
+    ) where
+        B: TaskQueuesBuilder,
+        F: Fn(bool) -> B,
+    {
+        let hive = builder_factory(false)
+            .with_worker(RetryCaller::from(echo_time))
+            .with_thread_per_core()
+            .with_no_retries()
+            .build();
+
+        assert_eq!(hive.worker_retry_limit(), 0);
+        assert_eq!(hive.worker_retry_factor(), Duration::from_secs(0));
+
+        let v: Result<Vec<_>, _> = hive.swarm(0..10usize).into_results().collect();
+        assert!(v.is_err());
+
+        hive.set_worker_retry_limit(3);
+        hive.set_worker_retry_factor(Duration::from_secs(1));
+
+        assert_eq!(hive.worker_retry_limit(), 3);
+        assert_eq!(hive.worker_retry_factor(), Duration::from_secs(1));
+
+        let v: Result<Vec<_>, _> = hive.swarm(0..10usize).into_results().collect();
+        assert_eq!(v.unwrap().len(), 10);
     }
 }

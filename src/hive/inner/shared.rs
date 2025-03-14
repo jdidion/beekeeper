@@ -490,11 +490,6 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
         self.outcomes.push(outcome);
     }
 
-    /// Removes and returns all retained task outcomes.
-    pub fn take_outcomes(&self) -> HashMap<TaskId, Outcome<W>> {
-        self.outcomes.drain()
-    }
-
     /// Removes and returns all retained `Unprocessed` outcomes.
     pub fn take_unprocessed(&self) -> Vec<Outcome<W>> {
         let mut outcomes = self.outcomes.get_mut();
@@ -711,7 +706,7 @@ mod retry {
 
         /// Returns the current worker retry factor.
         pub fn worker_retry_factor(&self) -> std::time::Duration {
-            std::time::Duration::from_millis(self.config.retry_factor.get().unwrap_or_default())
+            std::time::Duration::from_nanos(self.config.retry_factor.get().unwrap_or_default())
         }
 
         /// Returns `true` if the hive is configured to retry tasks and the `attempt` field of the
@@ -754,7 +749,7 @@ mod tests {
         super::Shared<DefaultQueen<VoidThunkWorker>, ChannelTaskQueues<VoidThunkWorker>>;
 
     #[test]
-    fn test_sync_hared() {
+    fn test_sync_shared() {
         fn assert_sync<T: Sync>() {}
         assert_sync::<VoidThunkWorkerShared>();
     }

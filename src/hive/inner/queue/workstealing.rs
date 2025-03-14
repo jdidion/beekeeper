@@ -112,6 +112,9 @@ impl<W: Worker> GlobalQueue<W> {
     }
 
     /// Tries to steal a task from a random worker using its `Stealer`.
+    ///
+    /// If no tasks are available, sleeps for `EMPTY_DELAY` and returns `PopTaskError::Empty`.
+    /// Returns `PopTaskError::Closed` if the queue is closed.
     fn try_steal_from_worker(&self) -> Result<Task<W>, PopTaskError> {
         let stealers = self.stealers.read();
         let n = stealers.len();
@@ -124,6 +127,7 @@ impl<W: Worker> GlobalQueue<W> {
                 if self.is_closed() && self.queue.is_empty() {
                     PopTaskError::Closed
                 } else {
+                    // TODO: instead try Backoff-based snoozing used by crossbeam
                     thread::park_timeout(EMPTY_DELAY);
                     PopTaskError::Empty
                 }
@@ -240,6 +244,11 @@ impl<W: Worker> WorkerQueues<W> for WorkstealingWorkerQueues<W> {
     #[cfg(feature = "retry")]
     fn try_push_retry(&self, task: Task<W>) -> Result<std::time::Instant, Task<W>> {
         self.shared.try_push_retry(task)
+    }
+
+    #[cfg(test)]
+    fn thread_index(&self) -> usize {
+        self.shared._thread_index
     }
 }
 

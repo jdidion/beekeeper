@@ -168,6 +168,11 @@ impl<W: Worker> WorkerQueues<W> for ChannelWorkerQueues<W> {
     fn try_push_retry(&self, task: Task<W>) -> Result<std::time::Instant, Task<W>> {
         self.shared.try_push_retry(task)
     }
+
+    #[cfg(test)]
+    fn thread_index(&self) -> usize {
+        self.shared._thread_index
+    }
 }
 
 /// Worker thread-specific data shared with the main thread.

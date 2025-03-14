@@ -13,6 +13,9 @@ pub trait LocalContext<I>: Debug {
 
     /// Submits a new task to the `Hive` that is executing the current task.
     fn submit_task(&self, input: I) -> TaskId;
+
+    #[cfg(test)]
+    fn thread_index(&self) -> usize;
 }
 
 /// The context visible to a task when processing an input.
@@ -85,6 +88,12 @@ impl<'a, I> Context<'a, I> {
         } else {
             Err(input)
         }
+    }
+
+    /// Returns the unique index of the worker thread executing this task.
+    #[cfg(test)]
+    pub fn thread_index(&self) -> Option<usize> {
+        self.local.map(|local| local.thread_index())
     }
 
     /// Consumes this `Context` and returns the IDs of the subtasks spawned during the execution

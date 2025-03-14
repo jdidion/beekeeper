@@ -87,4 +87,8 @@ pub trait WorkerQueues<W: Worker> {
     /// to the retry queue (e.g., if the queue is full), the task returned as an error.
     #[cfg(feature = "retry")]
     fn try_push_retry(&self, task: Task<W>) -> Result<std::time::Instant, Task<W>>;
+
+    /// Returns the unique index of the thread that owns this `WorkerQueues` instance.
+    #[cfg(test)]
+    fn thread_index(&self) -> usize;
 }
