@@ -130,7 +130,6 @@ impl<W: Worker> GlobalQueue<W> {
                     // TODO: instead try the parking approach used in rust-executors, which seems
                     // more performant under most circumstances
                     // https://github.com/Bathtor/rust-executors/blob/master/executors/src/crossbeam_workstealing_pool.rs#L976
-                    
                     thread::park_timeout(EMPTY_DELAY);
                     PopTaskError::Empty
                 }
