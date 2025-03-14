@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn test_works() {
         let runner = MockTaskRunner::<TestWorker>::default();
-        let outcome = runner.apply(42);
+        let outcome = runner.apply(42usize);
         assert!(matches!(
             outcome,
             Outcome::SuccessWithSubtasks {
