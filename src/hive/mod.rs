@@ -2450,7 +2450,9 @@ mod weighted_map_tests {
         const WEIGHT: u32 = 25;
         const WEIGHT_LIMIT: u64 = WEIGHT as u64 * NUM_TASKS_PER_THREAD as u64;
         // schedule 2 * NUM_THREADS tasks, and set the weight limit at 2 * task weight, such that,
-        // even though the batch size is > 2, each thread should only take 2 tasks
+        // even though the batch size is > 2, each thread should only take 2 tasks; don't start any
+        // threads yet, as there can be a delay before the tasks are available that can lead to
+        // the first call to `try_pop` queuing a smaller than expected batch
         let hive = builder_factory(false)
             .with_worker(RetryCaller::from(
                 |i: u8, ctx: &Context<u8>| -> Result<(u8, Option<usize>), ApplyError<u8, ()>> {
@@ -2458,10 +2460,11 @@ mod weighted_map_tests {
                     Ok((i, ctx.thread_index()))
                 },
             ))
-            .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT)
             .weight_limit(WEIGHT_LIMIT)
             .build();
+        thread::sleep(Duration::from_secs(1)); // wait for tasks to be scheduled
+        assert_eq!(hive.grow(NUM_THREADS).unwrap(), NUM_THREADS);
         let inputs = (0..NUM_TASKS as u8).map(|i| (i, WEIGHT)).into_weighted();
         let (mut outputs, thread_indices) = hive
             .map(inputs)
