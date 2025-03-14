@@ -406,6 +406,7 @@ mod local_batch {
                             break;
                         }
                     }
+                    println!("batch size: {}", batch_size);
                 }
                 Ok(first)
             } else {
