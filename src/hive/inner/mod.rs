@@ -38,7 +38,7 @@ type Any<T> = AtomicOption<T, AtomicAny<T>>;
 type Usize = AtomicOption<usize, AtomicUsize>;
 #[cfg(feature = "retry")]
 type U8 = AtomicOption<u8, crate::atomic::AtomicU8>;
-#[cfg(feature = "retry")]
+#[cfg(any(feature = "local-batch", feature = "retry"))]
 type U64 = AtomicOption<u64, crate::atomic::AtomicU64>;
 
 /// Private, zero-size struct used to call private methods in public sealed traits.
