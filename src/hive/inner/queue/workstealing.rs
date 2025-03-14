@@ -5,21 +5,17 @@
 //! thread. If the `local-batch` feature is enabled, a worker thread will try to fill its local queue
 //! up to the limit when stealing from the global queue.
 use super::{Config, PopTaskError, Status, Task, TaskQueues, Token, WorkerQueues};
-#[cfg(feature = "local-batch")]
-use crate::atomic::Atomic;
+use crate::atomic::{Atomic, AtomicBool};
 use crate::bee::Worker;
 use crossbeam_deque::{Injector, Stealer};
 use crossbeam_queue::SegQueue;
+use crossbeam_utils::Backoff;
 use derive_more::Debug;
 use nanorand::{Rng, tls as rand};
 use parking_lot::RwLock;
+use std::any;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
-use std::{any, thread};
-
-/// Time to wait after trying to pop and finding all queues empty.
-const EMPTY_DELAY: Duration = Duration::from_millis(100);
 
 /// `TaskQueues` implementation using workstealing.
 #[derive(Debug)]
@@ -115,7 +111,7 @@ impl<W: Worker> GlobalQueue<W> {
     ///
     /// Returns the task if one is stolen successfully, otherwise snoozes for a bit and then
     /// returns `PopTaskError::Empty`. Returns `PopTaskError::Closed` if the queue is closed.
-    fn try_steal_from_worker_or_snooze(&self) -> Result<Task<W>, PopTaskError> {
+    fn try_steal_from_worker_or_snooze(&self, backoff: &Backoff) -> Result<Task<W>, PopTaskError> {
         let stealers = self.stealers.read();
         let n = stealers.len();
         // randomize the stealing order, to prevent always stealing from the same thread
@@ -130,7 +126,7 @@ impl<W: Worker> GlobalQueue<W> {
                     // TODO: instead try the parking approach used in rust-executors, which seems
                     // more performant under most circumstances
                     // https://github.com/Bathtor/rust-executors/blob/master/executors/src/crossbeam_workstealing_pool.rs#L976
-                    thread::park_timeout(EMPTY_DELAY);
+                    backoff.snooze();
                     PopTaskError::Empty
                 }
             })
@@ -138,11 +134,11 @@ impl<W: Worker> GlobalQueue<W> {
 
     /// Tries to steal a task from the global queue, otherwise tries to steal a task from another
     /// worker thread.
-    fn try_pop_unchecked(&self) -> Result<Task<W>, PopTaskError> {
+    fn try_pop_unchecked(&self, backoff: &Backoff) -> Result<Task<W>, PopTaskError> {
         if let Some(task) = self.queue.steal().success() {
             Ok(task)
         } else {
-            self.try_steal_from_worker_or_snooze()
+            self.try_steal_from_worker_or_snooze(backoff)
         }
     }
 
@@ -155,6 +151,7 @@ impl<W: Worker> GlobalQueue<W> {
         local_batch: &crossbeam_deque::Worker<Task<W>>,
         batch_limit: usize,
         weight_limit: u64,
+        backoff: &Backoff,
     ) -> Result<Task<W>, PopTaskError> {
         // if we only have a size limit but not a weight limit, use the batch-stealing function
         // provided by `Injector`
@@ -188,7 +185,7 @@ impl<W: Worker> GlobalQueue<W> {
             }
             return Ok(first);
         }
-        self.try_steal_from_worker_or_snooze()
+        self.try_steal_from_worker_or_snooze(backoff)
     }
 
     fn is_closed(&self) -> bool {
@@ -218,6 +215,8 @@ pub struct WorkstealingWorkerQueues<W: Worker> {
     local: crossbeam_deque::Worker<Task<W>>,
     global: Arc<GlobalQueue<W>>,
     shared: Arc<LocalQueueShared<W>>,
+    backoff: Backoff,
+    snoozing: AtomicBool,
 }
 
 impl<W: Worker> WorkstealingWorkerQueues<W> {
@@ -230,6 +229,8 @@ impl<W: Worker> WorkstealingWorkerQueues<W> {
             global: Arc::clone(global),
             local,
             shared: Arc::clone(shared),
+            backoff: Backoff::new(),
+            snoozing: Default::default(),
         }
     }
 }
@@ -240,7 +241,22 @@ impl<W: Worker> WorkerQueues<W> for WorkstealingWorkerQueues<W> {
     }
 
     fn try_pop(&self) -> Result<Task<W>, PopTaskError> {
-        self.shared.try_pop(&self.global, &self.local)
+        let result = self
+            .shared
+            .try_pop(&self.global, &self.local, &self.backoff);
+        match &result {
+            Ok(_) | Err(PopTaskError::Closed) if self.snoozing.get() => {
+                // if the worker has been snoozing and got a task, reset the backoff
+                self.backoff.reset();
+                self.snoozing.set(false);
+            }
+            Err(PopTaskError::Empty) => {
+                // if the queue was empty, the worker must have snoozed
+                self.snoozing.set(true);
+            }
+            _ => (),
+        };
+        result
     }
 
     #[cfg(feature = "retry")]
@@ -306,6 +322,7 @@ impl<W: Worker> LocalQueueShared<W> {
         &self,
         global: &GlobalQueue<W>,
         local_batch: &crossbeam_deque::Worker<Task<W>>,
+        backoff: &Backoff,
     ) -> Result<Task<W>, PopTaskError> {
         if !global.status.can_pop() {
             return Err(PopTaskError::Closed);
@@ -330,10 +347,10 @@ impl<W: Worker> LocalQueueShared<W> {
             let batch_limit = self.batch_limit.get();
             if batch_limit > 0 {
                 let weight_limit = self.weight_limit.get();
-                return global.try_refill_and_pop(local_batch, batch_limit, weight_limit);
+                return global.try_refill_and_pop(local_batch, batch_limit, weight_limit, backoff);
             }
         }
-        global.try_pop_unchecked()
+        global.try_pop_unchecked(backoff)
     }
 
     fn drain_into(self, tasks: &mut Vec<Task<W>>) {

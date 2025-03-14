@@ -2488,7 +2488,6 @@ mod weighted_map_tests {
                         .or_insert(1);
                     counts
                 });
-        println!("{:?}", counts);
         assert!(counts.values().all(|&count| count == NUM_TASKS_PER_THREAD));
     }
 
