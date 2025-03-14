@@ -2402,8 +2402,8 @@ mod weighted_map_tests {
     use crate::bee::stock::{RetryCaller, Thunk, ThunkWorker};
     use crate::bee::{ApplyError, Context};
     use crate::hive::{
-        Builder, Outcome, TaskQueuesBuilder, Weighted, WeightedIteratorExt, channel_builder,
-        workstealing_builder,
+        Builder, Outcome, OutcomeIteratorExt, TaskQueuesBuilder, Weighted, WeightedIteratorExt,
+        channel_builder, workstealing_builder,
     };
     use rstest::*;
     use std::collections::HashMap;
@@ -2463,12 +2463,17 @@ mod weighted_map_tests {
             .batch_limit(BATCH_LIMIT)
             .weight_limit(WEIGHT_LIMIT)
             .build();
-        thread::sleep(Duration::from_secs(1)); // wait for tasks to be scheduled
-        assert_eq!(hive.grow(NUM_THREADS).unwrap(), NUM_THREADS);
         let inputs = (0..NUM_TASKS as u8).map(|i| (i, WEIGHT)).into_weighted();
-        let (mut outputs, thread_indices) = hive
-            .map(inputs)
-            .map(Outcome::unwrap)
+        let (tx, rx) = crate::hive::outcome_channel();
+        let task_ids = hive.map_send(inputs, tx);
+        // wait for tasks to be scheduled
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(hive.grow(NUM_THREADS).unwrap(), NUM_THREADS);
+        // wait for all tasks to complete
+        hive.join();
+        let (mut outputs, thread_indices) = rx
+            .into_iter()
+            .select_unordered_outputs(task_ids)
             .unzip::<_, _, Vec<_>, Vec<_>>();
         outputs.sort();
         assert_eq!(outputs, (0..NUM_TASKS as u8).collect::<Vec<_>>());
