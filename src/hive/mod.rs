@@ -2454,7 +2454,7 @@ mod weighted_map_tests {
         let hive = builder_factory(false)
             .with_worker(RetryCaller::from(
                 |i: u8, ctx: &Context<u8>| -> Result<(u8, Option<usize>), ApplyError<u8, ()>> {
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(500));
                     Ok((i, ctx.thread_index()))
                 },
             ))
