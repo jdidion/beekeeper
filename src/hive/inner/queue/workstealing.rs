@@ -113,9 +113,9 @@ impl<W: Worker> GlobalQueue<W> {
 
     /// Tries to steal a task from a random worker using its `Stealer`.
     ///
-    /// If no tasks are available, sleeps for `EMPTY_DELAY` and returns `PopTaskError::Empty`.
-    /// Returns `PopTaskError::Closed` if the queue is closed.
-    fn try_steal_from_worker(&self) -> Result<Task<W>, PopTaskError> {
+    /// Returns the task if one is stolen successfully, otherwise snoozes for a bit and then
+    /// returns `PopTaskError::Empty`. Returns `PopTaskError::Closed` if the queue is closed.
+    fn try_steal_from_worker_or_snooze(&self) -> Result<Task<W>, PopTaskError> {
         let stealers = self.stealers.read();
         let n = stealers.len();
         // randomize the stealing order, to prevent always stealing from the same thread
@@ -127,7 +127,10 @@ impl<W: Worker> GlobalQueue<W> {
                 if self.is_closed() && self.queue.is_empty() {
                     PopTaskError::Closed
                 } else {
-                    // TODO: instead try Backoff-based snoozing used by crossbeam
+                    // TODO: instead try the parking approach used in rust-executors, which seems
+                    // more performant under most circumstances
+                    // https://github.com/Bathtor/rust-executors/blob/master/executors/src/crossbeam_workstealing_pool.rs#L976
+                    
                     thread::park_timeout(EMPTY_DELAY);
                     PopTaskError::Empty
                 }
@@ -140,7 +143,7 @@ impl<W: Worker> GlobalQueue<W> {
         if let Some(task) = self.queue.steal().success() {
             Ok(task)
         } else {
-            self.try_steal_from_worker()
+            self.try_steal_from_worker_or_snooze()
         }
     }
 
@@ -186,7 +189,7 @@ impl<W: Worker> GlobalQueue<W> {
             }
             return Ok(first);
         }
-        self.try_steal_from_worker()
+        self.try_steal_from_worker_or_snooze()
     }
 
     fn is_closed(&self) -> bool {

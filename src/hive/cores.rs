@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 /// If new cores become available during the life of the program, they are immediately available
 /// for worker thread scheduling, but they are *not* available for pinning until the
 /// `refresh()` function is called.
-pub static CORES: LazyLock<CoreIds> = LazyLock::new(|| CoreIds::from_system());
+pub static CORES: LazyLock<CoreIds> = LazyLock::new(CoreIds::from_system);
 
 /// Global list of CPU core IDs.
 ///
@@ -177,7 +177,7 @@ pub struct CoreIter<'a, I: Iterator<Item = usize>> {
     cores: MutexGuard<'a, Vec<Core>>,
 }
 
-impl<'a, I: Iterator<Item = usize>> CoreIter<'a, I> {
+impl<I: Iterator<Item = usize>> CoreIter<'_, I> {
     fn new(index_iter: I) -> Self {
         Self {
             index_iter,
@@ -186,7 +186,7 @@ impl<'a, I: Iterator<Item = usize>> CoreIter<'a, I> {
     }
 }
 
-impl<'a, I: Iterator<Item = usize>> Iterator for CoreIter<'a, I> {
+impl<I: Iterator<Item = usize>> Iterator for CoreIter<'_, I> {
     type Item = (usize, Option<Core>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -242,11 +242,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             (0..10).map(|id| CoreId { id }).collect::<Vec<_>>()
         );
-        assert!(
-            (0..10)
-                .map(|i| core_ids.get(i).map(|id| id.available).unwrap_or_default())
-                .all(std::convert::identity)
-        );
+        assert!((0..10).all(|i| core_ids.get(i).map(|id| id.available).unwrap_or_default()));
         let new_ids: HashSet<CoreId> = vec![10, 11, 1, 3, 5, 7, 9]
             .into_iter()
             .map(|id| CoreId { id })
