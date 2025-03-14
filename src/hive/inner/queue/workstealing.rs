@@ -11,8 +11,8 @@ use crate::bee::Worker;
 use crossbeam_deque::{Injector, Stealer};
 use crossbeam_queue::SegQueue;
 use derive_more::Debug;
+use nanorand::{Rng, tls as rand};
 use parking_lot::RwLock;
-use rand::prelude::*;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,7 +119,7 @@ impl<W: Worker> GlobalQueue<W> {
         let stealers = self.stealers.read();
         let n = stealers.len();
         // randomize the stealing order, to prevent always stealing from the same thread
-        std::iter::from_fn(|| Some(rand::rng().random_range(0..n)))
+        std::iter::from_fn(|| Some(rand::tls_rng().generate_range(0..n)))
             .take(n)
             .filter_map(|i| stealers[i].steal().success())
             .next()

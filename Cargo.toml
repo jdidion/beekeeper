@@ -14,13 +14,14 @@ crossbeam-deque = "0.8.6"
 crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.20"
 derive_more = { version = "2.0.1", features = ["debug"] }
+nanorand = { version = "0.7.0", default-features = false, features = [
+    "std",
+    "tls",
+] }
 num = "0.4.3"
 num_cpus = "1.16.0"
 parking_lot = "0.12.3"
 paste = "1.0.15"
-rand = { version = "0.9.0", default-features = false, features = [
-    "thread_rng",
-] }
 thiserror = "1.0.63"
 # required with the `affinity` feature
 core_affinity = { version = "0.8.1", optional = true }
