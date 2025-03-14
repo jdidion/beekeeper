@@ -161,14 +161,14 @@
 //! // return results to your own channel...
 //! let (tx, rx) = outcome_channel();
 //! let _ = hive.swarm_send(
-//!     (0..10).map(|i: i32| Thunk::of(move || i * i)),
+//!     (0..10).map(|i: i32| Thunk::from(move || i * i)),
 //!     tx
 //! );
 //! assert_eq!(285, rx.into_outputs().take(10).sum());
 //!
 //! // return results as an iterator...
 //! let total = hive
-//!     .swarm_unordered((0..10).map(|i: i32| Thunk::of(move || i * -i)))
+//!     .swarm_unordered((0..10).map(|i: i32| Thunk::from(move || i * -i)))
 //!     .into_outputs()
 //!     .sum();
 //! assert_eq!(-285, total);
