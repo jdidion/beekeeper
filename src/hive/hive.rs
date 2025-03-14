@@ -525,7 +525,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     ///     .num_threads(4)
     ///     .with_worker_default::<ThunkWorker<()>>()
     ///     .build();
-    /// hive.map((0..10).map(|_| Thunk::of(|| thread::sleep(Duration::from_secs(3)))));
+    /// hive.map((0..10).map(|_| Thunk::from(|| thread::sleep(Duration::from_secs(3)))));
     /// thread::sleep(Duration::from_secs(1)); // Allow first set of tasks to be started.
     /// // There should be 4 active tasks and 6 queued tasks.
     /// hive.suspend();

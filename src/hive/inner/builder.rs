@@ -29,7 +29,7 @@ pub trait Builder: BuilderConfig + Sized {
     ///     .build();
     ///
     /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
+    ///     hive.apply_store(Thunk::from(|| {
     ///         println!("Hello from a worker thread!")
     ///     }));
     /// }
@@ -66,7 +66,7 @@ pub trait Builder: BuilderConfig + Sized {
     ///     .build();
     ///
     /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
+    ///     hive.apply_store(Thunk::from(|| {
     ///         println!("Hello from a worker thread!")
     ///     }));
     /// }
@@ -99,7 +99,7 @@ pub trait Builder: BuilderConfig + Sized {
     ///     .build();
     ///
     /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
+    ///     hive.apply_store(Thunk::from(|| {
     ///         assert_eq!(thread::current().name(), Some("foo"));
     ///     }));
     /// }
@@ -132,7 +132,7 @@ pub trait Builder: BuilderConfig + Sized {
     ///     .build();
     ///
     /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
+    ///     hive.apply_store(Thunk::from(|| {
     ///         println!("This thread has a 4 MB stack size!");
     ///     }));
     /// }
@@ -171,7 +171,7 @@ pub trait Builder: BuilderConfig + Sized {
     ///     .build();
     ///
     /// for _ in 0..100 {
-    ///     hive.apply_store(Thunk::of(|| {
+    ///     hive.apply_store(Thunk::from(|| {
     ///         println!("This thread is pinned!");
     ///     }));
     /// }
@@ -291,7 +291,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// # fn main() {
     /// let hive = channel_builder(true)
     ///     .max_retries(3)
-    ///     .with_worker(RetryCaller::of(sometimes_fail))
+    ///     .with_worker(RetryCaller::from(sometimes_fail))
     ///     .build();
     ///
     /// for i in 0..10 {
@@ -338,7 +338,7 @@ pub trait Builder: BuilderConfig + Sized {
     /// let hive = channel_builder(true)
     ///     .max_retries(3)
     ///     .retry_factor(time::Duration::from_secs(1))
-    ///     .with_worker(RetryCaller::of(echo_time))
+    ///     .with_worker(RetryCaller::from(echo_time))
     ///     .build();
     ///
     /// for i in 0..10 {
