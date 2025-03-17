@@ -1,7 +1,11 @@
-#[cfg(feature = "batching")]
-pub use batching::set_batch_size_default;
+#[cfg(feature = "local-batch")]
+pub use self::local_batch::set_batch_limit_default;
+#[cfg(feature = "local-batch")]
+pub use self::local_batch::set_weight_limit_default;
 #[cfg(feature = "retry")]
-pub use retry::{set_max_retries_default, set_retries_default_disabled, set_retry_factor_default};
+pub use self::retry::{
+    set_max_retries_default, set_retries_default_disabled, set_retry_factor_default,
+};
 
 use super::Config;
 use parking_lot::Mutex;
@@ -9,8 +13,8 @@ use std::sync::LazyLock;
 
 const DEFAULT_NUM_THREADS: usize = 4;
 
-pub(super) static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
-    let mut config = Config::default();
+pub static DEFAULTS: LazyLock<Mutex<Config>> = LazyLock::new(|| {
+    let mut config = Config::empty();
     config.set_const_defaults();
     Mutex::new(config)
 });
@@ -35,18 +39,27 @@ pub fn reset_defaults() {
 impl Config {
     /// Creates a new `Config` with all values unset.
     pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Creates a new `Config` with default values. This simply clones `DEFAULTS`.
-    pub fn with_defaults() -> Self {
-        DEFAULTS.lock().clone()
+        Self {
+            num_threads: Default::default(),
+            thread_name: Default::default(),
+            thread_stack_size: Default::default(),
+            #[cfg(feature = "affinity")]
+            affinity: Default::default(),
+            #[cfg(feature = "local-batch")]
+            batch_limit: Default::default(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: Default::default(),
+            #[cfg(feature = "retry")]
+            max_retries: Default::default(),
+            #[cfg(feature = "retry")]
+            retry_factor: Default::default(),
+        }
     }
 
     /// Resets config values to their pre-configured defaults.
     fn set_const_defaults(&mut self) {
         self.num_threads.set(Some(DEFAULT_NUM_THREADS));
-        #[cfg(feature = "batching")]
+        #[cfg(feature = "local-batch")]
         self.set_batch_const_defaults();
         #[cfg(feature = "retry")]
         self.set_retry_const_defaults();
@@ -60,12 +73,14 @@ impl Config {
             thread_stack_size: self.thread_stack_size.into_sync(),
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_sync(),
-            #[cfg(feature = "batching")]
-            batch_size: self.batch_size.into_sync_default(),
+            #[cfg(feature = "local-batch")]
+            batch_limit: self.batch_limit.into_sync_default(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: self.weight_limit.into_sync_default(),
             #[cfg(feature = "retry")]
-            max_retries: self.max_retries.into_sync(),
+            max_retries: self.max_retries.into_sync_default(),
             #[cfg(feature = "retry")]
-            retry_factor: self.retry_factor.into_sync(),
+            retry_factor: self.retry_factor.into_sync_default(),
         }
     }
 
@@ -78,8 +93,10 @@ impl Config {
             thread_stack_size: self.thread_stack_size.into_unsync(),
             #[cfg(feature = "affinity")]
             affinity: self.affinity.into_unsync(),
-            #[cfg(feature = "batching")]
-            batch_size: self.batch_size.into_unsync(),
+            #[cfg(feature = "local-batch")]
+            batch_limit: self.batch_limit.into_unsync(),
+            #[cfg(feature = "local-batch")]
+            weight_limit: self.weight_limit.into_unsync(),
             #[cfg(feature = "retry")]
             max_retries: self.max_retries.into_unsync(),
             #[cfg(feature = "retry")]
@@ -88,7 +105,15 @@ impl Config {
     }
 }
 
+impl Default for Config {
+    /// Creates a new `Config` with default values. This simply clones `DEFAULTS`.
+    fn default() -> Self {
+        DEFAULTS.lock().clone()
+    }
+}
+
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod reset {
     /// Struct that resets the default values when `drop`ped.
     pub struct Reset;
@@ -101,9 +126,10 @@ pub mod reset {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::reset::Reset;
     use super::Config;
+    use super::reset::Reset;
     use serial_test::serial;
 
     #[test]
@@ -111,35 +137,42 @@ mod tests {
     fn test_set_num_threads_default() {
         let reset = Reset;
         super::set_num_threads_default(2);
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(2));
         // Dropping `Reset` should reset the defaults
         drop(reset);
 
         let reset = Reset;
         super::set_num_threads_default_all();
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(num_cpus::get()));
         drop(reset);
 
-        let config = Config::with_defaults();
+        let config = Config::default();
         assert_eq!(config.num_threads.get(), Some(super::DEFAULT_NUM_THREADS));
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(feature = "local-batch")]
+mod local_batch {
     use super::{Config, DEFAULTS};
 
-    const DEFAULT_BATCH_SIZE: usize = 10;
+    const DEFAULT_BATCH_LIMIT: usize = 10;
 
-    pub fn set_batch_size_default(batch_size: usize) {
-        DEFAULTS.lock().batch_size.set(Some(batch_size));
+    /// Sets the batch limit a `config` is configured with when using `Builder::default()`.
+    pub fn set_batch_limit_default(batch_limit: usize) {
+        DEFAULTS.lock().batch_limit.set(Some(batch_limit));
+    }
+
+    /// Sets the weight limit a `config` is configured with when using `Builder::default()`.
+    pub fn set_weight_limit_default(weight_limit: u64) {
+        DEFAULTS.lock().weight_limit.set(Some(weight_limit));
     }
 
     impl Config {
         pub(super) fn set_batch_const_defaults(&mut self) {
-            self.batch_size.set(Some(DEFAULT_BATCH_SIZE));
+            self.batch_limit.set(Some(DEFAULT_BATCH_LIMIT));
+            self.weight_limit.set(None);
         }
     }
 }
@@ -149,27 +182,40 @@ mod retry {
     use super::{Config, DEFAULTS};
     use std::time::Duration;
 
-    const DEFAULT_MAX_RETRIES: u32 = 3;
+    const DEFAULT_MAX_RETRIES: u8 = 3;
     const DEFAULT_RETRY_FACTOR_SECS: u64 = 1;
 
-    /// Sets the max number of retries a `config` is configured with when using `Config::with_defaults()`.
-    pub fn set_max_retries_default(num_retries: u32) {
+    /// Sets the max number of retries a `config` is configured with when using `Builder::default()`.
+    pub fn set_max_retries_default(num_retries: u8) {
         DEFAULTS.lock().max_retries.set(Some(num_retries));
     }
 
-    /// Sets the retry factor a `config` is configured with when using `Config::with_defaults()`.
+    /// Sets the retry factor a `config` is configured with when using `Builder::default()`.
     pub fn set_retry_factor_default(retry_factor: Duration) {
         DEFAULTS.lock().set_retry_factor_from(retry_factor);
     }
 
-    /// Specifies that retries should be disabled by default when using `Config::with_defaults()`.
+    /// Specifies that retries should be disabled by default when using `Builder::default()`.
     pub fn set_retries_default_disabled() {
         set_max_retries_default(0);
     }
 
     impl Config {
-        pub fn set_retry_factor_from(&mut self, duration: Duration) -> Option<u64> {
-            self.retry_factor.set(Some(duration.as_nanos() as u64))
+        pub fn get_retry_factor_duration(&self) -> Option<Duration> {
+            self.retry_factor.get().map(Duration::from_nanos)
+        }
+
+        pub fn set_retry_factor_from(&mut self, duration: Duration) -> Option<Duration> {
+            self.retry_factor
+                .set(Some(duration.as_nanos() as u64))
+                .map(Duration::from_nanos)
+        }
+
+        pub fn try_set_retry_factor_from(&self, duration: Duration) -> Option<Duration> {
+            self.retry_factor
+                .try_set(duration.as_nanos() as u64)
+                .map(Duration::from_nanos)
+                .ok()
         }
 
         pub(super) fn set_retry_const_defaults(&mut self) {
@@ -181,35 +227,30 @@ mod retry {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::Config;
-        use crate::hive::config::reset::Reset;
+        use crate::hive::inner::config::reset::Reset;
         use serial_test::serial;
         use std::time::Duration;
-
-        impl Config {
-            fn get_retry_factor_duration(&self) -> Option<Duration> {
-                self.retry_factor.get().map(Duration::from_nanos)
-            }
-        }
 
         #[test]
         #[serial]
         fn test_set_max_retries_default() {
             let reset = Reset;
             super::set_max_retries_default(1);
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(1));
             // Dropping `Reset` should reset the defaults
             drop(reset);
 
             let reset = Reset;
             super::set_retries_default_disabled();
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(0));
             drop(reset);
 
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(config.max_retries.get(), Some(super::DEFAULT_MAX_RETRIES));
         }
 
@@ -218,14 +259,14 @@ mod retry {
         fn test_set_retry_factor_default() {
             let reset = Reset;
             super::set_retry_factor_default(Duration::from_secs(2));
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(
                 config.get_retry_factor_duration(),
                 Some(Duration::from_secs(2))
             );
             // Dropping `Reset` should reset the defaults
             drop(reset);
-            let config = Config::with_defaults();
+            let config = Config::default();
             assert_eq!(
                 config.get_retry_factor_duration(),
                 Some(Duration::from_secs(super::DEFAULT_RETRY_FACTOR_SECS))

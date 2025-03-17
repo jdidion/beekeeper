@@ -4,7 +4,6 @@
 //! TODO: The `Atomic` and `AtomicNumeric` traits and implementations could be replaced with the
 //! equivalents from the `atomic`, `atomig`, or `radium` crates, but none of those seem to be
 //! well-maintained at this point.
-
 pub use num::PrimInt;
 use paste::paste;
 use std::fmt::Debug;
@@ -28,8 +27,6 @@ pub trait Atomic<T: Clone + Debug + Default>: Clone + Debug + Default + From<T> 
 pub struct Orderings {
     pub load: Ordering,
     pub swap: Ordering,
-    pub fetch_update_set: Ordering,
-    pub fetch_update_fetch: Ordering,
     pub fetch_add: Ordering,
     pub fetch_sub: Ordering,
 }
@@ -39,8 +36,6 @@ impl Default for Orderings {
         Orderings {
             load: Ordering::Acquire,
             swap: Ordering::Release,
-            fetch_update_set: Ordering::AcqRel,
-            fetch_update_fetch: Ordering::Acquire,
             fetch_add: Ordering::AcqRel,
             fetch_sub: Ordering::AcqRel,
         }
@@ -146,6 +141,7 @@ macro_rules! atomic_int {
 }
 
 atomic!(bool);
+atomic_int!(u8);
 atomic_int!(u32);
 atomic_int!(u64);
 atomic_int!(usize);
@@ -365,6 +361,7 @@ mod affinity {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::atomic::{AtomicAny, AtomicOption, MutError};
 
@@ -392,8 +389,8 @@ mod affinity {
     }
 }
 
-#[cfg(feature = "batching")]
-mod batching {
+#[cfg(any(feature = "local-batch", feature = "retry"))]
+mod local_batch {
     use super::{Atomic, AtomicOption, MutError};
     use std::fmt::Debug;
 
@@ -415,6 +412,7 @@ mod batching {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::atomic::{AtomicOption, AtomicUsize, MutError};
 
@@ -438,6 +436,7 @@ mod batching {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use paste::paste;
@@ -462,6 +461,7 @@ mod tests {
         };
     }
 
+    test_numeric_type!(AtomicU8);
     test_numeric_type!(AtomicU32);
     test_numeric_type!(AtomicU64);
     test_numeric_type!(AtomicUsize);

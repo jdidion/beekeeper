@@ -1,29 +1,26 @@
 use crate::bee::{Context, Worker, WorkerResult};
-use std::fmt::Debug;
+use derive_more::Debug;
 use std::marker::PhantomData;
+use std::{any, fmt};
 
 /// A `Worker` that simply returns the input.
-#[derive(Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[debug("EchoWorker<{}>", any::type_name::<T>())]
 pub struct EchoWorker<T>(PhantomData<T>);
 
-impl<T> Default for EchoWorker<T> {
-    fn default() -> Self {
-        EchoWorker(PhantomData)
-    }
-}
-
-impl<T: Send + Debug + 'static> Worker for EchoWorker<T> {
+impl<T: Send + fmt::Debug + 'static> Worker for EchoWorker<T> {
     type Input = T;
     type Output = T;
     type Error = ();
 
     #[inline]
-    fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
         Ok(input)
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::bee::Context;

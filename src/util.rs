@@ -1,10 +1,10 @@
 //! Utility functions for simple use cases.
 //!
 //! In all cases, the number of threads is specified as a parameter, and the function takes care of
-//! creating the [`Hive`](crate::hive::Hive), submitting tasks, collecting results, and shutting
-//! down the `Hive` properly.
+//! creating the [`Hive`](crate::hive::Hive) (with channel-based task queues), submitting tasks,
+//! collecting results, and shutting down the `Hive` properly.
 use crate::bee::stock::{Caller, OnceCaller};
-use crate::hive::{Builder, Outcome, OutcomeBatch};
+use crate::hive::{Builder, ChannelBuilder, Outcome, OutcomeBatch, TaskQueuesBuilder};
 use std::fmt::Debug;
 
 /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -28,9 +28,10 @@ where
     Inputs: IntoIterator<Item = I>,
     F: FnMut(I) -> O + Send + Sync + Clone + 'static,
 {
-    Builder::default()
+    ChannelBuilder::default()
         .num_threads(num_threads)
-        .build_with(Caller::of(f))
+        .with_worker(Caller::from(f))
+        .build()
         .map(inputs)
         .map(Outcome::unwrap)
         .collect()
@@ -67,14 +68,16 @@ where
     Inputs: IntoIterator<Item = I>,
     F: FnMut(I) -> Result<O, E> + Send + Sync + Clone + 'static,
 {
-    Builder::default()
+    ChannelBuilder::default()
         .num_threads(num_threads)
-        .build_with(OnceCaller::of(f))
+        .with_worker(OnceCaller::from(f))
+        .build()
         .map(inputs)
         .into()
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use crate::hive::{Outcome, OutcomeStore};
 
@@ -90,11 +93,7 @@ mod tests {
             4,
             0..100,
             |i| {
-                if i == 50 {
-                    Err("Fiddy!")
-                } else {
-                    Ok(i + 1)
-                }
+                if i == 50 { Err("Fiddy!") } else { Ok(i + 1) }
             },
         );
         assert!(result.has_failures());
@@ -115,7 +114,7 @@ pub use retry::try_map_retryable;
 mod retry {
     use crate::bee::stock::RetryCaller;
     use crate::bee::{ApplyError, Context};
-    use crate::hive::{Builder, OutcomeBatch};
+    use crate::hive::{Builder, ChannelBuilder, OutcomeBatch, TaskQueuesBuilder};
     use std::fmt::Debug;
 
     /// Convenience function that creates a `Hive` with `num_threads` worker threads that execute the
@@ -145,7 +144,7 @@ mod retry {
     /// ```
     pub fn try_map_retryable<I, O, E, Inputs, F>(
         num_threads: usize,
-        max_retries: u32,
+        max_retries: u8,
         inputs: Inputs,
         f: F,
     ) -> OutcomeBatch<RetryCaller<I, O, E, F>>
@@ -154,17 +153,19 @@ mod retry {
         O: Send + Sync + 'static,
         E: Send + Sync + Debug + 'static,
         Inputs: IntoIterator<Item = I>,
-        F: FnMut(I, &Context) -> Result<O, ApplyError<I, E>> + Send + Sync + Clone + 'static,
+        F: FnMut(I, &Context<I>) -> Result<O, ApplyError<I, E>> + Send + Sync + Clone + 'static,
     {
-        Builder::default()
+        ChannelBuilder::default()
             .num_threads(num_threads)
             .max_retries(max_retries)
-            .build_with(RetryCaller::of(f))
+            .with_worker(RetryCaller::from(f))
+            .build()
             .map(inputs)
             .into()
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use crate::bee::ApplyError;
         use crate::hive::{Outcome, OutcomeStore};

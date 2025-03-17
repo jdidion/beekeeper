@@ -1,12 +1,12 @@
 use parking_lot::RwLock;
 use std::collections::HashSet;
-/// Enables multiple threads to synchronize the beginning of some computation. Unlike
-/// [`std::sync::Barrier`], this one keeps track of which threads have reached it and only
-/// recognizes the first wait from each thread.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread::{self, ThreadId};
 
+/// Enables multiple threads to synchronize the beginning of some computation. Unlike
+/// [`std::sync::Barrier`], this one keeps track of which threads have reached it and only
+/// recognizes the first wait from each thread.
 #[derive(Clone)]
 pub struct IndexedBarrier(Arc<Inner>);
 

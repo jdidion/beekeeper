@@ -32,7 +32,7 @@ pub trait Worker: Debug + Sized + 'static {
     ///
     /// This method should not panic. If it may panic, then [`Panic::try_call`] should be used to
     /// catch the panic and turn it into an [`ApplyError::Panic`] error.
-    fn apply(&mut self, _: Self::Input, _: &Context) -> WorkerResult<Self>;
+    fn apply(&mut self, _: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self>;
 
     /// Applies this `Worker`'s function sequentially to an iterator of inputs and returns a
     /// iterator over the outputs.
@@ -65,7 +65,7 @@ pub trait RefWorker: Debug + Sized + 'static {
     /// The type of error produced by this function.
     type Error: Send + Debug;
 
-    fn apply_ref(&mut self, _: &Self::Input, _: &Context) -> RefWorkerResult<Self>;
+    fn apply_ref(&mut self, _: &Self::Input, _: &Context<Self::Input>) -> RefWorkerResult<Self>;
 }
 
 /// Blanket implementation of `Worker` for `RefWorker` that calls `apply_ref` and catches any
@@ -81,7 +81,7 @@ where
     type Output = O;
     type Error = E;
 
-    fn apply(&mut self, input: Self::Input, ctx: &Context) -> WorkerResult<Self> {
+    fn apply(&mut self, input: Self::Input, ctx: &Context<Self::Input>) -> WorkerResult<Self> {
         match Panic::try_call(None, || self.apply_ref(&input, ctx)) {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(error)) => Err(error.into_apply_error(input)),
@@ -94,6 +94,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{ApplyRefError, RefWorker, RefWorkerResult, Worker, WorkerResult};
     use crate::bee::{ApplyError, Context};
@@ -106,7 +107,7 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply(&mut self, input: Self::Input, _: &Context) -> WorkerResult<Self> {
+        fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
             Ok(input + 1)
         }
     }
@@ -133,7 +134,11 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply_ref(&mut self, input: &Self::Input, _: &Context) -> RefWorkerResult<Self> {
+        fn apply_ref(
+            &mut self,
+            input: &Self::Input,
+            _: &Context<Self::Input>,
+        ) -> RefWorkerResult<Self> {
             match *input {
                 0 => Err(ApplyRefError::Retryable(())),
                 1 => Err(ApplyRefError::Fatal(())),

@@ -1,5 +1,6 @@
 //! Utilities for pinning worker threads to CPU cores in a `Hive`.
-use parking_lot::Mutex;
+use core_affinity::{self, CoreId};
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::HashSet;
 use std::ops::{BitOr, BitOrAssign, Sub, SubAssign};
 use std::sync::LazyLock;
@@ -16,62 +17,55 @@ use std::sync::LazyLock;
 /// If new cores become available during the life of the program, they are immediately available
 /// for worker thread scheduling, but they are *not* available for pinning until the
 /// `refresh()` function is called.
-static CORES: LazyLock<Mutex<Vec<Core>>> = LazyLock::new(|| {
-    core_affinity::get_core_ids()
-        .map(|core_ids| core_ids.into_iter().map(Core::new).collect())
-        .or_else(|| Some(Vec::new()))
-        .map(Mutex::new)
-        .unwrap()
-});
+pub static CORES: LazyLock<CoreIds> = LazyLock::new(CoreIds::from_system);
 
-/// Updates `CORES` with the currently available CPU core IDs. The correspondence between the
-/// index in the sequence and the core ID is maintained for any core IDs already in the sequence.
-/// If a previously available core has become unavailable, its `available` flag is set to `false`.
-/// Any new cores are appended to the end of the sequence. Returns the number of new cores added to
-/// the sequence.
-pub fn refresh() -> usize {
-    let mut cur_ids = CORES.lock();
-    let mut new_ids: HashSet<_> = core_affinity::get_core_ids()
-        .map(|core_ids| core_ids.into_iter().collect())
-        .unwrap_or_default();
-    cur_ids.iter_mut().for_each(|core| {
-        if new_ids.contains(&core.id) {
-            core.available = true;
-            new_ids.remove(&core.id);
-        } else {
-            core.available = false;
-        }
-    });
-    let num_new_ids = new_ids.len();
-    cur_ids.extend(new_ids.into_iter().map(Core::new));
-    num_new_ids
-}
+/// Global list of CPU core IDs.
+///
+/// This is meant to be created at most once, when `CORES` is initialized.
+pub struct CoreIds(Mutex<Vec<Core>>);
 
-/// Represents a CPU core.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Core {
-    /// the OS-specific core ID
-    id: core_affinity::CoreId,
-    /// whether this core is currently available for pinning threads
-    available: bool,
-}
-
-impl Core {
-    /// Creates a new `Core` with `available` set to `true`.
-    fn new(core_id: core_affinity::CoreId) -> Self {
-        Self {
-            id: core_id,
-            available: true,
-        }
+impl CoreIds {
+    fn from_system() -> Self {
+        Self::new(
+            core_affinity::get_core_ids()
+                .map(|core_ids| core_ids.into_iter().map(Core::from).collect())
+                .unwrap_or_default(),
+        )
     }
 
-    /// Attempts to pin the current thread to this CPU core. Returns `true` if the thread was
-    /// successfully pinned.
-    ///
-    /// If the `available` flag is `false`, this immediately returns `false` and does not attempt
-    /// to pin the thread.
-    pub fn try_pin_current(&self) -> bool {
-        self.available && core_affinity::set_for_current(self.id)
+    fn new(core_ids: Vec<Core>) -> Self {
+        Self(Mutex::new(core_ids))
+    }
+
+    fn get(&self, index: usize) -> Option<Core> {
+        self.0.lock().get(index).cloned()
+    }
+
+    fn update_from(&self, mut new_ids: HashSet<CoreId>) -> usize {
+        let mut cur_ids = self.0.lock();
+        cur_ids.iter_mut().for_each(|core| {
+            if new_ids.contains(&core.id) {
+                core.available = true;
+                new_ids.remove(&core.id);
+            } else {
+                core.available = false;
+            }
+        });
+        let num_new_ids = new_ids.len();
+        cur_ids.extend(new_ids.into_iter().map(Core::from));
+        num_new_ids
+    }
+
+    /// Updates `CORES` with the currently available CPU core IDs. The correspondence between the
+    /// index in the sequence and the core ID is maintained for any core IDs already in the
+    /// sequence. If a previously available core has become unavailable, its `available` flag is
+    /// set to `false`. Any new cores are appended to the end of the sequence. Returns the number
+    /// of new cores added to the sequence.
+    pub fn refresh(&self) -> usize {
+        let new_ids: HashSet<_> = core_affinity::get_core_ids()
+            .map(|core_ids| core_ids.into_iter().collect())
+            .unwrap_or_default();
+        self.update_from(new_ids)
     }
 }
 
@@ -80,16 +74,12 @@ impl Core {
 ///
 /// The mapping between CPU indices and core IDs is platform-specific, but the same index is
 /// guaranteed to always refer to the same physical core.
-#[derive(Default, Clone, PartialEq, Eq, Debug)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Cores(Vec<usize>);
 
 impl Cores {
-    /// Returns an empty `Cores`.
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    /// Returns a `Cores` set populated with the first `n` CPU indices.
+    /// Returns a `Cores` set populated with the first `n` CPU indices (up to the number of
+    /// available cores).
     pub fn first(n: usize) -> Self {
         Self(Vec::from_iter(0..n.min(num_cpus::get())))
     }
@@ -122,24 +112,17 @@ impl Cores {
     /// Returns the `Core` associated with the specified index if the index exists and the core
     /// is available, otherwise returns `None`.
     pub fn get(&self, index: usize) -> Option<Core> {
-        let cores = CORES.lock();
         self.0
             .get(index)
-            .and_then(|&index| cores.get(index).cloned())
+            .and_then(|&index| CORES.get(index))
             .filter(|core| core.available)
     }
 
     /// Returns an iterator over `(core_index, Option<Core>)`, where `Some(core)` can be used to
     /// set the core affinity of the current thread. The `core` will be `None` for cores that are
     /// not currently available.
-    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<Core>)> + '_ {
-        let cores = CORES.lock();
-        self.0.iter().cloned().map(move |index| {
-            (
-                index,
-                cores.get(index).filter(|core| core.available).cloned(),
-            )
-        })
+    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<Core>)> {
+        CoreIter::new(self.0.iter().cloned())
     }
 }
 
@@ -187,13 +170,105 @@ impl<I: IntoIterator<Item = usize>> From<I> for Cores {
     }
 }
 
+/// Iterator over core (index, id) tuples. This itertor holds the `MutexGuard` for the shared
+/// global `CoreIds`, so only one thread can iterate at a time.
+pub struct CoreIter<'a, I: Iterator<Item = usize>> {
+    index_iter: I,
+    cores: MutexGuard<'a, Vec<Core>>,
+}
+
+impl<I: Iterator<Item = usize>> CoreIter<'_, I> {
+    fn new(index_iter: I) -> Self {
+        Self {
+            index_iter,
+            cores: CORES.0.lock(),
+        }
+    }
+}
+
+impl<I: Iterator<Item = usize>> Iterator for CoreIter<'_, I> {
+    type Item = (usize, Option<Core>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.index_iter.next()?;
+        let core = self.cores.get(index).cloned().filter(|core| core.available);
+        Some((index, core))
+    }
+}
+
+/// Represents a CPU core.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Core {
+    /// the OS-specific core ID
+    id: CoreId,
+    /// whether this core is currently available for pinning threads
+    available: bool,
+}
+
+impl Core {
+    fn new(id: CoreId, available: bool) -> Self {
+        Self { id, available }
+    }
+
+    /// Attempts to pin the current thread to this CPU core. Returns `true` if the thread was
+    /// successfully pinned.
+    ///
+    /// If the `available` flag is `false`, this immediately returns `false` and does not attempt
+    /// to pin the thread.
+    pub fn try_pin_current(&self) -> bool {
+        self.available && core_affinity::set_for_current(self.id)
+    }
+}
+
+impl From<CoreId> for Core {
+    /// Creates a new `Core` with `available` set to `true`.
+    fn from(id: CoreId) -> Self {
+        Self::new(id, true)
+    }
+}
+
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_core_ids() {
+        let core_ids = CoreIds::new((0..10usize).map(|id| Core::from(CoreId { id })).collect());
+        assert_eq!(
+            (0..10)
+                .flat_map(|i| core_ids.get(i).map(|id| id.id))
+                .collect::<Vec<_>>(),
+            (0..10).map(|id| CoreId { id }).collect::<Vec<_>>()
+        );
+        assert!((0..10).all(|i| core_ids.get(i).map(|id| id.available).unwrap_or_default()));
+        let new_ids: HashSet<CoreId> = vec![10, 11, 1, 3, 5, 7, 9]
+            .into_iter()
+            .map(|id| CoreId { id })
+            .collect();
+        let num_added = core_ids.update_from(new_ids);
+        assert_eq!(num_added, 2);
+        let mut new_core_ids = (0..12)
+            .flat_map(|i| core_ids.get(i).map(|id| id.id))
+            .collect::<Vec<_>>();
+        new_core_ids.sort();
+        assert_eq!(
+            new_core_ids,
+            (0..12).map(|id| CoreId { id }).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (0..12)
+                .flat_map(|i| core_ids.get(i))
+                .filter(|id| id.available)
+                .count(),
+            7
+        );
+    }
 
     #[test]
     fn test_empty() {
-        assert_eq!(Cores::empty().0.len(), 0);
+        assert_eq!(Cores::default().0.len(), 0);
     }
 
     #[test]

@@ -16,39 +16,37 @@ is sometimes called a "worker pool").
 ### Overview
 
 * Operations are defined by implementing the [`Worker`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html) trait.
-* A [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html) is used to configure and create a worker pool
-  called a [`Hive`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html).
+* A [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/trait.Builder.html) is used to configure and create a worker pool called a [`Hive`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html).
+* `Hive` is generic over
+    * The type of [`Queen`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html) which creates `Worker` instances
+    * The type of [`TaskQueues`](https://docs.rs/beekeeper/latest/beekeeper/hive/trait.TaskQueues.html), which provides the global and worker thread-local queues for managing tasks
+* Currently, two `TaskQueues` implementations are available:
+    * Channel: uses a [`crossbeam`](https://github.com/crossbeam-rs/crossbeam) channel to send tasks from the `Hive` to worker threads
+        * When the `local-batch` feature is enabled, local batch queues are implemented using [`crossbeam_queue::ArrayQueue`](https://docs.rs/crossbeam/latest/crossbeam/queue/struct.ArrayQueue.html)
+    * Workstealing:
 * The `Hive` creates a `Worker` instance for each thread in the pool.
 * Each thread in the pool continually:
-    * Recieves a task from an input [`channel`](https://doc.rust-lang.org/stable/std/sync/mpsc/fn.channel.html),
+    * Receives a task from an input queue,
     * Calls its `Worker`'s [`apply`](https://docs.rs/beekeeper/latest/beekeeper/bee/worker/trait.Worker.html#method.apply) method on the input, and
     * Produces an [`Outcome`](https://docs.rs/beekeeper/latest/beekeeper/hive/outcome/outcome/enum.Outcome.html).
 * Depending on which of `Hive`'s methods are called to submit a task (or batch of tasks), the
   `Outcome`(s) may be returned as an `Iterator`, sent to an output `channel`, or stored in the
   `Hive` for later retrieval.
 * A `Hive` may create `Worker`s may in one of three ways:
-    * Call the `default()` function on a `Worker` type that implements
-      [`Default`](std::default::Default)
-    * Clone an instance of a `Worker` that implements
-      [`Clone`](std::clone::Clone)
-    * Call the [`create()`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html#method.create) method on a worker factory that
-      implements the [`Queen`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html) trait.
-* Both `Worker`s and `Queen`s may be stateful, i.e., `Worker::apply()` and `Queen::create()`
-  both take `&mut self`.
+    * Call the `default()` function on a `Worker` type that implements [`Default`](std::default::Default)
+    * Clone an instance of a `Worker` that implements [`Clone`](std::clone::Clone)
+    * Call the [`create()`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html#method.create) method on a worker factory that implements the [`Queen`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.Queen.html) trait.
+* A `Worker`s may be stateful, i.e., `Worker::apply()` takes a `&mut self`
+* While `Queen` is not stateful, [`QueenMut`](https://docs.rs/beekeeper/latest/beekeeper/bee/queen/trait.QueenMut.html) may be (i.e., it's `create()` method takes a `&mut self`)
 * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
-* A `Hive` may be [`suspend`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.suspend)ed and
-  [`resume`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.resume)d at any time. When a `Hive` is suspended, worker threads
-  do no work and tasks accumulate in the input `channel`.
-* Several utility functions are provided in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module. Notably, the `map`
-  and `try_map` functions enable simple parallel processing of a single batch of tasks.
-* Several useful `Worker` implementations are provided in the [stock](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/) module.
-  Most notable are those in the [`call`](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/call/) submodule, which provide
-  different ways of wrapping `callable`s, i.e., closures and function pointers.
+* A `Hive` may be [`suspend`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.suspend)ed and [`resume`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.resume)d at any time. When a `Hive` is suspended, worker threads do no work and tasks accumulate in the input queue.
+* Several utility functions are provided in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module. Notably, the `map` and `try_map` functions enable simple parallel processing of a single batch of tasks.
+* Several useful `Worker` implementations are provided in the [stock](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/) module. Most notable are those in the [`call`](https://docs.rs/beekeeper/latest/beekeeper/bee/stock/call/) submodule, which provide different ways of wrapping `callable`s, i.e., closures and function pointers.
 * The following optional features are provided via feature flags:
-    * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
-      context-switching.
-    * `batching` (>=0.3.0): worker threads take batches of tasks from the input channel and queue them locally, which may alleviate thread contention, especially when there are many short-lived tasks.
+    * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of context-switching.
+    * `local-batch` (>=0.3.0): worker threads take batches of tasks from the global input queue and add them to a local queue, which may alleviate thread contention, especially when there are many short-lived tasks.
+        * Tasks may be [`Weighted`](https://docs.rs/beekeeper/latest/beekeeper/hive/weighted/struct.Weighted.html) to enable balancing unevenly sized tasks between worker threads.
     * `retry`: Tasks that fail due to transient errors (e.g., temporarily unavailable resources)
       may be retried a set number of times, with an optional, exponentially increasing delay
       between retries.
@@ -65,31 +63,27 @@ To parallelize a task, you'll need two things:
     * Implement your own (See Example 3 below)
         * `use` the necessary traits (e.g., `use beekeeper::bee::prelude::*`)
         * Define a `struct` for your worker
-        * Implement the `Worker` trait on your struct and define the `apply` method with the
-          logic of your task
+        * Implement the `Worker` trait on your struct and define the `apply` method with the logic of your task
         * Do at least one of the following:
             * Implement `Default` for your worker
             * Implement `Clone` for your worker
-            * Create a custom worker fatory that implements the `Queen` trait
+            * Create a custom worker fatory that implements the `Queen` or `QueenMut` trait
 2. A `Hive` to execute your tasks. Your options are:
     * Use one of the convenience methods in the [util](https://docs.rs/beekeeper/latest/beekeeper/util/) module (see Example 1 below)
-    * Create a `Hive` manually using [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html) (see Examples 2
-      and 3 below)
-        * [`Builder::new()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.new) creates an empty `Builder`
-        * [`Builder::default()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.default) creates a `Builder`
+    * Create a `Hive` manually using a [`Builder`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/trait.Builder.html) (see Examples 2 and 3 below)
+        * [`OpenBuilder`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html) is the most general builder
+        * [`OpenBuilder::new()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.new) creates an empty `OpenBuilder`
+        * [`Builder::default()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.default) creates a `OpenBuilder`
           with the global default settings (which may be changed using the functions in the
           [`hive`](https://docs.rs/beekeeper/latest/beekeeper/hive/) module, e.g., `beekeeper::hive::set_num_threads_default(4)`).
-        * Use one of the `build_*` methods to build the `Hive`:
-            * If you have a `Worker` that implements `Default`, use
-              [`build_with_default::<MyWorker>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_with_default)
-            * If you have a `Worker` that implements `Clone`, use
-              [`build_with(MyWorker::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_with)
-            * If you have a custom `Queen`, use
-              [`build_default::<MyQueen>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build_default) if it implements
-              `Default`, otherwise use [`build(MyQueen::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.build)
-        * Note that [`Builder::num_threads()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.num_threads) must be set
-          to a non-zero value, otherwise the built `Hive` will not start any worker threads
-          until you call the [`Hive::grow()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.grow) method.
+        * The builder must be specialized for the `Queen` and `TaskQueues` types:
+            * If you have a `Worker` that implements `Default`, use [`with_worker_default::<MyWorker>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_worker_default)
+            * If you have a `Worker` that implements `Clone`, use [`with_worker(MyWorker::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_worker)
+            * If you have a custom `Queen`, use [`with_queen_default::<MyQueen>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_queen_default) if it implements `Default`, otherwise use [`with_queen(MyQueen::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_queen)
+            * If you have a custom `QueenMut`, use [`with_queen_mut_default::<MyQueenMut>()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_queen_mut_default) if it implements `Default`, otherwise use [`with_queen_mut(MyQueenMut::new())`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_queen_mut)
+            * Use the [`with_channel_queues`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_channel_queues.html) or [`with_workstealing_queues`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.OpenBuilder.html#method.with_workstealing_queues.html) to configure the `TaskQueues` implementation
+        * Use the `build()` methods to build the `Hive`
+        * Note that [`Builder::num_threads()`](https://docs.rs/beekeeper/latest/beekeeper/hive/builder/struct.Builder.html#method.num_threads) must be set to a non-zero value, otherwise the built `Hive` will not start any worker threads until you call the [`Hive::grow()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.grow) method.
 
 Once you've created a `Hive`, use its methods to submit tasks for processing. There are
 four groups of methods available:
@@ -98,7 +92,7 @@ four groups of methods available:
   that implements `IntoIterator<IntoIter: ExactSizeIterator>`)
 * `map`: submits an arbitrary batch of tasks (i.e., anything that implements `IntoIterator`)
 * `scan`: Similar to `map`, but you also provide 1) an initial value for a state variable, and
-  2) a function that transforms each item in the input iterator into the input type required by
+  1) a function that transforms each item in the input iterator into the input type required by
   the `Worker`, and also has access to (and may modify) the state variable.
 
 There are multiple methods in each group that differ by how the task results (called
@@ -108,7 +102,7 @@ There are multiple methods in each group that differ by how the task results (ca
 * The methods with the `_unordered` suffix instead return an unordered iterator, which may be
   more performant than the ordered iterator
 * The methods with the `_send` suffix accept a channel `Sender` and send the `Outcome`s to that
-  channel as they are completed
+  channel as they are completed (see this [note](https://docs.rs/beekeeper/latest/beekeeper/hive/index.html#outcome-channels)).
 * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
   retrieved later using the [`Hive::take_stored()`](https://docs.rs/beekeeper/latest/beekeeper/hive/struct.Hive.html#method.take_stored) method, using
   one of the `remove*` methods (which requires
@@ -170,14 +164,14 @@ let hive = Builder::new()
 // return results to your own channel...
 let (tx, rx) = outcome_channel();
 let _ = hive.swarm_send(
-    (0..10).map(|i: i32| Thunk::of(move || i * i)),
+    (0..10).map(|i: i32| Thunk::from(move || i * i)),
     tx
 );
 assert_eq!(285, rx.into_outputs().take(10).sum());
 
 // return results as an iterator...
 let total = hive
-    .swarm_unordered((0..10).map(|i: i32| Thunk::of(move || i * -i)))
+    .swarm_unordered((0..10).map(|i: i32| Thunk::from(move || i * -i)))
     .into_outputs()
     .sum();
 assert_eq!(-285, total);
@@ -230,7 +224,7 @@ impl Worker for CatWorker {
     fn apply(
         &mut self,
         input: Self::Input,
-        _: &Context
+        _: &Context<Self::Input>
     ) -> WorkerResult<Self> {
         self.write_char(input).map_err(|error| {
             ApplyError::Fatal { input: Some(input), error }
@@ -252,7 +246,7 @@ impl CatQueen {
     }
 }
 
-impl Queen for CatQueen {
+impl QueenMut for CatQueen {
     type Kind = CatWorker;
 
     fn create(&mut self) -> Self::Kind {
@@ -288,7 +282,7 @@ impl Drop for CatQueen {
 // build the Hive
 let hive = Builder::new()
     .num_threads(4)
-    .build_default::<CatQueen>()
+    .build_default_mut::<CatQueen>()
     .unwrap();
 
 // prepare inputs
@@ -311,8 +305,11 @@ assert_eq!(output, b"abcdefgh");
 // shutdown the hive, use the Queen to wait on child processes, and
 // report errors
 let (mut queen, _outcomes) = hive.try_into_husk().unwrap().into_parts();
-let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
-    queen.wait_for_all().into_iter().partition(Result::is_ok);
+let (wait_ok, wait_err): (Vec<_>, Vec<_>) = queen
+    .into_inner()
+    .wait_for_all()
+    .into_iter()
+    .partition(Result::is_ok);
 if !wait_err.is_empty() {
     panic!(
         "Error(s) occurred while waiting for child processes: {:?}",
@@ -337,9 +334,9 @@ if !exec_err_codes.is_empty() {
 
 ## Status
 
-The `beekeeper` API is generally considered to be stable, but additional real-world battle-testing
-is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for
-improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
+Early versions of this crate (< 0.3) had some fatal design flaws that needed to be corrected with breaking changes (see the [changelog](CHANGELOG.md)).
+
+As of version 0.3, the `beekeeper` API is generally considered to be stable, but additional real-world battle-testing is desired before promoting the version to `1.0.0`. If you identify bugs or have suggestions for improvement, please [open an issue](https://github.com/jdidion/beekeeper/issues).
 
 ## Similar libraries
 

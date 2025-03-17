@@ -91,6 +91,7 @@ impl<E> From<E> for ApplyRefError<E> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::ApplyError;
     use crate::panic::Panic;

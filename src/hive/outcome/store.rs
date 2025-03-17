@@ -1,30 +1,27 @@
-use super::{DerefOutcomes, Outcome};
+use super::Outcome;
 use crate::bee::{TaskId, Worker};
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
-/// Traits with methods that should only be accessed internally by public traits.
-pub mod sealed {
-    use crate::bee::{TaskId, Worker};
-    use crate::hive::Outcome;
-    use std::{
-        collections::HashMap,
-        ops::{Deref, DerefMut},
-    };
+/// Trait implemented by structs that provide temporary access (both read-only and mutable) to a
+/// reference to a map of outcomes.
+pub trait DerefOutcomes<W: Worker> {
+    /// Returns a read-only reference to a map of task task_id to `Outcome`.
+    fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
 
-    pub trait DerefOutcomes<W: Worker> {
-        /// Returns a read-only reference to a map of task task_id to `Outcome`.
-        fn outcomes_deref(&self) -> impl Deref<Target = HashMap<TaskId, Outcome<W>>>;
+    /// Returns a mutable reference to a map of task task_id to `Outcome`.
+    fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
+}
 
-        /// Returns a mutable reference to a map of task task_id to `Outcome`.
-        fn outcomes_deref_mut(&mut self) -> impl DerefMut<Target = HashMap<TaskId, Outcome<W>>>;
-    }
+/// Trait implemented by structs that provide (thread-unsafe) access to an owned outcome map.
+pub trait OwnedOutcomes<W: Worker>: Sized {
+    /// Returns an owned map of task task_id to `Outcome`.
+    fn outcomes(self) -> HashMap<TaskId, Outcome<W>>;
 
-    pub trait OwnedOutcomes<W: Worker>: Sized {
-        /// Returns an owned map of task task_id to `Outcome`.
-        fn outcomes(self) -> HashMap<TaskId, Outcome<W>>;
-
-        /// Returns a read-only reference to a map of task task_id to `Outcome`.
-        fn outcomes_ref(&self) -> &HashMap<TaskId, Outcome<W>>;
-    }
+    /// Returns a read-only reference to a map of task task_id to `Outcome`.
+    fn outcomes_ref(&self) -> &HashMap<TaskId, Outcome<W>>;
 }
 
 /// Trait implemented by structs that store `Outcome`s (`Hive`, `Husk`, and `OutcomeBatch`).
@@ -32,7 +29,7 @@ pub mod sealed {
 /// The first group of methods provided by this trait only require dereferencing the underlying map,
 /// while the second group of methods require the ability to borrow or take ownership of the
 /// underlying map (and thus, are not in scope for `Hive`).
-pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
+pub trait OutcomeStore<W: Worker>: DerefOutcomes<W> {
     fn len(&self) -> usize {
         self.outcomes_deref().len()
     }
@@ -59,7 +56,9 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     fn assert_empty(&self, allow_successes: bool) {
         let (unprocessed, successes, failures) = self.count();
         if !allow_successes && successes > 0 {
-            panic!("{unprocessed} unprocessed inputs, {successes} successes, and {failures} failed tasks found");
+            panic!(
+                "{unprocessed} unprocessed inputs, {successes} successes, and {failures} failed tasks found"
+            );
         } else if unprocessed > 0 || failures > 0 {
             panic!("{unprocessed} unprocessed inputs and {failures} failed tasks found");
         }
@@ -217,7 +216,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// Returns the stored `Outcome` associated with the given task_id, if any.
     fn get(&self, task_id: TaskId) -> Option<&Outcome<W>>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         self.outcomes_ref().get(&task_id)
     }
@@ -225,7 +224,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// Consumes this store and returns an iterator over the outcomes in task_id order.
     fn into_iter(self) -> impl Iterator<Item = Outcome<W>>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         self.outcomes().into_values()
     }
@@ -233,7 +232,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// Returns the successes as a `Vec` if there are no errors, otherwise panics.
     fn unwrap(self) -> Vec<W::Output>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         assert!(
             !(self.has_failures() || self.has_unprocessed()),
@@ -252,7 +251,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// they cause this method to panic.
     fn ok_or_unwrap_errors(self, drop_unprocessed: bool) -> Result<Vec<W::Output>, Vec<W::Error>>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         assert!(
             drop_unprocessed || !self.has_unprocessed(),
@@ -274,7 +273,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// inputs are returned in task_id order, otherwise they are unordered.
     fn into_unprocessed(self, ordered: bool) -> Vec<W::Input>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         let values = self
             .outcomes()
@@ -300,7 +299,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// that were queued but not yet processed when the `Hive` was dropped.
     fn iter_unprocessed(&self) -> impl Iterator<Item = (&TaskId, &W::Input)>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
@@ -314,7 +313,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// that were successfully processed but not sent to any output channel.
     fn iter_successes(&self) -> impl Iterator<Item = (&TaskId, &W::Output)>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
@@ -328,7 +327,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
     /// that were successfully processed but not sent to any output channel.
     fn iter_failures(&self) -> impl Iterator<Item = &Outcome<W>>
     where
-        Self: sealed::OwnedOutcomes<W>,
+        Self: OwnedOutcomes<W>,
     {
         self.outcomes_ref()
             .values()
@@ -340,6 +339,7 @@ pub trait OutcomeStore<W: Worker>: sealed::DerefOutcomes<W> {
 impl<W: Worker, D: DerefOutcomes<W>> OutcomeStore<W> for D {}
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::OutcomeStore;
     use crate::bee::{Context, Worker, WorkerResult};
@@ -354,7 +354,7 @@ mod tests {
         type Output = u8;
         type Error = ();
 
-        fn apply(&mut self, i: Self::Input, _: &Context) -> WorkerResult<Self> {
+        fn apply(&mut self, i: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
             Ok(i)
         }
     }
@@ -529,8 +529,8 @@ mod tests {
 
 #[cfg(all(test, feature = "retry"))]
 mod retry_tests {
-    use super::tests::TestWorker;
     use super::OutcomeStore;
+    use super::tests::TestWorker;
     use crate::hive::{Outcome, OutcomeBatch};
     use crate::panic::Panic;
 

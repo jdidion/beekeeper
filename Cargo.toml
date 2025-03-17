@@ -2,26 +2,33 @@
 name = "beekeeper"
 description = "A full-featured worker pool library for parallelizing tasks"
 version = "0.3.0"
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
+rust-version = "1.85"
 authors = ["John Didion <github@didion.net>"]
 repository = "https://github.com/jdidion/beekeeper"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+crossbeam-channel = "0.5.13"
 crossbeam-deque = "0.8.6"
+crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.20"
+derive_more = { version = "2.0.1", features = ["debug"] }
+nanorand = { version = "0.7.0", default-features = false, features = [
+    "std",
+    "tls",
+] }
 num = "0.4.3"
 num_cpus = "1.16.0"
 parking_lot = "0.12.3"
 paste = "1.0.15"
+simple-mermaid = "0.2.0"
 thiserror = "1.0.63"
 # required with the `affinity` feature
 core_affinity = { version = "0.8.1", optional = true }
-# required with the `batching` feature
-crossbeam-queue = { version = "0.3.12", optional = true }
-# alternate channel implementations that can be enabled with features
-crossbeam-channel = { version = "0.5.13", optional = true }
+# required with alternate outcome channel implementations that can be enabled with features
+# NOTE: these version requirements could be relaxed as we don't actually depend on the
+# functionality of these crates internally (other than in tests)
 flume = { version = "0.11.1", optional = true }
 loole = { version = "0.4.0", optional = true }
 
@@ -29,24 +36,31 @@ loole = { version = "0.4.0", optional = true }
 divan = "0.1.17"
 itertools = "0.14.0"
 serial_test = "3.2.0"
-#rstest = "0.22.0"
+rstest = "0.22.0"
 stacker = "0.1.17"
+aquamarine = "0.6.0"
+simple-mermaid = "0.2.0"
 
 [[bench]]
 name = "perf"
 harness = false
 
 [features]
-default = []
+default = ["local-batch"]
 affinity = ["dep:core_affinity"]
-batching = ["dep:crossbeam-queue"]
+local-batch = []
 retry = []
-crossbeam = ["dep:crossbeam-channel"]
+crossbeam = []
 flume = ["dep:flume"]
 loole = ["dep:loole"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage,coverage_nightly)',
+] }
+
 [package.metadata.cargo-all-features]
-allowlist = ["affinity", "batching", "retry"]
+allowlist = ["affinity", "local-batch", "retry"]
 
 [profile.release]
 lto = true

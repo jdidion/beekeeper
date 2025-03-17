@@ -37,7 +37,7 @@ impl<W: Worker> UnorderedOutcomeIterator<W> {
     {
         let task_ids: BTreeSet<_> = task_ids.into_iter().collect();
         Self {
-            inner: Box::new(inner.into_iter().take(task_ids.len())),
+            inner: Box::new(inner.into_iter()),
             task_ids,
         }
     }
@@ -47,19 +47,27 @@ impl<W: Worker> Iterator for UnorderedOutcomeIterator<W> {
     type Item = Outcome<W>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.task_ids.is_empty() {
+            return None;
+        }
         loop {
             match self.inner.next() {
                 Some(outcome) if self.task_ids.remove(outcome.task_id()) => break Some(outcome),
-                Some(_) => continue, // drop unrequested outcomes
-                None if !self.task_ids.is_empty() => {
+                None => {
                     // convert extra task_ids to Missing outcomes
                     break Some(Outcome::Missing {
                         task_id: self.task_ids.pop_first().unwrap(),
                     });
                 }
-                None => break None,
+                _ => continue, // drop unrequested outcomes
             }
         }
+        .inspect(|outcome| {
+            // if the originating task submitted subtasks, add their IDs to the queue
+            if let Some(subtask_ids) = outcome.subtask_ids() {
+                self.task_ids.extend(subtask_ids);
+            }
+        })
     }
 }
 
@@ -84,7 +92,7 @@ impl<W: Worker> OrderedOutcomeIterator<W> {
     {
         let task_ids: VecDeque<TaskId> = task_ids.into_iter().collect();
         Self {
-            inner: Box::new(inner.into_iter().take(task_ids.len())),
+            inner: Box::new(inner.into_iter()),
             buf: HashMap::with_capacity(task_ids.len()),
             task_ids,
         }
@@ -122,10 +130,19 @@ impl<W: Worker> Iterator for OrderedOutcomeIterator<W> {
             //if !self.buf.is_empty() { .. }
             break None;
         }
+        .inspect(|outcome| {
+            // if the originating task submitted subtasks, add their IDs to the queue
+            if let Some(subtask_ids) = outcome.subtask_ids() {
+                self.task_ids.extend(subtask_ids);
+            }
+        })
     }
 }
 
 /// Extension trait for iterators over `Outcome`s.
+///
+/// Note that, if your worker submits additional tasks to the `Hive`, their `Outcome`s will be
+/// included in the iterator.
 pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized {
     /// Consumes this iterator and returns an unordered iterator over the `Outcome`s with the
     /// specified `task_ids`.
@@ -233,6 +250,7 @@ pub trait OutcomeIteratorExt<W: Worker>: IntoIterator<Item = Outcome<W>> + Sized
 impl<W: Worker, T: IntoIterator<Item = Outcome<W>>> OutcomeIteratorExt<W> for T {}
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{OrderedOutcomeIterator, UnorderedOutcomeIterator};
     use crate::bee::stock::EchoWorker;
