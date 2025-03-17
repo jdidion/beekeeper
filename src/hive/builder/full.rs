@@ -17,7 +17,7 @@ pub struct FullBuilder<Q: Queen, T: TaskQueues<Q::Kind>> {
 
 impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
     /// Creates a new `FullBuilder` with the given queen and no options configured.
-    pub fn empty<I: Into<Q>>(queen: Q) -> Self {
+    pub fn empty(queen: Q) -> Self {
         Self {
             config: Config::empty(),
             queen,
@@ -27,10 +27,10 @@ impl<Q: Queen, T: TaskQueues<Q::Kind>> FullBuilder<Q, T> {
 
     /// Creates a new `FullBuilder` with the given `queen` and options configured with global
     /// defaults.
-    pub fn preset<I: Into<Q>>(queen: I) -> Self {
+    pub fn preset(queen: Q) -> Self {
         Self {
             config: Config::default(),
-            queen: queen.into(),
+            queen,
             _queues: PhantomData,
         }
     }
@@ -91,8 +91,8 @@ mod tests {
     #[rstest]
     fn test_channel<F>(
         #[values(
-            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::empty::<TestQueen>,
-            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::preset::<TestQueen>
+            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::empty,
+            FullBuilder::<TestQueen, ChannelTaskQueues<EchoWorker<usize>>>::preset
         )]
         factory: F,
     ) where
@@ -105,8 +105,8 @@ mod tests {
     #[rstest]
     fn test_workstealing<F>(
         #[values(
-            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::empty::<TestQueen>,
-            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::preset::<TestQueen>
+            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::empty,
+            FullBuilder::<TestQueen, WorkstealingTaskQueues<EchoWorker<usize>>>::preset
         )]
         factory: F,
     ) where

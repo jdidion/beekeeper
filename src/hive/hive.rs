@@ -447,7 +447,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
 
     /// Returns the number of worker threads that have been requested, i.e., the maximum number of
     /// tasks that could be processed concurrently. This may be greater than
-    /// [`active_workers`](Self::active_workers) if any of the worker threads failed to start.
+    /// [`alive_workers`](Self::alive_workers) if any of the worker threads failed to start.
     pub fn max_workers(&self) -> usize {
         self.shared().num_threads()
     }
@@ -491,8 +491,8 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<W>> Hive<Q, T> {
     /// corrupted such that it is no longer able to process tasks.
     ///
     /// Note that, when a `Hive` is poisoned, it is still possible to call methods that extract
-    /// its stored [`Outcome`]s (e.g., [`take_stored`](Self::take_stored)) or consume it (e.g.,
-    /// [`try_into_husk`](Self::try_into_husk)).
+    /// its stored [`Outcome`]s (e.g., [`remove_all`](crate::hive::OutcomeStore::remove_all)) or
+    /// consume it (e.g., [`try_into_husk`](Self::try_into_husk)).
     pub fn is_poisoned(&self) -> bool {
         self.shared().is_poisoned()
     }

@@ -23,7 +23,7 @@ jobs:
           cargo clippy --all-targets -F affinity,local-batch,retry \
             -- -D warnings $(cat .lints | cut -f1 -d"#" | tr '\n' ' ')
       - run: cargo fmt -- --check
-      - run: cargo doc -F affinity,local-batch,retry
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc -F affinity,local-batch,retry
       - run: cargo test -F affinity,local-batch,retry --doc
 
   coverage:

@@ -11,8 +11,8 @@ pub trait BuilderConfig {
 /// This is a sealed trait, meaning it cannot be implemented outside of this crate.
 pub trait Builder: BuilderConfig + Sized {
     /// Sets the maximum number of worker threads that will be alive at any given moment in the
-    /// built [`Hive`]. If not specified, the built `Hive` will not be initialized with worker
-    /// threads until [`Hive::grow`] is called.
+    /// built [`Hive`](crate::hive::Hive). If not specified, the built `Hive` will not be
+    /// initialized with worker threads until [`Hive::grow`](crate::hive::Hive::grow) is called.
     ///
     /// # Examples
     ///
@@ -49,7 +49,8 @@ pub trait Builder: BuilderConfig + Sized {
         self
     }
 
-    /// Specifies that the built [`Hive`] will use all available CPU cores for worker threads.
+    /// Specifies that the built [`Hive`](crate::hive::Hive) will use all available CPU cores for
+    /// worker threads.
     ///
     /// # Examples
     ///
@@ -80,8 +81,9 @@ pub trait Builder: BuilderConfig + Sized {
         self
     }
 
-    /// Sets the thread name for each of the threads spawned by the built [`Hive`]. If not
-    /// specified, threads spawned by the thread pool will be unnamed.
+    /// Sets the thread name for each of the threads spawned by the built
+    /// [`Hive`](crate::hive::Hive). If not specified, threads spawned by the thread pool will be
+    /// unnamed.
     ///
     /// # Examples
     ///
@@ -111,9 +113,9 @@ pub trait Builder: BuilderConfig + Sized {
         self
     }
 
-    /// Sets the stack size (in bytes) for each of the threads spawned by the built [`Hive`].
-    /// If not specified, threads spawned by the hive will have a stack size [as specified in
-    /// the `std::thread` documentation][thread].
+    /// Sets the stack size (in bytes) for each of the threads spawned by the built
+    /// [`Hive`](crate::hive::Hive). If not specified, threads spawned by the hive will have a
+    /// stack size [as specified in the `std::thread` documentation][thread].
     ///
     /// [thread]: https://doc.rust-lang.org/nightly/std/thread/index.html#stack-size
     ///

@@ -1,6 +1,6 @@
-use super::FullBuilder;
+use super::{Builder, FullBuilder};
 use crate::bee::{CloneQueen, DefaultQueen, Queen, QueenCell, QueenMut, Worker};
-use crate::hive::{Builder, TaskQueues};
+use crate::hive::TaskQueues;
 
 /// Trait implemented by builders specialized to a `TaskQueues` type.
 pub trait TaskQueuesBuilder: Builder + Clone + Default + Sized {
@@ -12,10 +12,7 @@ pub trait TaskQueuesBuilder: Builder + Clone + Default + Sized {
 
     /// Consumes this `Builder` and returns a new [`FullBuilder`] using the given [`Queen`] to
     /// create [`Worker`]s.
-    fn with_queen<Q: Queen, I: Into<Q>>(
-        self,
-        queen: I,
-    ) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>>;
+    fn with_queen<Q: Queen>(self, queen: Q) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>>;
 
     /// Consumes this `Builder` and returns a new [`FullBuilder`] using a [`Queen`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
@@ -78,12 +75,8 @@ pub mod channel {
 
         /// Consumes this `Builder` and returns a new [`FullBuilder`] using the given [`Queen`] to
         /// create [`Worker`]s.
-        fn with_queen<Q, I>(self, queen: I) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>>
-        where
-            Q: Queen,
-            I: Into<Q>,
-        {
-            FullBuilder::from_config_and_queen(self.0, queen.into())
+        fn with_queen<Q: Queen>(self, queen: Q) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>> {
+            FullBuilder::from_config_and_queen(self.0, queen)
         }
     }
 
@@ -118,12 +111,8 @@ pub mod workstealing {
 
         /// Consumes this `Builder` and returns a new [`FullBuilder`] using the given [`Queen`] to
         /// create [`Worker`]s.
-        fn with_queen<Q, I>(self, queen: I) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>>
-        where
-            Q: Queen,
-            I: Into<Q>,
-        {
-            FullBuilder::from_config_and_queen(self.0, queen.into())
+        fn with_queen<Q: Queen>(self, queen: Q) -> FullBuilder<Q, Self::TaskQueues<Q::Kind>> {
+            FullBuilder::from_config_and_queen(self.0, queen)
         }
     }
 

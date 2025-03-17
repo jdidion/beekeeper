@@ -23,8 +23,8 @@ use crate::hive::Config;
 ///
 /// # Examples
 ///
-/// Build a [`Hive`] that uses a maximum of eight threads simultaneously and each thread has
-/// a 8 MB stack size:
+/// Build a [`Hive`](crate::hive::Hive) that uses a maximum of eight threads simultaneously and
+/// each thread has a 8 MB stack size:
 ///
 /// ```
 /// # use beekeeper::hive::{Builder, OpenBuilder};
@@ -116,14 +116,20 @@ impl OpenBuilder {
     /// assert_eq!(husk.queen().get().num_workers, 8);
     /// # }
     /// ```
-    pub fn with_queen<Q: Queen, I: Into<Q>>(self, queen: I) -> BeeBuilder<Q> {
-        BeeBuilder::from_config_and_queen(self.0, queen.into())
+    pub fn with_queen<Q: Queen>(self, queen: Q) -> BeeBuilder<Q> {
+        BeeBuilder::from_config_and_queen(self.0, queen)
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] using a [`Queen`] created with
     /// [`Q::default()`](std::default::Default) to create [`Worker`]s.
     pub fn with_queen_default<Q: Queen + Default>(self) -> BeeBuilder<Q> {
         BeeBuilder::from_config_and_queen(self.0, Q::default())
+    }
+
+    /// Consumes this `Builder` and returns a new [`BeeBuilder`] using a [`QueenCell`] wrapping
+    /// the given [`QueenMut`] to create [`Worker`]s.
+    pub fn with_queen_mut<Q: QueenMut>(self, queen: Q) -> BeeBuilder<QueenCell<Q>> {
+        BeeBuilder::from_config_and_queen(self.0, QueenCell::new(queen))
     }
 
     /// Consumes this `Builder` and returns a new [`BeeBuilder`] using a [`QueenMut`] created with

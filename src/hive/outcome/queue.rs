@@ -8,6 +8,10 @@ use std::ops::{Deref, DerefMut};
 /// Data structure that supports queuing `Outcomes` from multiple threads (without locking) and
 /// fetching from a single thread (which requires draining the queue into a map that is behind a
 /// mutex).
+///
+/// TODO: test vs using a
+/// [`SkipMap`](https://docs.rs/crossbeam-skiplist/latest/crossbeam_skiplist/struct.SkipMap.html) or
+/// [`DashMap`](https://docs.rs/dashmap/latest/dashmap/struct.DashMap.html)
 pub struct OutcomeQueue<W: Worker> {
     queue: SegQueue<Outcome<W>>,
     outcomes: Mutex<HashMap<TaskId, Outcome<W>>>,

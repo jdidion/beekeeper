@@ -2,8 +2,8 @@
 //!
 //! A [`Hive<W, Q>`](crate::hive::Hive) has a pool of worker threads that it uses to execute tasks.
 //!
-//! The `Hive` has a [`Queen`] of type `Q`, which it uses to create a [`Worker`] of type `W` for
-//! each thread it starts in the pool.
+//! The `Hive` has a [`Queen`](crate::bee::Queen) of type `Q`, which it uses to create a
+//! [`Worker`] of type `W` for each thread it starts in the pool.
 //!
 //! Each task is submitted to the `Hive` as an input of type `W::Input`, and, optionally, a
 //! channel where the [`Outcome`] of processing the task will be sent upon completion. To these,
@@ -21,12 +21,12 @@
 //! # Creating a `Hive`
 //!
 //! The typical way to create a `Hive` is using a [`Builder`]. Use
-//! [`Builder::new()`](crate::hive::builder::Builder::new) to create an empty (completely
-//! unconfigured) `Builder`, or [`Builder::default()`](crate::hive::builder::Builder::default) to
+//! [`OpenBuilder::empty()`](crate::hive::OpenBuilder::empty) to create an empty (completely
+//! unconfigured) `Builder`, or [`OpenBuilder::default()`](crate::hive::OpenBuilder::default) to
 //! create a `Builder` configured with the global default values (see below).
 //!
-//! See the [`Builder`] documentation for more details on the options that may be configured, and
-//! the `build*` methods available to create the `Hive`.
+//! See the [`builder` module documentation](crate::hive::builder) for more details on the options
+//! that may be configured, and the `build*` methods available to create the `Hive`.
 //!
 //! Building a `Hive` consumes the `Builder`. To create multiple identical `Hive`s, you can `clone`
 //! the `Builder`.
@@ -71,12 +71,11 @@
 //! terms of its index, which is a value in the range `0..n`, where `n` is the number of available
 //! CPU cores. Internally, a mapping is maintained between the index and the OS-specific core ID.
 //!
-//! The [`Builder::core_affinity`](crate::hive::builder::Builder::core_affinity) method accepts a
-//! range of core indices that are reserved as *available* for the `Hive` to use for thread-pinning,
-//! but they may or may not actually be used (depending on the number of worker threads and core
-//! availability). The number of available cores can be smaller or larger than the number of
-//! threads. Any thread that is spawned for which there is no corresponding core index is simply
-//! started with no core affinity.
+//! The [`Builder::core_affinity`] method accepts a range of core indices that are reserved as
+//! *available* for the `Hive` to use for thread-pinning, but they may or may not actually be used
+//! (depending on the number of worker threads and core availability). The number of available
+//! cores can be smaller or larger than the number of threads. Any thread that is spawned for which
+//! there is no corresponding core index is simply started with no core affinity.
 //!
 //! ```
 //! use beekeeper::hive::prelude::*;
@@ -115,7 +114,7 @@
 //! to return [`ApplyError::Retryable`](crate::bee::ApplyError::Retryable) for transient failures.
 //!
 //! When a `Retryable` error occurs, the following steps happen:
-//! * The `attempt` number in the task's [`Context`] is incremented.
+//! * The `attempt` number in the task's [`Context`](crate::bee::Context) is incremented.
 //! * If the `attempt` number exceeds `max_retries`, the error is converted to
 //!   `Outcome::MaxRetriesAttempted` and sent/stored.
 //! * Otherwise, the task is added to the `Hive`'s retry queue.
@@ -140,8 +139,9 @@
 //!
 //! With the `local-batch` feature enabled, `Builder` gains the
 //! [`batch_limit`](crate::hive::Builder::batch_limit) method for configuring size of worker threads'
-//! local queues, and `Hive` gains the [`set_worker_batch_limit`](crate::hive::Hive::set_batch_limit)
-//! method for changing the batch size of an existing `Hive`.
+//! local queues, and `Hive` gains the
+//! [`set_worker_batch_limit`](crate::hive::Hive::set_worker_batch_limit) method for changing the
+//! batch size of an existing `Hive`.
 //!
 //! ## Global defaults
 //!
@@ -154,9 +154,10 @@
 //! * `num_threads`
 //!     * [`set_num_threads_default`]: sets the default to a specific value
 //!     * [`set_num_threads_default_all`]: sets the default to all available CPU cores
-//! * [`batch_limit`](crate::hive::set_BATCH_LIMIT_default) (requires `feature = "local-batch"`)
-//! * [`max_retries`](crate::hive::set_max_retries_default] (requires `feature = "retry"`)
-//! * [`retry_factor`](crate::hive::set_retry_factor_default] (requires `feature = "retry"`)
+//! * [`batch_limit`](crate::hive::set_batch_limit_default) (requires `feature = "local-batch"`)
+//! * [`weight_limit`](crate::hive::set_weight_limit_default) (requires `feature = "local-batch"`)
+//! * [`max_retries`](crate::hive::set_max_retries_default) (requires `feature = "retry"`)
+//! * [`retry_factor`](crate::hive::set_retry_factor_default) (requires `feature = "retry"`)
 //!
 //! The global defaults can be reset their original values using the [`reset_defaults`] function.
 //!
@@ -164,9 +165,10 @@
 //!
 //! A `Hive` is simply a wrapper around a data structure that is shared between the `Hive`, its
 //! worker threads, and any clones that have been made of the `Hive`. In other works, cloning a
-//! `Hive` simply creates another reference to the same shared data (similar to cloning an [`Arc`]).
-//! The worker threads and the shared data structure are dropped automatically when the last `Hive`
-//! referring to them is dropped (see "Disposing of a Hive" below).
+//! `Hive` simply creates another reference to the same shared data (similar to cloning an
+//! [`Arc`](std::sync::Arc)). The worker threads and the shared data structure are dropped
+//! automatically when the last `Hive` referring to them is dropped (see "Disposing of a Hive"
+//! below).
 //!
 //! # Submitting tasks
 //!
@@ -339,8 +341,8 @@
 //! outcomes.
 //!
 //! Processing can be resumed by calling the [`resume`](crate::hive::Hive::resume) method.
-//! Alternatively, the [`resume_send`](crate::hive::Hive::resume_send) or
-//! [`resume_store`](crate::hive::Hive::resume_store) method can be used to both resume and
+//! The [`swarm_unprocessed_send`](crate::hive::Hive::swarm_unprocessed_send) or
+//! [`swarm_unprocessed_store`](crate::hive::Hive::swarm_unprocessed_store) methods can be used to
 //! submit any unprocessed tasks stored in the `Hive` for (re)processing.
 //!
 //! ## Hive poisoning
@@ -380,7 +382,7 @@
 //! The `Husk` can be used to create a new `Builder`
 //! ([`Husk::as_builder`](crate::hive::husk::Husk::as_builder)) or a new `Hive`
 //! ([`Husk::into_hive`](crate::hive::husk::Husk::into_hive)).
-mod builder;
+pub mod builder;
 mod context;
 #[cfg(feature = "affinity")]
 pub mod cores;
@@ -404,14 +406,14 @@ pub use self::cores::{Core, Cores};
 pub use self::hive::{DefaultHive, Hive, Poisoned};
 pub use self::husk::Husk;
 pub use self::inner::{
-    Builder, ChannelTaskQueues, TaskInput, WorkstealingTaskQueues, set_config::*,
+    Builder, ChannelTaskQueues, TaskInput, TaskQueues, WorkstealingTaskQueues, set_config::*,
 };
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 #[cfg(feature = "local-batch")]
 pub use self::weighted::{Weighted, WeightedExactSizeIteratorExt, WeightedIteratorExt};
 
 use self::context::HiveLocalContext;
-use self::inner::{Config, Shared, Task, TaskQueues, WorkerQueues};
+use self::inner::{Config, Shared, Task, WorkerQueues};
 use self::outcome::{DerefOutcomes, OutcomeQueue, OwnedOutcomes};
 use self::sentinel::Sentinel;
 use crate::bee::Worker;

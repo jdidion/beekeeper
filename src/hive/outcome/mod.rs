@@ -18,7 +18,7 @@ use derive_more::Debug;
 /// The possible outcomes of a task execution.
 ///
 /// Each outcome includes the task ID of the task that produced it. Tasks that submitted
-/// subtasks (via [`crate::bee::Context::submit_task`]) produce `Outcome` variants that have
+/// subtasks (via [`crate::bee::Context::submit`]) produce `Outcome` variants that have
 /// `subtask_ids`.
 ///
 /// Note that `Outcome`s can only be compared or ordered with other `Outcome`s produced by the same

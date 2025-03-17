@@ -31,8 +31,8 @@
 //!   [`ApplyError::Retryable`](crate::bee::ApplyError#Retryable) before giving up.
 //! * [`Builder::retry_factor`]: [`Duration`](std::time::Duration) factor for exponential backoff
 //!   when retrying an `ApplyError::Retryable` error.
-//! * [`Builder::with_default_retries`] sets the retry options to the global defaults, while
-//!   [`Builder::with_no_retries`] disabled retrying.
+//! * [`Builder::with_default_max_retries`] and [`Builder::with_default_retry_factor`] set the
+//!   retry options to the global defaults, while [`Builder::with_no_retries`] disabled retrying.
 //!
 //! The following configuration options are available when the `affinity` feature is enabled:
 //! * [`Builder::core_affinity`]: List of CPU core indices to which the threads should be pinned.
@@ -51,7 +51,7 @@ pub use queue::TaskQueuesBuilder;
 pub use queue::channel::ChannelBuilder;
 pub use queue::workstealing::WorkstealingBuilder;
 
-use crate::hive::inner::{BuilderConfig, Token};
+use crate::hive::inner::{Builder, BuilderConfig, Token};
 
 /// Creates a new `OpenBuilder`. If `with_defaults` is `true`, the builder will be pre-configured
 /// with the global defaults.

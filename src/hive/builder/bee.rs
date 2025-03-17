@@ -14,7 +14,7 @@ pub struct BeeBuilder<Q: Queen> {
 
 impl<Q: Queen> BeeBuilder<Q> {
     /// Creates a new `BeeBuilder` with the given queen and no options configured.
-    pub fn empty<I: Into<Q>>(queen: Q) -> Self {
+    pub fn empty(queen: Q) -> Self {
         Self {
             config: Config::empty(),
             queen,
@@ -23,7 +23,7 @@ impl<Q: Queen> BeeBuilder<Q> {
 
     /// Creates a new `BeeBuilder` with the given `queen` and options configured with global
     /// preset values.
-    pub fn preset<I: Into<Q>>(queen: Q) -> Self {
+    pub fn preset(queen: Q) -> Self {
         Self {
             config: Config::default(),
             queen,
@@ -182,8 +182,8 @@ mod tests {
     #[rstest]
     fn test_queen<F, T, W>(
         #[values(
-            BeeBuilder::<TestQueen>::empty::<TestQueen>,
-            BeeBuilder::<TestQueen>::preset::<TestQueen>
+            BeeBuilder::<TestQueen>::empty,
+            BeeBuilder::<TestQueen>::preset
         )]
         factory: F,
         #[values(

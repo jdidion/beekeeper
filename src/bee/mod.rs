@@ -87,9 +87,9 @@
 //!
 //! It is often not necessary to manually implement the `Queen` trait. For exmaple, if your `Worker`
 //! implements `Default`, then you can use [`DefaultQueen`] implicitly by calling
-//! [`Builder::build_with_default`](crate::hive::Builder::build_with_default). Similarly,
+//! [`OpenBuilder::with_worker_default`](crate::hive::OpenBuilder::with_worker_default). Similarly,
 //! if your `Worker` implements `Clone`, then you can use [`CloneQueen`]
-//! implicitly by calling [`Builder::build_with`](crate::hive::Builder::build_with).
+//! implicitly by calling [`OpenBuilder::with_worker`](crate::hive::OpenBuilder::with_worker).
 //!
 //! A `Queen` should never panic when creating `Worker`s.
 //!

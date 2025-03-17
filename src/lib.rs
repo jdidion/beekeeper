@@ -8,9 +8,24 @@
 //! * Operations are defined by implementing the [`Worker`](crate::bee::Worker) trait.
 //! * A [`Builder`](crate::hive::Builder) is used to configure and create a worker pool
 //!   called a [`Hive`](crate::hive::Hive).
+//! * `Hive` is generic over:
+//!     * The type of [`Queen`](crate::bee::Queen) which creates `Worker` instances
+//!     * The type of [`TaskQueues`](crate::hive::TaskQueues), which provides the global and
+//!       worker thread-local queues for managing tasks; there are currently two implementations:
+//!         * Channel: A
+//!           [`crossbeam` channel](https://docs.rs/crossbeam-channel/latest/crossbeam_channel/)
+//!           is used to send tasks from the `Hive` to the worker threads. *This is a good choice
+//!           for most workloads*.
+//!         * Workstealing: A
+//!           [`crossbeam_dequeue::Injector`](https://docs.rs/crossbeam-deque/latest/crossbeam_deque/struct.Injector.html)
+//!           is used to submit tasks and serves as a global queue. Worker threads each have their
+//!           own local queue and can take tasks either from the global queue or steal from other
+//!           workers' local queues if their own queue is empty. This is a good choice for workloads
+//!           that are either highly variable from task to task (in terms of processing time), or
+//!           are fork-join in nature (i.e., tasks that submit sub-tasks).
 //! * The `Hive` creates a `Worker` instance for each thread in the pool.
 //! * Each thread in the pool continually:
-//!     * Recieves a task from an input [`channel`](::std::sync::mpsc::channel),
+//!     * Receives a task from an input queue,
 //!     * Calls its `Worker`'s [`apply`](crate::bee::Worker::apply) method on the input, and
 //!     * Produces an [`Outcome`](crate::hive::Outcome).
 //! * Depending on which of `Hive`'s methods are called to submit a task (or batch of tasks), the
@@ -21,8 +36,9 @@
 //!     * Clone an instance of a `Worker` that implements [`Clone`]
 //!     * Call the [`create()`](crate::bee::Queen::create) method on a worker factory that
 //!       implements the [`Queen`](crate::bee::Queen) trait.
-//! * Both `Worker`s and `Queen`s may be stateful, i.e., `Worker::apply()` and `Queen::create()`
-//!   both take `&mut self`.
+//! * A `Worker`s may be stateful, i.e., `Worker::apply()` takes `&mut self`.
+//! * While `Queen` is not stateful, [`QueenMut`](crate::bee::QueenMut) may be (i.e., it's
+//!   `create()` method takes `&mut self`)
 //! * Although it is strongly recommended to avoid `panic`s in worker threads (and thus, within
 //!   `Worker` implementations), the `Hive` does automatically restart any threads that panic.
 //! * A `Hive` may be [`suspend`](crate::hive::Hive::suspend)ed and
@@ -36,6 +52,11 @@
 //! * The following optional features are provided via feature flags:
 //!     * `affinity`: worker threads may be pinned to CPU cores to minimize the overhead of
 //!       context-switching.
+//!     * `local-batch` (>=0.3.0): worker threads take batches of tasks from the global input queue
+//!       and add them to a local queue, which may alleviate thread contention, especially when
+//!       there are many short-lived tasks.
+//!         * Tasks may be [`Weighted`](crate::hive::Weighted) to enable balancing unevenly sized
+//!           tasks between worker threads.
 //!     * `retry`: Tasks that fail due to transient errors (e.g., temporarily unavailable resources)
 //!       may be retried a set number of times, with an optional, exponentially increasing delay
 //!       between retries.
@@ -58,23 +79,31 @@
 //!             * Implement [`Default`] for your worker
 //!             * Implement [`Clone`] for your worker
 //!             * Create a custom worker fatory that implements the [`Queen`](crate::bee::Queen)
-//!               trait
+//!               or [`QueenMut`](crate::bee::QueenMut) trait
 //! 2. A [`Hive`](crate::hive::Hive) to execute your tasks. Your options are:
 //!     * Use one of the convenience methods in the [`util`] module (see Example 1 below)
-//!     * Create a `Hive` manually using [`Builder`](crate::hive::Builder) (see Examples 2
+//!     * Create a `Hive` manually using a [`Builder`](crate::hive::Builder) (see Examples 2
 //!       and 3 below)
-//!         * [`Builder::new()`](crate::hive::Builder::new) creates an empty `Builder`
-//!         * [`Builder::default()`](crate::hive::Builder::default) creates a `Builder`
+//!         * [`OpenBuilder`](crate::hive::OpenBuilder) is the most general builder
+//!         * [`OpenBuilder::empty()`](crate::hive::OpenBuilder::empty) creates an empty `OpenBuilder`
+//!         * [`OpenBuilder::default()`](crate::hive::OpenBuilder::default) creates a `OpenBuilder`
 //!           with the global default settings (which may be changed using the functions in the
 //!           [`hive`] module, e.g., `beekeeper::hive::set_num_threads_default(4)`).
-//!         * Use one of the `build_*` methods to build the `Hive`:
+//!         * The builder must be specialized for the `Queen` and `TaskQueues` types:
 //!             * If you have a `Worker` that implements `Default`, use
-//!               [`build_with_default::<MyWorker>()`](crate::hive::Builder::build_with_default)
+//!               [`with_worker_default::<MyWorker>()`](crate::hive::OpenBuilder::with_worker_default)
 //!             * If you have a `Worker` that implements `Clone`, use
-//!               [`build_with(MyWorker::new())`](crate::hive::Builder::build_with)
+//!               [`with_worker(MyWorker::new())`](crate::hive::OpenBuilder::with_worker)
 //!             * If you have a custom `Queen`, use
-//!               [`build_default::<MyQueen>()`](crate::hive::Builder::build_default) if it implements
-//!               `Default`, otherwise use [`build(MyQueen::new())`](crate::hive::Builder::build)
+//!               [`with_queen_default::<MyQueen>()`](crate::hive::OpenBuilder::with_queen_default)
+//!               if it implements `Default`, otherwise use
+//!               [`with_queen(MyQueen::new())`](crate::hive::OpenBuilder::with_queen)
+//!             * If instead your queen implements `QueenMut`, use
+//!               [`with_queen_mut_default::<MyQueenMut>()`](crate::hive::OpenBuilder::with_queen_mut_default)
+//!               or [`with_queen_mut(MyQueenMut::new())`](crate::hive::OpenBuilder::with_queen_mut)
+//!             * Use [`with_channel_queues`](crate::hive::OpenBuilder::with_channel_queues) or
+//!               [`with_workstealing_queues`](crate::hive::OpenBuilder::with_workstealing_queues)
+//!               to specify the `TaskQueues` type.
 //!         * Note that [`Builder::num_threads()`](crate::hive::Builder::num_threads) must be set
 //!           to a non-zero value, otherwise the built `Hive` will not start any worker threads
 //!           until you call the [`Hive::grow()`](crate::hive::Hive::grow) method.
@@ -98,8 +127,7 @@
 //! * The methods with the `_send` suffix accept a channel [`Sender`](crate::channel::Sender) and
 //!   send the `Outcome`s to that channel as they are completed
 //! * The methods with the `_store` suffix store the `Outcome`s in the `Hive`; these may be
-//!   retrieved later using the [`Hive::take_stored()`](crate::hive::Hive::take_stored) method,
-//!   using one of the `remove*` methods (which requires
+//!   retrieved later using one of the `remove*` methods (which requires
 //!   [`OutcomeStore`](crate::hive::OutcomeStore) to be in scope), or by
 //!   using one of the methods on [`Husk`](crate::hive::Husk) after shutting down the `Hive` using
 //!   [`Hive::try_into_husk()`](crate::hive::Hive::try_into_husk).
