@@ -23,7 +23,7 @@ is sometimes called a "worker pool").
 * Currently, two `TaskQueues` implementations are available:
     * Channel: uses a [`crossbeam`](https://github.com/crossbeam-rs/crossbeam) channel to send tasks from the `Hive` to worker threads
         * When the `local-batch` feature is enabled, local batch queues are implemented using [`crossbeam_queue::ArrayQueue`](https://docs.rs/crossbeam/latest/crossbeam/queue/struct.ArrayQueue.html)
-    * Workstealing:
+    * Workstealing: A [`crossbeam_dequeue::Injector`](https://docs.rs/crossbeam-deque/latest/crossbeam_deque/struct.Injector.html) is used to submit tasks and serves as a global queue. Worker threads each have their own local queue and can take tasks either from the global queue or steal from other workers' local queues if their own queue is empty. This is a good choice for workloads that are either highly variable from task to task (in terms of processing time), or are fork-join in nature (i.e., tasks that submit sub-tasks).
 * The `Hive` creates a `Worker` instance for each thread in the pool.
 * Each thread in the pool continually:
     * Receives a task from an input queue,
