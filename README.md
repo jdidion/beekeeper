@@ -155,11 +155,12 @@ use beekeeper::hive::prelude::*;
 
 // create a hive to process `Thunk`s - no-argument closures with the
 // same return type (`i32`)
-let hive = Builder::new()
+let hive = OpenBuilder::new()
     .num_threads(4)
     .thread_name("thunk_hive")
-    .build_with_default::<ThunkWorker<i32>>()
-    .unwrap();
+    .with_worker_default::<ThunkWorker<i32>>()
+    .with_channel_queues()
+    .build();
 
 // return results to your own channel...
 let (tx, rx) = outcome_channel();
@@ -280,9 +281,10 @@ impl Drop for CatQueen {
 }
 
 // build the Hive
-let hive = Builder::new()
+let hive = OpenBuilder::new()
     .num_threads(4)
-    .build_default_mut::<CatQueen>()
+    .with_queen_mut_default::<CatQueen>()
+    .with_channel_queues()
     .unwrap();
 
 // prepare inputs
