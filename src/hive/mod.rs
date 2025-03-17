@@ -156,7 +156,7 @@
 //! A weighted input is an instance of [`Weighted<T>`], where `T` is the worker's input type.
 //! Instances of `Weighted` can be created explicitly, or you can convert input values using
 //! the methods on `Weighted` or iterators over input values using the methods on the
-//! [`WeightedIteratorExt`] and [`WeightedExactSizeIteratorExt`] extension traits.
+//! [`WeightedIteratorExt`] extension trait.
 //!
 //! The `Hive` methods for submitting tasks accept both weighted and unweighted input, but weighted
 //! inputs are *not* supported with the `local-batch` feature disabled.
@@ -452,7 +452,7 @@ pub use self::inner::{
 };
 pub use self::outcome::{Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore};
 #[cfg(feature = "local-batch")]
-pub use self::weighted::{Weighted, WeightedExactSizeIteratorExt, WeightedIteratorExt};
+pub use self::weighted::{Weighted, WeightedIteratorExt};
 
 use self::context::HiveLocalContext;
 use self::inner::{Config, Shared, Task, WorkerQueues};
@@ -480,7 +480,7 @@ pub mod prelude {
         TaskQueuesBuilder, channel_builder, open_builder, outcome_channel, workstealing_builder,
     };
     #[cfg(feature = "local-batch")]
-    pub use super::{Weighted, WeightedExactSizeIteratorExt, WeightedIteratorExt};
+    pub use super::{Weighted, WeightedIteratorExt};
 }
 
 #[cfg(test)]
@@ -2575,7 +2575,7 @@ mod weighted_map_tests {
 mod weighted_swarm_tests {
     use crate::bee::stock::{EchoWorker, Thunk, ThunkWorker};
     use crate::hive::{
-        Builder, Outcome, TaskQueuesBuilder, WeightedExactSizeIteratorExt, channel_builder,
+        Builder, Outcome, TaskQueuesBuilder, WeightedIteratorExt, channel_builder,
         workstealing_builder,
     };
     use rstest::*;
@@ -2604,7 +2604,7 @@ mod weighted_swarm_tests {
                 })
             })
             .map(|thunk| (thunk, 0))
-            .into_weighted();
+            .into_weighted_exact();
         let outputs: Vec<_> = hive.swarm(inputs).map(Outcome::unwrap).collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
@@ -2630,7 +2630,7 @@ mod weighted_swarm_tests {
                     i
                 })
             })
-            .into_default_weighted();
+            .into_default_weighted_exact();
         let outputs: Vec<_> = hive.swarm(inputs).map(Outcome::unwrap).collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
@@ -2656,7 +2656,7 @@ mod weighted_swarm_tests {
                     i
                 })
             })
-            .into_const_weighted(0);
+            .into_const_weighted_exact(0);
         let outputs: Vec<_> = hive.swarm(inputs).map(Outcome::unwrap).collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }
@@ -2675,7 +2675,7 @@ mod weighted_swarm_tests {
             .num_threads(NUM_THREADS)
             .batch_limit(BATCH_LIMIT)
             .build();
-        let inputs = (0..10u8).into_identity_weighted();
+        let inputs = (0..10u8).into_identity_weighted_exact();
         let outputs: Vec<_> = hive.swarm(inputs).map(Outcome::unwrap).collect();
         assert_eq!(outputs, (0..10).collect::<Vec<_>>())
     }

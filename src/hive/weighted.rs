@@ -115,14 +115,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
             Weighted::new(item, weight)
         })
     }
-}
 
-impl<T: IntoIterator> WeightedIteratorExt for T {}
-
-/// Extends `IntoIterator` to add methods to convert any iterator into an iterator over `Weighted`
-/// items.
-pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
-    fn into_weighted<T>(self) -> impl ExactSizeIterator<Item = Weighted<T>>
+    fn into_weighted_exact<T>(self) -> impl ExactSizeIterator<Item = Weighted<T>>
     where
         Self: IntoIterator<Item = (T, u32)>,
         Self::IntoIter: ExactSizeIterator + 'static,
@@ -131,14 +125,17 @@ pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
             .map(|(value, weight)| Weighted::new(value, weight))
     }
 
-    fn into_default_weighted(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    fn into_default_weighted_exact(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::IntoIter: ExactSizeIterator + 'static,
     {
         self.into_iter().map(Into::into)
     }
 
-    fn into_const_weighted(self, weight: u32) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    fn into_const_weighted_exact(
+        self,
+        weight: u32,
+    ) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::IntoIter: ExactSizeIterator + 'static,
     {
@@ -146,7 +143,7 @@ pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
             .map(move |item| Weighted::new(item, weight))
     }
 
-    fn into_identity_weighted(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    fn into_identity_weighted_exact(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::Item: ToPrimitive + Clone,
         Self::IntoIter: ExactSizeIterator + 'static,
@@ -154,7 +151,10 @@ pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
         self.into_iter().map(Weighted::from_identity)
     }
 
-    fn into_weighted_with<F>(self, f: F) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
+    fn into_weighted_exact_with<F>(
+        self,
+        f: F,
+    ) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::IntoIter: ExactSizeIterator + 'static,
         F: Fn(&Self::Item) -> u32,
@@ -166,17 +166,12 @@ pub trait WeightedExactSizeIteratorExt: IntoIterator + Sized {
     }
 }
 
-impl<T> WeightedExactSizeIteratorExt for T
-where
-    T: IntoIterator,
-    T::IntoIter: ExactSizeIterator,
-{
-}
+impl<T: IntoIterator> WeightedIteratorExt for T {}
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::Weighted;
+    use super::*;
 
     #[test]
     fn test_new() {
@@ -214,12 +209,6 @@ mod tests {
         assert_eq!(weighted.weight(), 10);
         assert_eq!(weighted.into_parts(), (42, 10));
     }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod iter_tests {
-    use super::WeightedIteratorExt;
 
     #[test]
     fn test_into_weighted() {
@@ -263,46 +252,40 @@ mod iter_tests {
             .into_weighted_with(|i| i * 2)
             .for_each(|weighted| assert_eq!(weighted.weight(), weighted.value * 2));
     }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod exact_iter_test {
-    use super::WeightedExactSizeIteratorExt;
 
     #[test]
-    fn test_into_weighted() {
+    fn test_into_weighted_exact() {
         (0..10)
             .map(|i| (i, i))
-            .into_weighted()
+            .into_weighted_exact()
             .for_each(|weighted| assert_eq!(weighted.weight(), weighted.value));
     }
 
     #[test]
-    fn test_into_default_weighted() {
+    fn test_into_default_weighted_exact() {
         (0..10)
-            .into_default_weighted()
+            .into_default_weighted_exact()
             .for_each(|weighted| assert_eq!(weighted.weight(), 0));
     }
 
     #[test]
-    fn test_into_identity_weighted() {
+    fn test_into_identity_weighted_exact() {
         (0..10)
-            .into_identity_weighted()
+            .into_identity_weighted_exact()
             .for_each(|weighted| assert_eq!(weighted.weight(), weighted.value));
     }
 
     #[test]
-    fn test_into_const_weighted() {
+    fn test_into_const_weighted_exact() {
         (0..10)
-            .into_const_weighted(5)
+            .into_const_weighted_exact(5)
             .for_each(|weighted| assert_eq!(weighted.weight(), 5));
     }
 
     #[test]
-    fn test_into_weighted_with() {
+    fn test_into_weighted_exact_with() {
         (0..10)
-            .into_weighted_with(|i| i * 2)
+            .into_weighted_exact_with(|i| i * 2)
             .for_each(|weighted| assert_eq!(weighted.weight(), weighted.value * 2));
     }
 }
