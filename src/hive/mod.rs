@@ -1,13 +1,15 @@
 //! A worker pool implementation.
 //!
-//! A [`Hive<W, Q>`](crate::hive::Hive) has a pool of worker threads that it uses to execute tasks.
+//! A [`Hive<Q, T>`](crate::hive::Hive) has a pool of worker threads that it uses to execute tasks.
 //!
 //! The `Hive` has a [`Queen`](crate::bee::Queen) of type `Q`, which it uses to create a
-//! [`Worker`] of type `W` for each thread it starts in the pool.
+//! [`Worker`] of type `Queen::Kind` for each thread it starts in the pool. The `Hive` also has
+//! `TaskQueues` implementation of type `T`, which provides the global and worker threads-local
+//! queues for managing tasks.
 //!
 //! Each task is submitted to the `Hive` as an input of type `W::Input`, and, optionally, a
 //! channel where the [`Outcome`] of processing the task will be sent upon completion. To these,
-//! the `Hive` adds additional context to create the task. It then adds the task to an internal
+//! the `Hive` adds additional context to create the task. It then adds the task to its global
 //! queue that is shared with all the worker threads.
 //!
 //! Each worker thread executes a loop in which it receives a task, evaluates it with its `Worker`,
@@ -26,7 +28,7 @@
 //! create a `Builder` configured with the global default values (see below).
 //!
 //! See the [`builder` module documentation](crate::hive::builder) for more details on the options
-//! that may be configured, and the `build*` methods available to create the `Hive`.
+//! that may be configured.
 //!
 //! Building a `Hive` consumes the `Builder`. To create multiple identical `Hive`s, you can `clone`
 //! the `Builder`.
@@ -93,8 +95,7 @@
 //! hive.grow(12);
 //!
 //! // increase the number of threads and also provide additional cores for pinning
-//! // this requires the `affinity` feature
-//! // hive.grow_with_affinity(4, 16..20);
+//! hive.grow_with_affinity(4, 16..20);
 //! ```
 //!
 //! As an application developer depending on `beekeeper`, you must ensure you assign each core
@@ -106,7 +107,7 @@
 //!
 //! ## Retrying tasks (requires `feature = "retry"`)
 //!
-//! Some types of tasks (e.g., those requirng network I/O operations) may fail transiently but
+//! Some types of tasks (e.g., those requiring network I/O operations) may fail transiently but
 //! could be successful if retried at a later time. Such retry behavior is supported by the `retry`
 //! feature and only requires a) configuring the `Builder` by setting
 //! [`max_retries`](crate::hive::Builder::max_retries) and (optionally)
@@ -122,18 +123,18 @@
 //!       `2^(attempt - 1) * retry_factor`.
 //!     * If a `retry_factor` is not configured, then the task is queued with no delay.
 //! * When a worker thread becomes available, it first checks the retry queue to see if there is
-//!   a task to retry before taking a new task from the input channel.
+//!   a task to retry before taking a new task from the global queue.
 //!
-//! Note that `ApplyError::Retryable` is not feature-gated - a `Worker` can be implemented to be
-//! retry-aware but used with a `Hive` for which retry is not enabled, or in an application where
-//! the `retry` feature is not enabled. In such cases, `Retryable` errors are automatically
-//! converted to `Fatal` errors by the worker thread.
+//! Note that `ApplyError::Retryable` and `Context::attempt` are not feature-gated - a `Worker` can
+//! be implemented to be retry-aware but used with a `Hive` for which retry is not enabled, or in
+//! an application where the `retry` feature is not enabled. In such cases, `Retryable` errors are
+//! automatically converted to `Fatal` errors by the worker thread.
 //!
 //! ## Batching tasks (requires `feature = "local-batch"`)
 //!
 //! The performance of a `Hive` can degrade as the number of worker threads grows and/or the
 //! average duration of a task shrinks, due to increased contention between worker threads when
-//! receiving tasks from the shared input channel. To improve performance, workers can take more
+//! receiving tasks from the shared global queue. To improve performance, workers can take more
 //! than one task each time they access the input channel, and store the extra tasks in a local
 //! queue. This behavior is activated by enabling the `local-batch` feature.
 //!
@@ -143,11 +144,45 @@
 //! [`set_worker_batch_limit`](crate::hive::Hive::set_worker_batch_limit) method for changing the
 //! batch size of an existing `Hive`.
 //!
+//! ### Task weighting
+//!
+//! With the `local-batch` feature enabled, it also becomes possible to assign a weight to each
+//! input. This is useful for workloads where some tasks may take substantially longer to process
+//! than others. Combined with setting a weight limit (using [`Builder::weight_limit`]
+//! or [`Hive::set_worker_weight_limit`](crate::hive::Hive::set_worker_batch_limit)), this limits
+//! the number of tasks that can be queued by a worker thread based on the minimum of the batch
+//! size and the total task weight.
+//!
+//! A weighted input is an instance of [`Weighted<T>`], where `T` is the worker's input type.
+//! Instances of `Weighted` can be created explicitly, or you can convert input values using
+//! the methods on `Weighted` or iterators over input values using the methods on the
+//! [`WeightedIteratorExt`] and [`WeightedExactSizeIteratorExt`] extension traits.
+//!
+//! The `Hive` methods for submitting tasks accept both weighted and unweighted input, but weighted
+//! inputs are *not* supported with the `local-batch` feature disabled.
+//!
+//! ```
+//! use beekeeper::hive::prelude::*;
+//! # type MyWorker = beekeeper::bee::stock::EchoWorker<usize>;
+//!
+//! let hive = channel_builder(false)
+//!     .num_threads(4)
+//!     .batch_limit(10)
+//!     .weight_limit(10)
+//!     .with_worker_default::<MyWorker>()
+//!     .build();
+//!
+//! // creates weighted inputs, where each input's weight is the same
+//! // as it's value, e.g. `((0,0), (1,1),..,(9,9))`
+//! let inputs = (0..10).into_iter().into_identity_weighted();
+//! let outputs = hive.map(inputs).into_outputs();
+//! ```
+//!
 //! ## Global defaults
 //!
 //! The [`hive`](crate::hive) module has functions for setting the global default values for some
 //! of the `Builder` parameters. These default values are used to pre-configure the `Builder` when
-//! using `Builder::default()`.
+//! using [`OpenBuilder::default()`].
 //!
 //! The available global defaults are:
 //!
@@ -215,7 +250,7 @@
 //! You can create an instance of the enabled outcome channel type using the [`outcome_channel`]
 //! function.
 //!
-//! `Hive` as several methods (with the `_send` suffix) for submitting tasks whose outcomes will be
+//! `Hive` has several methods (with the `_send` suffix) for submitting tasks whose outcomes will be
 //! delivered to a user-specified channel. Note that, for these methods, the `tx` parameter is of
 //! type `Borrow<Sender<Outcome<W>>`, which allows you to pass in either a value or a reference.
 //! Passing a value causes the `Sender` to be dropped after the call; passing a reference allows
@@ -240,7 +275,9 @@
 //! # Retrieving outcomes
 //!
 //! Each task that is successfully submitted to a `Hive` will have a corresponding `Outcome`.
-//! [`Outcome`] is similar to `Result`, except that the error variants are enumerated:
+//! [`Outcome`] is similar to `Result`, except that the error variants are enumerated.
+//! * [`Success`](Outcome::Success): the task completed successfully. The output is provided in
+//!   the `value` field.
 //! * [`Failure`](Outcome::Failure): the task failed with an error of type `W::Error`. If possible,
 //!   the input value is also provided.
 //! * [`Panic`](Outcome::Panic): the `Worker` panicked while processing the task. The panic
@@ -253,6 +290,12 @@
 //!   ID was found. This variant is only used when a list of outcomes is requested, such as when
 //!   using one of the `select_*` methods on an `Outcome` iterator (see below).
 //!
+//! Two additional `Outcome` variants depend on optional feature flags:
+//! * [`WeightLimitExceeded`](Outcome::WeightLimitExceeded): depends on the `local-batch` feature;
+//!   the task's weight exceeded the limit set for the `Hive`.
+//! * [`MaxRetriesAttempted`](Outcome::MaxRetriesAttempted): depends on the `retry` feature; the
+//!   task failed after being retried the maximum number of times.
+//!
 //! An `Outcome` can be converted into a `Result` (using `into()`) or
 //! [`unwrap`](crate::hive::Outcome::unwrap)ped into an output value of type `W::Output`.
 //!
@@ -264,7 +307,7 @@
 //! methods create a dedicated outcome channel to use for each batch of tasks, and thus expect the
 //! channel receiver to receive exactly the outcomes with the task IDs of the submitted tasks. If,
 //! somehow, an unexpected `Outcome` is received, it is silently dropped. If any expected outcomes
-//! have not been received after the channel sender has disconnected, then those task IDs are'
+//! have not been received after the channel sender has disconnected, then those task IDs are
 //! yielded as `Outcome::Missing` results.
 //!
 //! When the [`OutcomeIteratorExt`] trait is in scope, then additional methods become available on
@@ -277,7 +320,7 @@
 //!
 //! ## Outcome channels
 //!
-//! Using one of the `*_send` methods with a channel enables the `Hive` to send you `Outcome`s
+//! Using one of the `*_send` methods with a channel enables the `Hive` to send `Outcome`s
 //! asynchronously as they become available. This means that you will likely receive the outcomes
 //! out of order (i.e., not in the same order as the provided inputs).
 //!
@@ -343,18 +386,17 @@
 //! Processing can be resumed by calling the [`resume`](crate::hive::Hive::resume) method.
 //! The [`swarm_unprocessed_send`](crate::hive::Hive::swarm_unprocessed_send) or
 //! [`swarm_unprocessed_store`](crate::hive::Hive::swarm_unprocessed_store) methods can be used to
-//! submit any unprocessed tasks stored in the `Hive` for (re)processing.
+//! submit any unprocessed tasks stored in the `Hive` for (re)processing after resuming the `Hive`.
 //!
 //! ## Hive poisoning
 //!
 //! The internal data structure shared between a `Hive`, its clones, and its worker threads is
 //! considered thread-safe. However, there is no formal proof that it is incorruptible. A `Hive`
 //! attempts to detect if it has become corrupted and, if so, sets the `poisoned` flag on the
-//! shared data. A poisoned `Hive` will not accept or process any new tasks, and all worker threads
-//! will terminate after finishing their current tasks. If a task is submitted to a poisoned `Hive`,
-//! it will immediately be converted to an `Unprocessed` outcome and sent/stored. The only thing
-//! that can be done with a poisoned `Hive` is to access its stored `Outcome`s or convert it to a
-//! `Husk` (see below).
+//! shared data. A poisoned `Hive` will not accept or process any new tasks, all worker threads
+//! will terminate after finishing their current tasks, and all queued tasks are converted to
+//! `Unprocessed` outcomes and sent/stored. The only thing that can be done with a poisoned `Hive`
+//! is to access its stored `Outcome`s or convert it to a `Husk` (see below).
 //!
 //! # Disposing of a `Hive`
 //!
@@ -363,7 +405,7 @@
 //! its shared data is dropped, then the following steps happen:
 //! * The `Hive` is poisoned to prevent any new tasks from being submitted or queued tasks from
 //!   being processed.
-//! * All of the `Hive`s queued tasks are coverted to `Unprocessed` outcomes and either sent to
+//! * All of the `Hive`'s queued tasks are coverted to `Unprocessed` outcomes and either sent to
 //!   their outcome channel or stored in the `Hive`.
 //! * If the `Hive` was in a suspended state, it is resumed. This is necessary to unblock the
 //!   worker threads and allow them to terminate.
@@ -433,12 +475,12 @@ pub fn outcome_channel<W: Worker>() -> (OutcomeSender<W>, OutcomeReceiver<W>) {
 }
 
 pub mod prelude {
-    #[cfg(feature = "local-batch")]
-    pub use super::Weighted;
     pub use super::{
         Builder, Hive, Husk, Outcome, OutcomeBatch, OutcomeIteratorExt, OutcomeStore, Poisoned,
         TaskQueuesBuilder, channel_builder, open_builder, outcome_channel, workstealing_builder,
     };
+    #[cfg(feature = "local-batch")]
+    pub use super::{Weighted, WeightedExactSizeIteratorExt, WeightedIteratorExt};
 }
 
 #[cfg(test)]

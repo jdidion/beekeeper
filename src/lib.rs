@@ -9,7 +9,7 @@
 //! * A [`Builder`](crate::hive::Builder) is used to configure and create a worker pool
 //!   called a [`Hive`](crate::hive::Hive).
 //! * `Hive` is generic over:
-//!     * The type of [`Queen`](crate::bee::Queen) which creates `Worker` instances
+//!     * The type of [`Queen`](crate::bee::Queen), which creates `Worker` instances
 //!     * The type of [`TaskQueues`](crate::hive::TaskQueues), which provides the global and
 //!       worker thread-local queues for managing tasks; there are currently two implementations:
 //!         * Channel: A
@@ -58,8 +58,8 @@
 //!         * Tasks may be [`Weighted`](crate::hive::Weighted) to enable balancing unevenly sized
 //!           tasks between worker threads.
 //!     * `retry`: Tasks that fail due to transient errors (e.g., temporarily unavailable resources)
-//!       may be retried a set number of times, with an optional, exponentially increasing delay
-//!       between retries.
+//!       may be retried up to a set number of times, with an optional, exponentially increasing
+//!       delay between retries.
 //!     * Several alternative `channel` implementations are supported:
 //!         * [`crossbeam`](https://docs.rs/crossbeam/latest/crossbeam/)
 //!         * [`flume`](https://github.com/zesterer/flume)
@@ -78,7 +78,7 @@
 //!         * Do at least one of the following:
 //!             * Implement [`Default`] for your worker
 //!             * Implement [`Clone`] for your worker
-//!             * Create a custom worker fatory that implements the [`Queen`](crate::bee::Queen)
+//!             * Create a custom worker factory that implements the [`Queen`](crate::bee::Queen)
 //!               or [`QueenMut`](crate::bee::QueenMut) trait
 //! 2. A [`Hive`](crate::hive::Hive) to execute your tasks. Your options are:
 //!     * Use one of the convenience methods in the [`util`] module (see Example 1 below)
@@ -325,12 +325,12 @@
 //!     })
 //!     .into_bytes();
 //!
-//! // verify the output - note that `swarm` ensures the outputs are in
-//! // the same order as the inputs
+//! // verify the output - note that `swarm` ensures the outputs are in the same order
+//! // as the inputs
 //! assert_eq!(output, b"abcdefgh");
 //!
-//! // shutdown the hive, use the Queen to wait on child processes, and
-//! // report errors
+//! // shutdown the hive, use the Queen to wait on child processes, and report errors;
+//! // the `_outcomes` will be empty as we did not use any `_store` methods
 //! let (queen, _outcomes) = hive.try_into_husk(false).unwrap().into_parts();
 //! let (wait_ok, wait_err): (Vec<_>, Vec<_>) =
 //!     queen.into_inner().wait_for_all().into_iter().partition(Result::is_ok);

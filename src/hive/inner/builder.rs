@@ -7,6 +7,10 @@ pub trait BuilderConfig {
 }
 
 /// Trait that provides `Builder` types with methods for setting configuration parameters.
+/// There are multiple `Builder` implementations. See the
+/// [module documentation](crate::hive::builder) for more details.
+///
+#[doc = simple_mermaid::mermaid!("diagram.mmd")]
 ///
 /// This is a sealed trait, meaning it cannot be implemented outside of this crate.
 pub trait Builder: BuilderConfig + Sized {

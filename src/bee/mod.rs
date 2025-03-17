@@ -3,6 +3,14 @@
 //! A [`Hive`](crate::hive::Hive) is populated by bees:
 //! * The [`Worker`]s process the tasks submitted to the `Hive`.
 //! * The [`Queen`] creates a new `Worker` for each thread in the `Hive`.
+//!     * [`QueenMut`] can be used to implement a stateful queen - it must be wrapped in a
+//!       [`QueenCell`] to make it thread-safe.
+//!
+//! It is easiest to use the [`prelude`] when implementing your bees:
+//!
+//! ```
+//! use beekeeper::bee::prelude::*;
+//! ```
 //!
 //! # Worker
 //!
@@ -18,7 +26,15 @@
 //!
 //! The `Worker` trait has a single method, [`apply`](crate::bee::Worker::apply), which
 //! takes an input of type `Input` and a [`Context`] and returns a `Result` containing an either an
-//! `Output` or an [`ApplyError`].
+//! `Output` or an [`ApplyError`]. Note that `Worker::apply()` takes a `&mut self` parameter,
+//! meaning that it can modify its own state.
+//!
+//! If a fatal error occurs during processing of the task, the worker should return
+//! [`ApplyError::Fatal`].
+//!
+//! If the task instead fails due to a transient error, the worker should return
+//! [`ApplyError::Retryable`]. If the `retry` feature is enabled, then a task that fails with a
+//! `ApplyError::Retryable` error will be retried, otherwise the error is converted to `Fatal`.
 //!
 //! The `Context` contains information about the task, including:
 //! * The task ID. Each task submitted to a `Hive` is assigned an ID that is unique within
@@ -29,16 +45,14 @@
 //!   periodically check the cancellation flag by calling
 //!   [`Context::is_cancelled()`](crate::bee::context::Context::is_cancelled). If the cancellation
 //!   flag is set, the worker may terminate early by returning [`ApplyError::Cancelled`].
-//! * If the `retry` feature is enabled, the `Context` also contains the retry
-//!   [`attempt`](crate::bee::context::Context::attempt), which starts at `0` the first time the task
-//!   is attempted and increments by `1` for each subsequent retry attempt.
+//! * The retry [`attempt`](crate::bee::context::Context::attempt), which starts at `0` the first
+//!   time the task is attempted. If the `retry` feature is enabled and the task fails with
+//!   [`ApplyError::Retryable], this value increments by `1` for each subsequent retry attempt.
 //!
-//! If a fatal error occurs during processing of the task, the worker should return
-//! [`ApplyError::Fatal`].
-//!
-//! If the task instead fails due to a transient error, the worker should return
-//! [`ApplyError::Retryable`]. If the `retry` feature is enabled, then a task that fails with a
-//! `ApplyError::Retryable` error will be retried, otherwise the error is converted to `Fatal`.
+//! The `Context` also provides the ability to submit new tasks to the `Hive` using the
+//! [`submit`](crate::bee::Context::submit) method. The IDs of submitted subtasks are stored in the
+//! `Context` and are returned in a field of the [`Outcome`](crate::hive::Outcome) that results
+//! from the parent task.
 //!
 //! A `Worker` should not panic. However, if it must execute code that may panic, it can do so
 //! within a closure passed to [`Panic::try_call`](crate::panic::Panic::try_call) and convert an
@@ -85,24 +99,17 @@
 //! A queen is defined by implementing the [`Queen`] trait. A single `Queen` instance is used to
 //! create the `Worker` instances for each worker thread in a `Hive`.
 //!
-//! It is often not necessary to manually implement the `Queen` trait. For exmaple, if your `Worker`
+//! If you need for the queen to have mutable state, you can instead implement [`QueenMut`], whose
+//! [`create`](crate::bee::QueenMut::create) method takes `&mut self` as a parameter. When
+//! creating a `Hive`, the `QueenMut` must be wrapped in a [`QueenCell`] to make it thread-safe.
+//!
+//! It is often not necessary to manually implement the `Queen` trait. For example, if your `Worker`
 //! implements `Default`, then you can use [`DefaultQueen`] implicitly by calling
 //! [`OpenBuilder::with_worker_default`](crate::hive::OpenBuilder::with_worker_default). Similarly,
 //! if your `Worker` implements `Clone`, then you can use [`CloneQueen`]
 //! implicitly by calling [`OpenBuilder::with_worker`](crate::hive::OpenBuilder::with_worker).
 //!
 //! A `Queen` should never panic when creating `Worker`s.
-//!
-//! # Implementation Notes
-//!
-//! It is easiest to use the [`prelude`] when implementing your bees:
-//!
-//! ```
-//! use beekeeper::bee::prelude::*;
-//! ```
-//!
-//! Note that both `Queen::create()` and `Worker::apply()` receive `&mut self`, meaning that they
-//! can modify their own state.
 //!
 //! The state of a `Hive`'s `Queen` may be interrogated either
 //! [during](crate::hive::Hive::queen) or [after](crate::hive::Hive::try_into_husk) the
