@@ -72,23 +72,31 @@ impl<T, P: ToPrimitive> From<(T, P)> for Weighted<T> {
 /// Extends `IntoIterator` to add methods to convert any iterator into an iterator over `Weighted`
 /// items.
 pub trait WeightedIteratorExt: IntoIterator + Sized {
-    fn into_weighted<T>(self) -> impl Iterator<Item = Weighted<T>>
+    /// Converts this iterator over (T, P) items into an iterator over `Weighted<T>` items with
+    /// weights set to `P::into_u32()`.
+    fn into_weighted<T, P>(self) -> impl Iterator<Item = Weighted<T>>
     where
-        Self: IntoIterator<Item = (T, u32)>,
+        P: ToPrimitive,
+        Self: IntoIterator<Item = (T, P)>,
     {
         self.into_iter()
             .map(|(value, weight)| Weighted::new(value, weight))
     }
 
+    /// Converts this iterator into an iterator over `Weighted<Self::Item>` with weights set to 0.
     fn into_default_weighted(self) -> impl Iterator<Item = Weighted<Self::Item>> {
         self.into_iter().map(Into::into)
     }
 
+    /// Converts this iterator into an iterator over `Weighted<Self::Item>` with weights set to
+    /// `weight`.
     fn into_const_weighted(self, weight: u32) -> impl Iterator<Item = Weighted<Self::Item>> {
         self.into_iter()
             .map(move |item| Weighted::new(item, weight))
     }
 
+    /// Converts this iterator into an iterator over `Weighted<Self::Item>` with weights set to
+    /// `item.clone().into_u32()`.
     fn into_identity_weighted(self) -> impl Iterator<Item = Weighted<Self::Item>>
     where
         Self::Item: ToPrimitive + Clone,
@@ -96,16 +104,21 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
         self.into_iter().map(Weighted::from_identity)
     }
 
-    fn into_weighted_zip<W>(self, weights: W) -> impl Iterator<Item = Weighted<Self::Item>>
+    /// Zips this iterator with `weights` and converts each tuple into a `Weighted<Self::Item>`
+    /// with the weight set to the corresponding value from `weights`.
+    fn into_weighted_zip<P, W>(self, weights: W) -> impl Iterator<Item = Weighted<Self::Item>>
     where
-        W: IntoIterator<Item = u32>,
+        P: ToPrimitive + Clone + Default,
+        W: IntoIterator<Item = P>,
         W::IntoIter: 'static,
     {
         self.into_iter()
-            .zip(weights.into_iter().chain(std::iter::repeat(0)))
+            .zip(weights.into_iter().chain(std::iter::repeat(P::default())))
             .map(Into::into)
     }
 
+    /// Converts this interator into an iterator over `Weighted<Self::Item>` with weights set to
+    /// the result of calling `f` on each item.
     fn into_weighted_with<F>(self, f: F) -> impl Iterator<Item = Weighted<Self::Item>>
     where
         F: Fn(&Self::Item) -> u32,
@@ -116,6 +129,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
         })
     }
 
+    /// Converts this `ExactSizeIterator` over (T, P) items into an `ExactSizeIterator` over
+    /// `Weighted<T>` items with weights set to `P::into_u32()`.
     fn into_weighted_exact<T>(self) -> impl ExactSizeIterator<Item = Weighted<T>>
     where
         Self: IntoIterator<Item = (T, u32)>,
@@ -125,6 +140,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
             .map(|(value, weight)| Weighted::new(value, weight))
     }
 
+    /// Converts this `ExactSizeIterator` into an `ExactSizeIterator` over `Weighted<Self::Item>`
+    /// with weights set to 0.
     fn into_default_weighted_exact(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::IntoIter: ExactSizeIterator + 'static,
@@ -132,6 +149,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
         self.into_iter().map(Into::into)
     }
 
+    /// Converts this `ExactSizeIterator` into an `ExactSizeIterator` over `Weighted<Self::Item>`
+    /// with weights set to `weight`.
     fn into_const_weighted_exact(
         self,
         weight: u32,
@@ -143,6 +162,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
             .map(move |item| Weighted::new(item, weight))
     }
 
+    /// Converts this `ExactSizeIterator` into an `ExactSizeIterator` over `Weighted<Self::Item>`
+    /// with weights set to `item.clone().into_u32()`.
     fn into_identity_weighted_exact(self) -> impl ExactSizeIterator<Item = Weighted<Self::Item>>
     where
         Self::Item: ToPrimitive + Clone,
@@ -151,6 +172,8 @@ pub trait WeightedIteratorExt: IntoIterator + Sized {
         self.into_iter().map(Weighted::from_identity)
     }
 
+    /// Converts this `ExactSizeIterator` into an `ExactSizeIterator` over `Weighted<Self::Item>`
+    /// with weights set to the result of calling `f` on each item.
     fn into_weighted_exact_with<F>(
         self,
         f: F,
