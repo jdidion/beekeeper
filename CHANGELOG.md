@@ -11,6 +11,7 @@ The general theme of this release is performance improvement by eliminating thre
   * The `Builder` interface has been re-written to enable maximum flexibility.
     * `Builder` is now a trait that must be in scope.
     * `ChannelBuilder` implements the previous builder functionality.
+    * `WorkstealingBuilder` is identical to `ChannelBuilder`, except that it uses workstealing-based task queues (see `Features` below).
     * `OpenBuilder` has no type parameters and can be specialized to create a `Hive` with any combination of `Queen` and `TaskQueues`.
     * `BeeBuilder` and `FullBuilder` are intermediate types that generally should not be instantiated directly.
   * `beekeeper::bee::Queen::create` now takes `&self` rather than `&mut self`. There is a new type, `beekeeper::bee::QueenMut`, with a `create(&mut self)` method, and needs to be wrapped in a `beekeeper::bee::QueenCell` to implement the `Queen` trait. This enables the `Hive` to create new workers without locking in the case of a `Queen` that does not need mutable state.
