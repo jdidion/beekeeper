@@ -48,6 +48,7 @@ harness = false
 [features]
 default = ["local-batch"]
 affinity = ["dep:core_affinity"]
+async = ["tokio"]
 local-batch = []
 retry = []
 crossbeam = []
