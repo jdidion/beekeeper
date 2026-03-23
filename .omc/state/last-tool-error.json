@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"# Re-run rust-template to get fresh logs\\ngh run list -R jdidion/rust-template --limit 1 --json databaseId --jq '.[0].databaseId' | xargs -I{} gh run rerun {} -R jdidion/rust-template 2>&1...",
+  "error": "Exit code 1\nrun 19346752066 cannot be rerun; Unable to retry this workflow run because it was created over a month ago",
+  "timestamp": "2026-03-22T15:44:30.620Z",
+  "retry_count": 3
+}
