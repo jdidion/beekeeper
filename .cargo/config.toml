@@ -1,0 +1,13 @@
+[alias]
+ci-test = "nextest run --all-features --locked"
+ci-fmt = "fmt --all -- --check"
+ci-lint = "clippy --all-targets --all-features -- -D warnings"
+
+ci-bench = "bench --locked --quiet --all-features"
+
+
+ci-cov = "llvm-cov --all-features --text"
+
+
+[build]
+
