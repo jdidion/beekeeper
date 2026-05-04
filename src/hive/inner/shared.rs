@@ -143,7 +143,7 @@ impl<W: Worker, Q: Queen<Kind = W>, T: TaskQueues<Q::Kind>> Shared<Q, T> {
     }
 
     /// Returns the mutex guard for the results of spawing worker threads.
-    pub fn spawn_results(&self) -> MutexGuard<Vec<Result<JoinHandle<()>, SpawnError>>> {
+    pub fn spawn_results(&self) -> MutexGuard<'_, Vec<Result<JoinHandle<()>, SpawnError>>> {
         self.spawn_results.lock()
     }
 
