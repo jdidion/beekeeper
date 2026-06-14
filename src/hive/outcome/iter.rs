@@ -252,12 +252,78 @@ impl<W: Worker, T: IntoIterator<Item = Outcome<W>>> OutcomeIteratorExt<W> for T 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{OrderedOutcomeIterator, UnorderedOutcomeIterator};
+    use super::{OrderedOutcomeIterator, OutcomeIteratorExt, UnorderedOutcomeIterator};
     use crate::bee::stock::EchoWorker;
     use crate::hive::Outcome;
 
     type Worker = EchoWorker<usize>;
     type WorkerOutcome = Outcome<Worker>;
+
+    fn successes() -> Vec<WorkerOutcome> {
+        vec![
+            WorkerOutcome::Success {
+                value: 20,
+                task_id: 2,
+            },
+            WorkerOutcome::Success {
+                value: 10,
+                task_id: 1,
+            },
+            WorkerOutcome::Success {
+                value: 0,
+                task_id: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_drop_unrequested_outcomes() {
+        // task_id 1 is not requested, so it is silently dropped by the unordered iterator
+        let outcomes: Vec<_> = UnorderedOutcomeIterator::new(successes(), [0, 2])
+            .map(|o| *o.task_id())
+            .collect();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.contains(&0));
+        assert!(outcomes.contains(&2));
+        assert!(!outcomes.contains(&1));
+    }
+
+    #[test]
+    fn test_select_results_unordered() {
+        let mut results: Vec<_> = successes().select_unordered_results(0..3).collect();
+        results.sort();
+        assert_eq!(results, vec![Ok(0), Ok(10), Ok(20)]);
+    }
+
+    #[test]
+    fn test_select_results_ordered() {
+        let results: Vec<_> = successes().select_ordered_results(0..3).collect();
+        assert_eq!(results, vec![Ok(0), Ok(10), Ok(20)]);
+    }
+
+    #[test]
+    fn test_select_outputs_unordered() {
+        let mut outputs: Vec<_> = successes().select_unordered_outputs(0..3).collect();
+        outputs.sort();
+        assert_eq!(outputs, vec![0, 10, 20]);
+    }
+
+    #[test]
+    fn test_select_outputs_ordered() {
+        let outputs: Vec<_> = successes().select_ordered_outputs(0..3).collect();
+        assert_eq!(outputs, vec![0, 10, 20]);
+    }
+
+    #[test]
+    fn test_into_results_and_outputs() {
+        let mut results: Vec<_> = successes().into_results().collect();
+        results.sort();
+        assert_eq!(results, vec![Ok(0), Ok(10), Ok(20)]);
+
+        let mut outputs: Vec<_> = successes().into_outputs().collect();
+        outputs.sort();
+        assert_eq!(outputs, vec![0, 10, 20]);
+    }
 
     #[test]
     fn test_unordered_missing() {

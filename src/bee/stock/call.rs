@@ -293,6 +293,19 @@ mod tests {
     }
 
     #[test]
+    fn test_callable_deref() {
+        use std::ops::{Deref, DerefMut};
+        // `Callable` derefs (immutably and mutably) to the wrapped function
+        let mut callable: Callable<u8, u8, (), _> = Callable::of(|input: u8| input + 1);
+        // immutable deref: copy the (Copy) closure out via `Deref`, then call it
+        let f = *Deref::deref(&callable);
+        assert_eq!(f(5), 6);
+        // mutable deref: call the wrapped function in place via `DerefMut`
+        let f_mut = DerefMut::deref_mut(&mut callable);
+        assert_eq!(f_mut(7), 8);
+    }
+
+    #[test]
     fn test_clone() {
         let worker1 = Caller::from(|input: u8| input + 1);
         let worker2 = worker1.clone();

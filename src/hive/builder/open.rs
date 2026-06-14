@@ -351,6 +351,21 @@ mod tests {
     }
 
     #[rstest]
+    fn test_queen_mut<F, T, W>(
+        #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
+        #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,
+    ) where
+        F: Fn() -> OpenBuilder,
+        T: TaskQueues<EchoWorker<usize>>,
+        W: Fn(BeeBuilder<QueenCell<TestQueen>>) -> FullBuilder<QueenCell<TestQueen>, T>,
+    {
+        let open_builder = factory();
+        let bee_builder = open_builder.with_queen_mut(TestQueen);
+        let queue_builder = with_fn(bee_builder);
+        let _hive = queue_builder.build();
+    }
+
+    #[rstest]
     fn test_queen_mut_default<F, T, W>(
         #[values(OpenBuilder::empty, OpenBuilder::default)] factory: F,
         #[values(BeeBuilder::with_channel_queues, BeeBuilder::with_workstealing_queues)] with_fn: W,

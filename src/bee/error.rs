@@ -93,10 +93,58 @@ impl<E> From<E> for ApplyRefError<E> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::ApplyError;
+    use super::{ApplyError, ApplyRefError};
     use crate::panic::Panic;
 
     type TestError<'a> = ApplyError<usize, &'a str>;
+
+    #[test]
+    fn test_apply_ref_from_error() {
+        // `From<E>` converts a bare error into a `Fatal` variant
+        let err: ApplyRefError<&str> = "bork".into();
+        assert!(matches!(err, ApplyRefError::Fatal("bork")));
+    }
+
+    #[test]
+    fn test_apply_ref_into_apply_error() {
+        let fatal: ApplyError<usize, &str> = ApplyRefError::Fatal("bork").into_apply_error(7);
+        assert!(matches!(
+            fatal,
+            ApplyError::Fatal {
+                input: Some(7),
+                error: "bork"
+            }
+        ));
+
+        let retryable: ApplyError<usize, &str> =
+            ApplyRefError::Retryable("bork").into_apply_error(8);
+        assert!(matches!(
+            retryable,
+            ApplyError::Retryable {
+                input: 8,
+                error: "bork"
+            }
+        ));
+
+        let cancelled: ApplyError<usize, &str> =
+            ApplyRefError::<&str>::Cancelled.into_apply_error(9);
+        assert!(matches!(cancelled, ApplyError::Cancelled { input: 9 }));
+    }
+
+    #[test]
+    fn test_input_without_value() {
+        // `Fatal` and `Panic` can hold `None` inputs
+        let fatal: TestError = ApplyError::Fatal {
+            input: None,
+            error: "bork",
+        };
+        assert!(fatal.input().is_none());
+        assert!(fatal.into_input().is_none());
+
+        let panic: TestError = ApplyError::panic(None, None);
+        assert!(panic.input().is_none());
+        assert!(panic.into_input().is_none());
+    }
 
     impl<I, E> ApplyError<I, E> {
         pub fn panic(input: Option<I>, detail: Option<String>) -> Self {
