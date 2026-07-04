@@ -439,6 +439,72 @@ mod tests {
     }
 
     #[test]
+    fn test_error_accessor() {
+        // `Failure` and `FailureWithSubtasks` expose their error
+        let failure = WorkerOutcome::Failure {
+            input: Some(1),
+            error: (),
+            task_id: 1,
+        };
+        assert_eq!(failure.error(), Some(&()));
+
+        let failure_sub = WorkerOutcome::FailureWithSubtasks {
+            input: Some(1),
+            error: (),
+            task_id: 1,
+            subtask_ids: vec![2, 3],
+        };
+        assert_eq!(failure_sub.error(), Some(&()));
+
+        // non-error outcomes have no error
+        let success = WorkerOutcome::Success {
+            value: 1,
+            task_id: 1,
+        };
+        assert_eq!(success.error(), None);
+    }
+
+    #[test]
+    fn test_subtask_ids_accessor() {
+        // the `*WithSubtasks` variants return their subtask IDs
+        let success_sub = WorkerOutcome::SuccessWithSubtasks {
+            value: 1,
+            task_id: 1,
+            subtask_ids: vec![2, 3, 4],
+        };
+        assert_eq!(success_sub.subtask_ids(), Some(&vec![2, 3, 4]));
+        // its task_id accessor works too
+        assert_eq!(success_sub.task_id(), &1);
+
+        let unprocessed_sub = WorkerOutcome::UnprocessedWithSubtasks {
+            input: 9,
+            task_id: 5,
+            subtask_ids: vec![6],
+        };
+        assert_eq!(unprocessed_sub.subtask_ids(), Some(&vec![6]));
+        // try_into_input on the WithSubtasks unprocessed variant returns the input
+        assert_eq!(unprocessed_sub.try_into_input(), Some(9));
+
+        // a plain Success has no subtasks
+        let success = WorkerOutcome::Success {
+            value: 1,
+            task_id: 1,
+        };
+        assert_eq!(success.subtask_ids(), None);
+    }
+
+    #[test]
+    fn test_try_into_input_failure_with_subtasks() {
+        let failure_sub = WorkerOutcome::FailureWithSubtasks {
+            input: Some(42),
+            error: (),
+            task_id: 1,
+            subtask_ids: vec![2],
+        };
+        assert_eq!(failure_sub.try_into_input(), Some(42));
+    }
+
+    #[test]
     fn test_eq() {
         let outcome1 = WorkerOutcome::Success {
             value: 42,

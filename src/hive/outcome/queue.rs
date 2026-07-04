@@ -115,4 +115,24 @@ mod tests {
         );
         assert_eq!(outcomes[&4], Outcome::Missing { task_id: 4 })
     }
+
+    #[test]
+    fn test_deref_mut() {
+        let mut queue = OutcomeQueue::<EchoWorker<usize>>::default();
+        queue.push(Outcome::Success {
+            value: 42,
+            task_id: 1,
+        });
+        queue.push(Outcome::Success {
+            value: 43,
+            task_id: 2,
+        });
+        // `remove` goes through `outcomes_deref_mut`, which flushes the queue into the map
+        assert!(matches!(
+            queue.remove(1),
+            Some(Outcome::Success { value: 42, .. })
+        ));
+        assert_eq!(queue.len(), 1);
+        assert!(queue.remove(99).is_none());
+    }
 }

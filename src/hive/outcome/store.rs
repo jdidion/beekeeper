@@ -525,6 +525,147 @@ mod tests {
         assert_eq!(vec![(1, 2)], store.remove_all_unprocessed());
         assert_eq!(2, store.remove_all_failures().len());
     }
+
+    #[test]
+    fn test_len() {
+        let store = make_batch();
+        assert_eq!(store.len(), 4);
+        let empty: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn test_counts() {
+        let store = make_batch();
+        assert_eq!(store.num_successes(), 1);
+        assert_eq!(store.num_unprocessed(), 1);
+        assert_eq!(store.num_failures(), 2);
+    }
+
+    #[test]
+    fn test_remove_all_drain() {
+        // `remove_all` drains every outcome, sorted by task_id
+        let mut store = make_batch();
+        let removed = store.remove_all();
+        assert_eq!(removed.len(), 4);
+        let ids: Vec<_> = removed.iter().map(|o| *o.task_id()).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_into_iter_owned() {
+        let store = make_batch();
+        let count = OutcomeStore::into_iter(store).count();
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn test_unwrap_all_successes() {
+        let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Success {
+            value: 2,
+            task_id: 1,
+        });
+        let mut outputs = store.unwrap();
+        outputs.sort();
+        assert_eq!(outputs, vec![1, 2]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_panics_on_failure() {
+        let store = make_batch();
+        let _ = store.unwrap();
+    }
+
+    #[test]
+    fn test_ok_or_unwrap_errors_ok() {
+        let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        store.insert(Outcome::Success {
+            value: 7,
+            task_id: 0,
+        });
+        let result = store.ok_or_unwrap_errors(true);
+        assert_eq!(result, Ok(vec![7]));
+    }
+
+    #[test]
+    fn test_ok_or_unwrap_errors_err() {
+        let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        store.insert(Outcome::Success {
+            value: 1,
+            task_id: 0,
+        });
+        store.insert(Outcome::Failure {
+            input: Some(2),
+            error: (),
+            task_id: 1,
+        });
+        // drop_unprocessed=true; there is a failure so we get the errors back
+        let result = store.ok_or_unwrap_errors(true);
+        assert_eq!(result, Err(vec![()]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_ok_or_unwrap_errors_panics_on_unprocessed() {
+        let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        store.insert(Outcome::Unprocessed {
+            input: 1,
+            task_id: 0,
+        });
+        // drop_unprocessed=false with an unprocessed outcome => panic
+        let _ = store.ok_or_unwrap_errors(false);
+    }
+
+    fn make_unprocessed_batch() -> OutcomeBatch<TestWorker> {
+        let mut store: OutcomeBatch<TestWorker> = OutcomeBatch::empty();
+        store.insert(Outcome::Unprocessed {
+            input: 30,
+            task_id: 2,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 10,
+            task_id: 0,
+        });
+        store.insert(Outcome::Unprocessed {
+            input: 20,
+            task_id: 1,
+        });
+        store.insert(Outcome::Success {
+            value: 99,
+            task_id: 3,
+        });
+        store
+    }
+
+    #[test]
+    fn test_into_unprocessed_ordered() {
+        // ordered: inputs returned in task_id order
+        let ordered = make_unprocessed_batch().into_unprocessed(true);
+        assert_eq!(ordered, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_into_unprocessed_unordered() {
+        // unordered: same set, order unspecified
+        let mut unordered = make_unprocessed_batch().into_unprocessed(false);
+        unordered.sort();
+        assert_eq!(unordered, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_iter_groups() {
+        let store = make_batch();
+        assert_eq!(store.iter_unprocessed().count(), 1);
+        assert_eq!(store.iter_successes().count(), 1);
+        assert_eq!(store.iter_failures().count(), 2);
+    }
 }
 
 #[cfg(all(test, feature = "retry"))]

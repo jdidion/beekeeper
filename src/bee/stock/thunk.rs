@@ -148,4 +148,47 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn test_punk_ok() {
+        let mut worker = PunkWorker::<u8>::default();
+        let thunk = Thunk::from(|| 7);
+        assert_eq!(7, worker.apply(thunk, &Context::empty()).unwrap());
+    }
+
+    #[test]
+    fn test_punk_catches_panic() {
+        let mut worker = PunkWorker::<u8>::default();
+        let thunk = Thunk::from(|| panic!("kaboom"));
+        let result = worker.apply(thunk, &Context::empty());
+        assert!(matches!(result, Err(ApplyError::Panic { input: None, .. })));
+    }
+
+    #[test]
+    fn test_clone() {
+        // each worker type implements `Clone`; cloning yields an equivalent, usable worker
+        let mut thunk_worker = ThunkWorker::<u8>::default().clone();
+        assert_eq!(
+            3,
+            thunk_worker
+                .apply(Thunk::from(|| 3), &Context::empty())
+                .unwrap()
+        );
+
+        let mut funk_worker = FunkWorker::<u8, String>::default().clone();
+        assert_eq!(
+            4,
+            funk_worker
+                .apply(Thunk::fallible(|| Ok(4)), &Context::empty())
+                .unwrap()
+        );
+
+        let mut punk_worker = PunkWorker::<u8>::default().clone();
+        assert_eq!(
+            5,
+            punk_worker
+                .apply(Thunk::from(|| 5), &Context::empty())
+                .unwrap()
+        );
+    }
 }

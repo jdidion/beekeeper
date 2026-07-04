@@ -71,6 +71,7 @@ feature-depth = 1
 # output a note when they are encountered.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is considered 'finished'" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained, no vuln) pulled in transitively via the aquamarine dev-dependency; aquamarine 0.6.0 is latest and has no fix available; dev-only (rustdoc mermaid diagrams)" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

@@ -292,4 +292,26 @@ mod tests {
         let full_builder = with_fn(bee_builder);
         let _hive = full_builder.build();
     }
+
+    #[test]
+    fn test_from_config() {
+        // `From<Config>` uses the default queen
+        let builder: BeeBuilder<TestQueen> = Config::default().into();
+        let _hive = builder.with_channel_queues().build();
+    }
+
+    #[test]
+    fn test_from_queen() {
+        // `From<Q>` uses the default config
+        let builder: BeeBuilder<TestQueen> = TestQueen.into();
+        let _hive = builder.with_channel_queues().build();
+    }
+
+    #[test]
+    fn test_config_ref() {
+        // a config setter (`num_threads`) goes through `BeeBuilder`'s `BuilderConfig::config_ref`
+        use crate::hive::Builder;
+        let builder = BeeBuilder::<TestQueen>::empty(TestQueen).num_threads(2);
+        let _hive = builder.with_channel_queues().build();
+    }
 }

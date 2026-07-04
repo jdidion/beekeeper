@@ -245,4 +245,13 @@ mod tests {
         let worker2 = queen2.create();
         assert_eq!(worker1, worker2);
     }
+
+    #[test]
+    fn test_clone_queen_default() {
+        // `CloneQueen` is `Default` when its `Worker` is `Default`
+        let queen = CloneQueen::<EchoWorker<u32>>::default();
+        let worker1 = queen.create();
+        let worker2 = queen.create();
+        assert_eq!(worker1, worker2);
+    }
 }

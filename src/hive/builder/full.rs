@@ -115,4 +115,20 @@ mod tests {
         let builder = factory(TestQueen);
         let _hive = builder.build();
     }
+
+    #[test]
+    fn test_from_config() {
+        // `From<Config>` uses the default queen
+        let builder: FullBuilder<TestQueen, ChannelTaskQueues<EchoWorker<usize>>> =
+            Config::default().into();
+        let _hive = builder.build();
+    }
+
+    #[test]
+    fn test_from_queen() {
+        // `From<Q>` uses the default config
+        let builder: FullBuilder<TestQueen, ChannelTaskQueues<EchoWorker<usize>>> =
+            TestQueen.into();
+        let _hive = builder.build();
+    }
 }

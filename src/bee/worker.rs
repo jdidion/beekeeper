@@ -164,4 +164,77 @@ mod tests {
             Err(ApplyError::Retryable { input: 0, .. })
         ));
     }
+
+    #[test]
+    fn test_apply_fatal_and_cancelled() {
+        let mut worker = MyRefWorker;
+        let ctx = Context::empty();
+        // Fatal preserves the input
+        assert!(matches!(
+            worker.apply(1, &ctx),
+            Err(ApplyError::Fatal { input: Some(1), .. })
+        ));
+        // Cancelled preserves the input
+        assert!(matches!(
+            worker.apply(2, &ctx),
+            Err(ApplyError::Cancelled { input: 2 })
+        ));
+    }
+
+    /// A `Worker` whose `apply` returns a `Fatal` error for odd inputs, exercising the
+    /// `Fatal` arm of the default `Worker::map` implementation's error mapping.
+    #[derive(Debug)]
+    struct FallibleWorker;
+
+    impl Worker for FallibleWorker {
+        type Input = u8;
+        type Output = u8;
+        type Error = &'static str;
+
+        fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
+            if input % 2 == 0 {
+                Ok(input)
+            } else {
+                Err(ApplyError::Fatal {
+                    input: Some(input),
+                    error: "odd",
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn test_map_maps_fatal_error() {
+        let mut worker = FallibleWorker;
+        let results: Vec<_> = worker.map(0..4).collect();
+        assert_eq!(results[0], Ok(0));
+        assert_eq!(results[1], Err("odd"));
+        assert_eq!(results[2], Ok(2));
+        assert_eq!(results[3], Err("odd"));
+    }
+
+    /// A `Worker` whose `apply` returns a `Retryable` error, exercising the `Retryable`
+    /// arm of the default `Worker::map` implementation's error mapping.
+    #[derive(Debug)]
+    struct RetryableWorker;
+
+    impl Worker for RetryableWorker {
+        type Input = u8;
+        type Output = u8;
+        type Error = &'static str;
+
+        fn apply(&mut self, input: Self::Input, _: &Context<Self::Input>) -> WorkerResult<Self> {
+            Err(ApplyError::Retryable {
+                input,
+                error: "retry",
+            })
+        }
+    }
+
+    #[test]
+    fn test_map_maps_retryable_error() {
+        let mut worker = RetryableWorker;
+        let results: Vec<_> = worker.map(0..2).collect();
+        assert_eq!(results, vec![Err("retry"), Err("retry")]);
+    }
 }

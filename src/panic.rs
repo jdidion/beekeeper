@@ -78,6 +78,28 @@ mod tests {
     }
 
     #[test]
+    fn test_payload() {
+        let result = Panic::try_call(Some("detail".to_string()), || panic!("boom"));
+        let panic = result.unwrap_err();
+        // the payload is the `&str` passed to `panic!`
+        let payload = panic.payload();
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
+    }
+
+    #[test]
+    fn test_eq() {
+        // same payload type and same detail => equal
+        let a = Panic::<String>::new("boom", Some("d1".to_string()));
+        let b = Panic::<String>::new("kaboom", Some("d1".to_string()));
+        assert_eq!(a, b);
+        // same payload type but different detail => not equal
+        let c = Panic::<String>::new("boom", Some("d2".to_string()));
+        assert_ne!(a, c);
+        // a `Panic` always equals itself (reflexive)
+        assert!(a == a);
+    }
+
+    #[test]
     #[should_panic]
     fn test_resume_panic() {
         let result = Panic::try_call("test".into(), || panic!("panic!"));

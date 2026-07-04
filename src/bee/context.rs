@@ -180,3 +180,47 @@ impl TaskMeta {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::{Context, TaskMeta};
+
+    #[test]
+    fn test_context_task_id_and_attempt() {
+        let ctx: Context<usize> = Context::new(TaskMeta::new(7), None);
+        assert_eq!(ctx.task_id(), 7);
+        // attempt defaults to 0
+        assert_eq!(ctx.attempt(), 0);
+    }
+
+    #[test]
+    fn test_empty_context_is_not_cancelled() {
+        let ctx: Context<usize> = Context::empty();
+        assert!(!ctx.is_cancelled());
+    }
+
+    #[test]
+    fn test_submit_without_local_returns_err() {
+        // with no `LocalContext`, `submit` cannot enqueue and returns the input back
+        let ctx: Context<usize> = Context::empty();
+        assert_eq!(ctx.submit(42), Err(42));
+        // no subtasks were recorded
+        let (_meta, subtask_ids) = ctx.into_parts();
+        assert!(subtask_ids.is_none());
+    }
+
+    #[test]
+    fn test_task_meta_from_task_id() {
+        let meta: TaskMeta = TaskMeta::from(13);
+        assert_eq!(meta.id(), 13);
+    }
+
+    #[cfg(feature = "local-batch")]
+    #[test]
+    fn test_task_meta_weight() {
+        let meta = TaskMeta::with_weight(3, 99);
+        assert_eq!(meta.id(), 3);
+        assert_eq!(meta.weight(), 99);
+    }
+}
