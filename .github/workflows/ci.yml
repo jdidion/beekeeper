@@ -66,7 +66,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-all-features
+      # Use the unified `cargo all-features <cmd> <args>` entrypoint: it forwards
+      # cargo args (unlike the legacy `cargo build-all-features` shim, whose clap
+      # parser rejects --features/-F). The channel feature is force-enabled while
+      # all-features permutes the allowlisted features.
       - name: Build all feature combinations
-        run: cargo build-all-features -F ${{ matrix.channel }} --all-targets
+        run: cargo all-features build --features ${{ matrix.channel }} --all-targets
       - name: Test all feature combinations
-        run: cargo test-all-features -F ${{ matrix.channel }} --lib
+        run: cargo all-features test --features ${{ matrix.channel }} --lib
